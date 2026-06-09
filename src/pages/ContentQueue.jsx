@@ -58,7 +58,7 @@ export function ContentQueue() {
       body: { client_id: gen.client_id, platform: gen.platform, pillar: gen.pillar },
     })
     setGenerating(false)
-    if (error || !data) { setNotice("Generate isn't switched on yet — it ships in Phase 2."); return }
+    if (error || !data?.item) { setNotice(data?.error || "Couldn't generate that — try again."); return }
     load()
   }
 

@@ -72,21 +72,27 @@ function GenerateModal({ clients, onClose, onSaved }) {
   const [clientId, setClientId] = useState(clients[0]?.id || '')
   const [month, setMonth] = useState(monthLabel())
   const [narrative, setNarrative] = useState('')
+  const [reportId, setReportId] = useState(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
   async function generate() {
     if (!clientId) return
     setBusy(true); setNotice('')
+    // generate-report writes the draft itself and returns its id + narrative.
     const { data, error } = await supabase.functions.invoke('generate-report', { body: { client_id: clientId, month } })
     setBusy(false)
-    if (error || !data?.narrative) { setNotice("Report generation isn't switched on yet — it ships in Phase 2."); return }
+    if (error || !data?.narrative) { setNotice(data?.error || "Couldn't write that — try again."); return }
     setNarrative(data.narrative)
+    setReportId(data.report_id || null)
   }
 
+  // Save any edits Adrian made to the previewed narrative (the draft already exists).
   async function saveDraft() {
     setBusy(true)
-    const { error } = await supabase.from('mkt_reports').insert({ client_id: clientId, month, narrative, status: 'draft' })
+    const { error } = reportId
+      ? await supabase.from('mkt_reports').update({ narrative }).eq('id', reportId)
+      : await supabase.from('mkt_reports').insert({ client_id: clientId, month, narrative, status: 'draft' })
     setBusy(false)
     if (error) { setNotice('Something went wrong — try again.'); return }
     onSaved()
