@@ -22,8 +22,10 @@ export function Reports() {
   useEffect(() => { load() }, [])
 
   async function send(r) {
-    const { error } = await supabase.functions.invoke('send-report', { body: { report_id: r.id } })
-    if (error) { alert("Sending isn't switched on yet — it ships in Phase 4."); return }
+    // Make sure a PDF exists, then email it.
+    if (!r.pdf_url) await supabase.functions.invoke('generate-pdf', { body: { report_id: r.id } }).catch(() => {})
+    const { data, error } = await supabase.functions.invoke('send-report', { body: { report_id: r.id } })
+    if (error || !data?.ok) { alert(data?.error || "Couldn't send the report — try again."); return }
     load()
   }
   async function download(r) {
