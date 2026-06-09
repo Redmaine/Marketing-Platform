@@ -71,13 +71,17 @@ function AddClient({ onClose, onSaved }) {
   async function save() {
     if (!f.name.trim()) return
     setBusy(true); setErr('')
-    const { error } = await supabase.from('mkt_clients').insert({
+    const { data: created, error } = await supabase.from('mkt_clients').insert({
       name: f.name.trim(), short_name: f.name.trim(), website: f.website || null, industry: f.industry || null,
       location: f.location || null, tier: f.tier, contact_email: f.contact_email || null,
       traffic_light: 'green', active: true,
-    })
+    }).select('id').single()
     setBusy(false)
     if (error) { setErr('Something went wrong — try again.'); return }
+    // Scrape brand + score in the background (no-op until the function is deployed).
+    if (created?.id && f.website) {
+      supabase.functions.invoke('onboarding-scrape', { body: { client_id: created.id, website_url: f.website } }).catch(() => {})
+    }
     onSaved()
   }
 
