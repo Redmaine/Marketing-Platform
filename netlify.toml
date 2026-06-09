@@ -1,0 +1,21 @@
+# Agency view deploy — ops.yourcompanyai.co.uk
+# Set the custom domain in Netlify → Domain management.
+# Env vars (Netlify → Site settings → Environment): VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
