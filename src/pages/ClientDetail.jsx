@@ -171,6 +171,7 @@ function SettingsTab({ client, onSaved }) {
   }
 
   return (
+    <>
     <div className="card">
       <div className="field"><label>Tone of voice</label><textarea className="input" rows={2} value={f.tone_of_voice} onChange={u('tone_of_voice')} /></div>
       <div className="field"><label>Key services</label><textarea className="input" rows={2} value={f.key_services} onChange={u('key_services')} /></div>
@@ -191,6 +192,59 @@ function SettingsTab({ client, onSaved }) {
         <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
         {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
       </div>
+    </div>
+    <PortalAccess client={client} />
+    </>
+  )
+}
+
+function PortalAccess({ client }) {
+  const [rows, setRows] = useState([])
+  const [email, setEmail] = useState(client.contact_email || '')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  async function load() {
+    const { data } = await supabase.from('mkt_client_portal_access').select('*')
+      .eq('client_id', client.id).order('magic_link_sent_at', { ascending: false })
+    setRows(data || [])
+  }
+  useEffect(() => { load() }, [client.id])
+
+  async function invite(addr) {
+    const target = (addr || email || '').trim()
+    if (!target) return
+    setBusy(true); setMsg('')
+    const { data, error } = await supabase.functions.invoke('send-portal-invite', {
+      body: { client_id: client.id, email: target, client_name: client.name },
+    })
+    setBusy(false)
+    if (error || !data?.ok) { setMsg(data?.error || "Couldn't send the invite — try again."); return }
+    setMsg(`Invite sent to ${target}.`)
+    load()
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <h2 style={{ fontSize: 15, marginBottom: 8 }}>Portal access</h2>
+      {rows.length === 0 ? (
+        <p className="muted" style={{ fontSize: 13 }}>No portal access yet.</p>
+      ) : rows.map((r) => (
+        <div key={r.id} className="row">
+          <div>
+            <div style={{ fontWeight: 600 }}>{r.email}</div>
+            <div className="muted" style={{ fontSize: 12 }}>
+              {r.active ? 'Active' : 'Inactive'} · {r.last_login ? `last login ${new Date(r.last_login).toLocaleDateString('en-GB')}` : 'never logged in'}
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => invite(r.email)}>Resend</button>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <input className="input" type="email" placeholder="client@email.co.uk" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <button className="btn btn-primary btn-sm" disabled={busy || !email.trim()} onClick={() => invite()}>Send invite</button>
+      </div>
+      {msg && <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{msg}</p>}
     </div>
   )
 }
