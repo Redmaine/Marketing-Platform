@@ -16,7 +16,7 @@ export function ClientDetail() {
   async function load() {
     setLoading(true)
     const [c, q, p, r] = await Promise.all([
-      supabase.from('mkt_clients').select('*').eq('id', id).single(),
+      supabase.from('mkt_clients').select('*').eq('id', id).maybeSingle(),
       supabase.from('mkt_content_queue').select('*').eq('client_id', id).order('created_at', { ascending: false }),
       supabase.from('mkt_performance').select('*').eq('client_id', id).order('week_start'),
       supabase.from('mkt_reports').select('*').eq('client_id', id).order('created_at', { ascending: false }),
