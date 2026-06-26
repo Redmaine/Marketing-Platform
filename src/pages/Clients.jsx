@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import supabase from '../lib/supabase'
+import { GeneratePostModal } from '../components/GeneratePostModal'
 
 export function Clients() {
   const navigate = useNavigate()
@@ -8,6 +9,7 @@ export function Clients() {
   const [reachById, setReachById] = useState({})
   const [loading, setLoading] = useState(true)
   const [adding, setAdding] = useState(false)
+  const [genClient, setGenClient] = useState(null)
 
   async function load() {
     setLoading(true)
@@ -36,28 +38,46 @@ export function Clients() {
         <p className="empty">No clients yet. Add your first.</p>
       ) : (
         <div className="grid grid-3" style={{ marginTop: 18 }}>
-          {clients.map((c) => (
-            <button key={c.id} className="card" onClick={() => navigate(`/clients/${c.id}`)}
-              style={{ textAlign: 'left', border: '1px solid var(--line)', display: 'block' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <span className={'dot dot-' + (c.traffic_light || 'green')} />
-                {c.tier && <span className="tier">{c.tier}</span>}
+          {clients.map((c) => {
+            const to = `/clients/${c.slug || c.id}`
+            const accent = c.brand_primary_color || 'var(--ember)'
+            return (
+              <div key={c.id} className="card" style={{ border: '1px solid var(--line)', borderLeft: `4px solid ${accent}` }}>
+                <div role="button" tabIndex={0} onClick={() => navigate(to)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') navigate(to) }}
+                  style={{ cursor: 'pointer', textAlign: 'left' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <span className={'dot dot-' + (c.traffic_light || 'green')} />
+                    {c.tier && <span className="tier">{c.tier}</span>}
+                  </div>
+                  <div style={{ fontWeight: 800, fontSize: 16 }}>{c.short_name || c.name}</div>
+                  <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>{c.location || c.industry || '—'}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+                    <span className="muted">Reach</span><strong>{(reachById[c.id] || 0).toLocaleString('en-GB')}</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 4 }}>
+                    <span className="muted">Rating</span><strong>{c.google_rating ? `★ ${c.google_rating}` : '—'}</strong>
+                  </div>
+                  {c.next_task && <div style={{ marginTop: 12, fontSize: 12, color: accent, fontWeight: 600 }}>{c.next_task}</div>}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                  <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => setGenClient(c)}>Generate post</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => navigate(to)}>View client</button>
+                </div>
               </div>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>{c.short_name || c.name}</div>
-              <div className="muted" style={{ fontSize: 12, marginBottom: 12 }}>{c.location || c.industry || '—'}</div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-                <span className="muted">Reach</span><strong>{(reachById[c.id] || 0).toLocaleString('en-GB')}</strong>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginTop: 4 }}>
-                <span className="muted">Rating</span><strong>{c.google_rating ? `★ ${c.google_rating}` : '—'}</strong>
-              </div>
-              {c.next_task && <div style={{ marginTop: 12, fontSize: 12, color: 'var(--ember)', fontWeight: 600 }}>{c.next_task}</div>}
-            </button>
-          ))}
+            )
+          })}
         </div>
       )}
 
       {adding && <AddClient onClose={() => setAdding(false)} onSaved={() => { setAdding(false); load() }} />}
+      {genClient && (
+        <GeneratePostModal
+          client={genClient}
+          onClose={() => setGenClient(null)}
+          onDone={load}
+        />
+      )}
     </div>
   )
 }

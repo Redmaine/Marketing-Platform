@@ -33,10 +33,10 @@ select cron.schedule(
   $$
 );
 
--- Morning digest — Adrian's "here's your day" email (07:30 daily)
+-- Morning digest — Adrian's "here's your day" email (07:00 daily)
 select cron.schedule(
   'morning-digest',
-  '30 7 * * *',
+  '0 7 * * *',
   $$
   select net.http_post(
     url := 'https://fvyvtdwsomxfkpxwygpk.supabase.co/functions/v1/send-digest',

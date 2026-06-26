@@ -42,7 +42,7 @@ serve(async (req) => {
     const { data: isAdmin } = await userClient.rpc('mkt_is_admin')
     if (isAdmin !== true) return json({ error: 'Not authorised' }, 403)
 
-    const { content_queue_id } = await req.json()
+    const { content_queue_id, scheduled_for } = await req.json()
     if (!content_queue_id) return json({ error: 'content_queue_id required' }, 400)
 
     const admin = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
@@ -51,10 +51,21 @@ serve(async (req) => {
     if (iErr || !item) return json({ error: 'Content item not found' }, 404)
 
     const client = item.client
-    const profileId = (client?.buffer_profile_ids || {})[item.platform]
-    if (!profileId) return json({ error: `No Buffer profile set for ${item.platform} on this client.` }, 422)
+    // v3: Buffer profile IDs live in Supabase secrets, keyed by client slug
+    // (BUFFER_YCA_PROFILE_ID, BUFFER_PS_PROFILE_ID, BUFFER_OUAY_PROFILE_ID,
+    // BUFFER_HORMONELY_PROFILE_ID). Fall back to the per-client jsonb map.
+    const slug = String(client?.slug || '').toUpperCase()
+    const envProfile = slug ? Deno.env.get(`BUFFER_${slug}_PROFILE_ID`) : null
+    const profileId = envProfile || (client?.buffer_profile_ids || {})[item.platform]
+    if (!profileId) return json({ error: `No Buffer profile set for ${item.platform} on this client (no BUFFER_${slug}_PROFILE_ID secret and no jsonb entry).` }, 422)
 
-    const slot = nextSlot(client.post_days, client.post_time)
+    // Prefer an explicit time chosen at approval (body, then the row), else
+    // fall back to the client's next scheduled slot.
+    const chosen = scheduled_for || item.scheduled_for
+    const chosenDate = chosen ? new Date(chosen) : null
+    const slot = (chosenDate && !isNaN(chosenDate.getTime()) && chosenDate > new Date())
+      ? chosenDate
+      : nextSlot(client.post_days, client.post_time)
 
     const token = Deno.env.get('BUFFER_ACCESS_TOKEN')
     if (!token) return json({ error: 'BUFFER_ACCESS_TOKEN not configured' }, 500)

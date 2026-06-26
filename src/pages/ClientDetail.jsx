@@ -1,32 +1,47 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import supabase from '../lib/supabase'
 
-const TABS = ['overview', 'content', 'performance', 'reports', 'settings']
+const TABS = ['overview', 'content', 'calendar', 'notes', 'report', 'settings']
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function ClientDetail() {
-  const { id } = useParams()
+  const { slug } = useParams()
   const [tab, setTab] = useState('overview')
   const [client, setClient] = useState(null)
   const [content, setContent] = useState([])
-  const [perf, setPerf] = useState([])
   const [reports, setReports] = useState([])
   const [loading, setLoading] = useState(true)
 
   async function load() {
     setLoading(true)
-    const [c, q, p, r] = await Promise.all([
-      supabase.from('mkt_clients').select('*').eq('id', id).maybeSingle(),
-      supabase.from('mkt_content_queue').select('*').eq('client_id', id).order('created_at', { ascending: false }),
-      supabase.from('mkt_performance').select('*').eq('client_id', id).order('week_start'),
-      supabase.from('mkt_reports').select('*').eq('client_id', id).order('created_at', { ascending: false }),
+    const clientQuery = supabase.from('mkt_clients').select('*')
+    const c = await (UUID_RE.test(slug)
+      ? clientQuery.eq('id', slug)
+      : clientQuery.eq('slug', slug)).maybeSingle()
+
+    const found = c.data
+    if (!found) { setClient(null); setLoading(false); return }
+
+    const [q, r] = await Promise.all([
+      supabase.from('mkt_content_queue').select('*').eq('client_id', found.id).order('created_at', { ascending: false }),
+      supabase.from('mkt_reports').select('*').eq('client_id', found.id).order('created_at', { ascending: false }),
     ])
-    setClient(c.data); setContent(q.data || []); setPerf(p.data || []); setReports(r.data || [])
+    setClient(found); setContent(q.data || []); setReports(r.data || [])
     setLoading(false)
   }
-  useEffect(() => { load() }, [id])
+  useEffect(() => { load() }, [slug])
 
-  if (loading) return <div className="page"><span className="spinner" /></div>
+  if (loading) return (
+    <div className="page">
+      <div className="skel" style={{ height: 32, width: 180, marginBottom: 8 }} />
+      <div className="skel" style={{ height: 16, width: 120, marginBottom: 20 }} />
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+        {TABS.map((_, i) => <div key={i} className="skel" style={{ height: 36, width: 76, borderRadius: 8 }} />)}
+      </div>
+      <div className="skel" style={{ height: 220, borderRadius: 14 }} />
+    </div>
+  )
   if (!client) return <div className="page"><p className="empty">Client not found.</p></div>
 
   return (
@@ -40,19 +55,22 @@ export function ClientDetail() {
 
       <div className="tabs">
         {TABS.map((t) => (
-          <button key={t} className={'tab' + (tab === t ? ' active' : '')} onClick={() => setTab(t)} style={{ textTransform: 'capitalize' }}>{t}</button>
+          <button key={t} className={'tab' + (tab === t ? ' active' : '')} onClick={() => setTab(t)}
+            style={{ textTransform: 'capitalize' }}>{t}</button>
         ))}
       </div>
 
-      {tab === 'overview' && <Overview client={client} />}
-      {tab === 'content' && <ContentTab content={content} />}
-      {tab === 'performance' && <PerformanceTab perf={perf} client={client} />}
-      {tab === 'reports' && <ReportsTab reports={reports} />}
-      {tab === 'settings' && <SettingsTab client={client} onSaved={load} />}
+      {tab === 'overview'  && <Overview client={client} />}
+      {tab === 'content'   && <ContentTab content={content} onRefresh={load} />}
+      {tab === 'calendar'  && <CalendarTab clientId={client.id} />}
+      {tab === 'notes'     && <NotesTab clientId={client.id} />}
+      {tab === 'report'    && <ReportTab reports={reports} clientId={client.id} onRefresh={load} />}
+      {tab === 'settings'  && <SettingsTab client={client} onSaved={load} />}
     </div>
   )
 }
 
+/* ---- Overview ---- */
 function KV({ k, v }) {
   return <div className="row"><span className="muted">{k}</span><span style={{ fontWeight: 600, textAlign: 'right' }}>{v || '—'}</span></div>
 }
@@ -66,12 +84,10 @@ function Overview({ client }) {
         <KV k="Industry" v={client.industry} />
         <KV k="Website" v={client.website} />
         <KV k="Monthly fee" v={client.monthly_fee ? `£${client.monthly_fee}` : null} />
-        <KV k="Posting days" v={(client.post_days || []).join(', ')} />
-        <KV k="Posting time" v={client.post_time} />
         <KV k="Rating" v={client.google_rating ? `★ ${client.google_rating} (${client.review_count || 0})` : null} />
       </div>
       <div className="card">
-        <h2 style={{ fontSize: 15, marginBottom: 8 }}>Brand & strategy</h2>
+        <h2 style={{ fontSize: 15, marginBottom: 8 }}>Strategy</h2>
         <KV k="Tone of voice" v={client.tone_of_voice} />
         <KV k="Services" v={client.key_services} />
         <KV k="Target customer" v={client.target_customer} />
@@ -94,61 +110,251 @@ function Overview({ client }) {
   )
 }
 
-function ContentTab({ content }) {
-  if (content.length === 0) return <p className="empty">Nothing in the queue for this client.</p>
-  return (
-    <div className="card">
-      {content.map((c) => (
-        <div key={c.id} className="row" style={{ alignItems: 'flex-start' }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)', textTransform: 'capitalize' }}>{c.platform} · {c.pillar}</div>
-            <div style={{ fontSize: 14, marginTop: 3 }}>{c.body}</div>
-          </div>
-          <span className="pill" style={{ background: 'var(--chalk)', color: 'var(--steel)' }}>{c.status}</span>
-        </div>
-      ))}
-    </div>
-  )
+/* ---- Content tab ---- */
+function statusColour(s) {
+  const map = {
+    draft:     { bg: '#F3F4F6', text: '#6B7280' },
+    pending:   { bg: '#FEF3C7', text: '#92400E' },
+    approved:  { bg: '#D1FAE5', text: '#065F46' },
+    scheduled: { bg: '#DBEAFE', text: '#1E40AF' },
+    published: { bg: '#E0E7FF', text: '#3730A3' },
+  }
+  return map[s] || { bg: 'var(--chalk)', text: 'var(--steel)' }
 }
 
-function PerformanceTab({ perf, client }) {
-  if (perf.length === 0) return <p className="empty">No performance data yet.</p>
-  const max = Math.max(1, ...perf.map((p) => p.reach || 0))
+function ContentTab({ content, onRefresh }) {
+  const [filter, setFilter] = useState('all')
+  const [editing, setEditing] = useState(null)
+
+  const FILTERS = ['all', 'draft', 'pending', 'approved', 'scheduled', 'published']
+  const filtered = filter === 'all' ? content : content.filter((c) => c.status === filter)
+
+  async function approve(item) {
+    const scheduled_for = item.scheduled_for || new Date(Date.now() + 86_400_000).toISOString()
+    await supabase.from('mkt_content_queue')
+      .update({ status: 'approved', approved_at: new Date().toISOString(), scheduled_for })
+      .eq('id', item.id)
+    onRefresh()
+  }
+
+  async function del(item) {
+    if (!window.confirm('Delete this post?')) return
+    await supabase.from('mkt_content_queue').delete().eq('id', item.id)
+    onRefresh()
+  }
+
   return (
-    <div className="card">
-      <h2 style={{ fontSize: 15, marginBottom: 12 }}>Reach by week</h2>
-      <div className="bars">
-        {perf.map((p) => (
-          <div key={p.id} className="b">
-            <div className="bar" style={{ height: `${((p.reach || 0) / max) * 130}px` }} />
-            <span className="blabel">{new Date(p.week_start).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
-          </div>
+    <>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 14, overflowX: 'auto', paddingBottom: 4 }}>
+        {FILTERS.map((s) => (
+          <button key={s} onClick={() => setFilter(s)}
+            className={'btn btn-sm ' + (filter === s ? 'btn-dark' : 'btn-ghost')}
+            style={{ textTransform: 'capitalize', whiteSpace: 'nowrap' }}>{s}</button>
         ))}
       </div>
-      <div className="grid grid-3" style={{ marginTop: 16 }}>
-        <Stat k="Avg rating" v={client.google_rating ? `★ ${client.google_rating}` : '—'} />
-        <Stat k="Posts (latest wk)" v={perf[perf.length - 1]?.posts_published ?? 0} />
-        <Stat k="Engagement (latest)" v={perf[perf.length - 1]?.engagement ?? 0} />
-      </div>
-    </div>
+
+      {filtered.length === 0 ? <p className="empty">Nothing here.</p> : (
+        <div className="card">
+          {filtered.map((c) => (
+            <div key={c.id} style={{ padding: '14px 0', borderBottom: '1px solid var(--line)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)', textTransform: 'capitalize', marginBottom: 6 }}>
+                    {c.platform}{c.pillar ? ` · ${c.pillar}` : ''}
+                    {c.scheduled_for && (
+                      <span style={{ marginLeft: 8 }}>
+                        {new Date(c.scheduled_for).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                        {' '}{new Date(c.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
+                  </div>
+                  {editing === c.id ? (
+                    <EditInline item={c} onDone={() => { setEditing(null); onRefresh() }} />
+                  ) : (
+                    <div style={{ fontSize: 14, lineHeight: 1.5 }}>{c.body}</div>
+                  )}
+                </div>
+
+                {editing !== c.id && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0, alignItems: 'flex-end' }}>
+                    <span className="pill" style={{ background: statusColour(c.status).bg, color: statusColour(c.status).text }}>
+                      {c.status}
+                    </span>
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                      {(c.status === 'draft' || c.status === 'pending') && (
+                        <button className="btn btn-primary btn-sm" style={{ fontSize: 12 }} onClick={() => approve(c)}>Approve</button>
+                      )}
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 12 }} onClick={() => setEditing(c.id)}>Edit</button>
+                      <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, color: 'var(--red)' }} onClick={() => del(c)}>Delete</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   )
 }
-function Stat({ k, v }) { return <div style={{ textAlign: 'center' }}><div style={{ fontWeight: 800, fontSize: 18 }}>{v}</div><div className="muted" style={{ fontSize: 12 }}>{k}</div></div> }
 
-function ReportsTab({ reports }) {
-  if (reports.length === 0) return <p className="empty">No reports yet. Generate one from Reports.</p>
+function EditInline({ item, onDone }) {
+  const [body, setBody] = useState(item.body || '')
+  const [busy, setBusy] = useState(false)
+
+  async function save() {
+    setBusy(true)
+    await supabase.from('mkt_content_queue').update({ body }).eq('id', item.id)
+    setBusy(false); onDone()
+  }
+
+  return (
+    <>
+      <textarea className="input" rows={5} value={body} onChange={(e) => setBody(e.target.value)} style={{ marginBottom: 8 }} />
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn btn-ghost btn-sm" onClick={onDone}>Cancel</button>
+        <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
+    </>
+  )
+}
+
+/* ---- Calendar tab ---- */
+function CalendarTab({ clientId }) {
+  const [posts, setPosts] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    (async () => {
+      const from = new Date(); from.setHours(0, 0, 0, 0)
+      const to = new Date(from); to.setDate(to.getDate() + 28)
+      const { data } = await supabase.from('mkt_content_queue').select('*')
+        .eq('client_id', clientId)
+        .gte('scheduled_for', from.toISOString())
+        .lte('scheduled_for', to.toISOString())
+        .order('scheduled_for')
+      setPosts(data || []); setLoading(false)
+    })()
+  }, [clientId])
+
+  if (loading) return <div className="skel" style={{ height: 140, marginTop: 4 }} />
+  if (posts.length === 0) return <p className="empty">Nothing scheduled in the next 4 weeks.</p>
+
   return (
     <div className="card">
-      {reports.map((r) => (
-        <div key={r.id} className="row">
-          <div><div style={{ fontWeight: 600 }}>{r.month}</div><div className="muted" style={{ fontSize: 12 }}>{r.status}</div></div>
-          {r.pdf_url ? <a className="btn btn-ghost btn-sm" href={r.pdf_url} target="_blank" rel="noreferrer">PDF</a> : <span className="muted" style={{ fontSize: 12 }}>No PDF yet</span>}
+      {posts.map((p) => (
+        <div key={p.id} className="row" style={{ alignItems: 'flex-start' }}>
+          <div style={{ minWidth: 72 }}>
+            <div style={{ fontWeight: 700, fontSize: 14 }}>
+              {p.scheduled_for ? new Date(p.scheduled_for).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
+            </div>
+            <div className="muted" style={{ fontSize: 12 }}>
+              {p.scheduled_for ? new Date(p.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''}
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="muted" style={{ fontSize: 12, fontWeight: 600, textTransform: 'capitalize', marginBottom: 3 }}>{p.platform}</div>
+            <div style={{ fontSize: 14, lineHeight: 1.4 }}>
+              {(p.body?.length || 0) > 120 ? p.body.slice(0, 120) + '…' : p.body}
+            </div>
+          </div>
+          <span className="pill" style={{ background: statusColour(p.status).bg, color: statusColour(p.status).text, flexShrink: 0 }}>
+            {p.status}
+          </span>
         </div>
       ))}
     </div>
   )
 }
 
+/* ---- Notes tab ---- */
+function NotesTab({ clientId }) {
+  const [note, setNote] = useState('')
+  const [noteId, setNoteId] = useState(null)
+  const [saved, setSaved] = useState(true)
+  const timer = useRef(null)
+
+  useEffect(() => {
+    ;(async () => {
+      const { data } = await supabase.from('mkt_client_notes').select('*')
+        .eq('client_id', clientId).order('created_at', { ascending: false }).limit(1).maybeSingle()
+      if (data) { setNote(data.note || ''); setNoteId(data.id) }
+    })()
+    return () => clearTimeout(timer.current)
+  }, [clientId])
+
+  function onChange(val) {
+    setNote(val); setSaved(false)
+    clearTimeout(timer.current)
+    timer.current = setTimeout(async () => {
+      if (noteId) {
+        await supabase.from('mkt_client_notes').update({ note: val }).eq('id', noteId)
+      } else {
+        const { data } = await supabase.from('mkt_client_notes')
+          .insert({ client_id: clientId, note: val }).select('id').single()
+        if (data) setNoteId(data.id)
+      }
+      setSaved(true)
+    }, 1500)
+  }
+
+  return (
+    <div className="card">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+        <h2 style={{ fontSize: 15 }}>Notes</h2>
+        <span className="muted" style={{ fontSize: 12 }}>{saved ? '● Saved' : '○ Saving…'}</span>
+      </div>
+      <textarea className="input" rows={14} value={note} onChange={(e) => onChange(e.target.value)}
+        placeholder="Strategy notes, key wins, client context…" style={{ resize: 'vertical' }} />
+    </div>
+  )
+}
+
+/* ---- Report tab ---- */
+function ReportTab({ reports, clientId, onRefresh }) {
+  const [generating, setGenerating] = useState(false)
+  const [err, setErr] = useState('')
+
+  async function generate() {
+    setGenerating(true); setErr('')
+    const now = new Date()
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    const { error } = await supabase.functions.invoke('generate-report', {
+      body: { client_id: clientId, month, year: now.getFullYear() },
+    })
+    setGenerating(false)
+    if (error) { setErr('Could not generate — try again.'); return }
+    onRefresh()
+  }
+
+  return (
+    <>
+      <div style={{ marginBottom: 16 }}>
+        <button className="btn btn-primary btn-sm" onClick={generate} disabled={generating}>
+          {generating ? 'Generating…' : 'Generate this month'}
+        </button>
+      </div>
+      {err && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</p>}
+      {reports.length === 0 ? <p className="empty">No reports yet.</p> : (
+        <div className="card">
+          {reports.map((r) => (
+            <div key={r.id} className="row">
+              <div>
+                <div style={{ fontWeight: 600 }}>{r.month}</div>
+                <div className="muted" style={{ fontSize: 12 }}>
+                  {r.posts_published != null ? `${r.posts_published} posts published` : r.status}
+                </div>
+              </div>
+              {r.pdf_url && <a className="btn btn-ghost btn-sm" href={r.pdf_url} target="_blank" rel="noreferrer">PDF</a>}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ---- Settings tab ---- */
 function SettingsTab({ client, onSaved }) {
   const [f, setF] = useState({
     tone_of_voice: client.tone_of_voice || '', key_services: client.key_services || '',
@@ -162,8 +368,9 @@ function SettingsTab({ client, onSaved }) {
   async function save() {
     setBusy(true); setMsg('')
     const { error } = await supabase.from('mkt_clients').update({
-      tone_of_voice: f.tone_of_voice, key_services: f.key_services, target_customer: f.target_customer,
-      traffic_light: f.traffic_light, post_time: f.post_time || null, client_can_approve: f.client_can_approve,
+      tone_of_voice: f.tone_of_voice, key_services: f.key_services,
+      target_customer: f.target_customer, traffic_light: f.traffic_light,
+      post_time: f.post_time || null, client_can_approve: f.client_can_approve,
     }).eq('id', client.id)
     setBusy(false)
     setMsg(error ? 'Something went wrong — try again.' : 'Saved.')
@@ -172,28 +379,29 @@ function SettingsTab({ client, onSaved }) {
 
   return (
     <>
-    <div className="card">
-      <div className="field"><label>Tone of voice</label><textarea className="input" rows={2} value={f.tone_of_voice} onChange={u('tone_of_voice')} /></div>
-      <div className="field"><label>Key services</label><textarea className="input" rows={2} value={f.key_services} onChange={u('key_services')} /></div>
-      <div className="field"><label>Target customer</label><textarea className="input" rows={2} value={f.target_customer} onChange={u('target_customer')} /></div>
-      <div className="grid grid-2">
-        <div className="field"><label>Traffic light</label>
-          <select className="input" value={f.traffic_light} onChange={u('traffic_light')}>
-            <option value="green">Green</option><option value="amber">Amber</option><option value="red">Red</option>
-          </select>
+      <div className="card">
+        <div className="field"><label>Tone of voice</label><textarea className="input" rows={2} value={f.tone_of_voice} onChange={u('tone_of_voice')} /></div>
+        <div className="field"><label>Key services</label><textarea className="input" rows={2} value={f.key_services} onChange={u('key_services')} /></div>
+        <div className="field"><label>Target customer</label><textarea className="input" rows={2} value={f.target_customer} onChange={u('target_customer')} /></div>
+        <div className="grid grid-2">
+          <div className="field"><label>Traffic light</label>
+            <select className="input" value={f.traffic_light} onChange={u('traffic_light')}>
+              <option value="green">Green</option><option value="amber">Amber</option><option value="red">Red</option>
+            </select>
+          </div>
+          <div className="field"><label>Posting time</label><input className="input" type="time" value={f.post_time} onChange={u('post_time')} /></div>
         </div>
-        <div className="field"><label>Posting time</label><input className="input" type="time" value={f.post_time} onChange={u('post_time')} /></div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginBottom: 14 }}>
+          <input type="checkbox" checked={f.client_can_approve}
+            onChange={(e) => setF((p) => ({ ...p, client_can_approve: e.target.checked }))} />
+          Let this client approve / reject their own posts in the portal
+        </label>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
+          {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
+        </div>
       </div>
-      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, marginBottom: 14 }}>
-        <input type="checkbox" checked={f.client_can_approve} onChange={(e) => setF((p) => ({ ...p, client_can_approve: e.target.checked }))} />
-        Let this client approve / reject their own posts in the portal
-      </label>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-        <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save changes'}</button>
-        {msg && <span className="muted" style={{ fontSize: 13 }}>{msg}</span>}
-      </div>
-    </div>
-    <PortalAccess client={client} />
+      <PortalAccess client={client} />
     </>
   )
 }
@@ -204,12 +412,12 @@ function PortalAccess({ client }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
-  async function load() {
+  async function loadRows() {
     const { data } = await supabase.from('mkt_client_portal_access').select('*')
       .eq('client_id', client.id).order('magic_link_sent_at', { ascending: false })
     setRows(data || [])
   }
-  useEffect(() => { load() }, [client.id])
+  useEffect(() => { loadRows() }, [client.id])
 
   async function invite(addr) {
     const target = (addr || email || '').trim()
@@ -220,8 +428,7 @@ function PortalAccess({ client }) {
     })
     setBusy(false)
     if (error || !data?.ok) { setMsg(data?.error || "Couldn't send the invite — try again."); return }
-    setMsg(`Invite sent to ${target}.`)
-    load()
+    setMsg(`Invite sent to ${target}.`); loadRows()
   }
 
   return (
@@ -234,15 +441,20 @@ function PortalAccess({ client }) {
           <div>
             <div style={{ fontWeight: 600 }}>{r.email}</div>
             <div className="muted" style={{ fontSize: 12 }}>
-              {r.active ? 'Active' : 'Inactive'} · {r.last_login ? `last login ${new Date(r.last_login).toLocaleDateString('en-GB')}` : 'never logged in'}
+              {r.active ? 'Active' : 'Inactive'} · {r.last_login
+                ? `last login ${new Date(r.last_login).toLocaleDateString('en-GB')}`
+                : 'never logged in'}
             </div>
           </div>
           <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => invite(r.email)}>Resend</button>
         </div>
       ))}
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <input className="input" type="email" placeholder="client@email.co.uk" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <button className="btn btn-primary btn-sm" disabled={busy || !email.trim()} onClick={() => invite()}>Send invite</button>
+        <input className="input" type="email" placeholder="client@email.co.uk" value={email}
+          onChange={(e) => setEmail(e.target.value)} />
+        <button className="btn btn-primary btn-sm" disabled={busy || !email.trim()} onClick={() => invite()}>
+          Send invite
+        </button>
       </div>
       {msg && <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{msg}</p>}
     </div>

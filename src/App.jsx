@@ -31,7 +31,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/clients" element={<Clients />} />
-        <Route path="/clients/:id" element={<ClientDetail />} />
+        <Route path="/clients/:slug" element={<ClientDetail />} />
         <Route path="/content" element={<ContentQueue />} />
         <Route path="/calendar" element={<Calendar />} />
         <Route path="/reports" element={<Reports />} />

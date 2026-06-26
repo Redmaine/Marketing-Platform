@@ -66,14 +66,13 @@ serve(async (req) => {
     const { data: client, error: cErr } = await admin.from('mkt_clients').select('*').eq('id', client_id).single()
     if (cErr || !client) return json({ error: 'Client not found' }, 404)
 
-    const userMessage =
-      `Write a ${platform} post for ${client.name}.\n` +
-      `Business: ${client.name}\n` +
-      `What they do: ${client.key_services ?? ''}\n` +
-      `Tone of voice: ${client.tone_of_voice ?? ''}\n` +
-      `Target customer: ${client.target_customer ?? ''}\n` +
-      `Content pillar for this post: ${pillar}\n` +
-      `Write one post. Under 150 words.`
+    // v3: the client's own master_prompt is the system prompt. Fall back to the
+    // shared house style if a client has none set yet.
+    const systemPrompt = (client.master_prompt && client.master_prompt.trim())
+      ? client.master_prompt
+      : MASTER_SYSTEM_PROMPT
+
+    const userMessage = `Write a ${platform} post for the ${pillar} content pillar. 150-250 words.`
 
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -84,8 +83,8 @@ serve(async (req) => {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 500,
-        system: MASTER_SYSTEM_PROMPT,
+        max_tokens: 600,
+        system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }],
       }),
     })
@@ -95,7 +94,7 @@ serve(async (req) => {
 
     const { data: item, error: iErr } = await admin.from('mkt_content_queue').insert({
       client_id, platform, content_type: 'post', pillar, body,
-      status: 'pending', generated_by: 'ai',
+      status: 'draft', generated_by: 'ai',
     }).select('*, client:mkt_clients(short_name,name)').single()
     if (iErr) return json({ error: iErr.message }, 500)
 

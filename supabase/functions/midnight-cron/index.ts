@@ -44,14 +44,11 @@ QUALITY TEST — before finishing, ask:
 FORMAT: Return only the post copy. Nothing else. No preamble. No label. Just the copy.`
 
 async function generatePost(client: Record<string, any>, platform: string, pillar: string): Promise<string> {
-  const userMessage =
-    `Write a ${platform} post for ${client.name}.\n` +
-    `Business: ${client.name}\n` +
-    `What they do: ${client.key_services ?? ''}\n` +
-    `Tone of voice: ${client.tone_of_voice ?? ''}\n` +
-    `Target customer: ${client.target_customer ?? ''}\n` +
-    `Content pillar for this post: ${pillar}\n` +
-    `Write one post. Under 150 words.`
+  // v3: the client's own master_prompt is the system prompt.
+  const systemPrompt = (client.master_prompt && client.master_prompt.trim())
+    ? client.master_prompt
+    : MASTER_SYSTEM_PROMPT
+  const userMessage = `Write a ${platform} post for the ${pillar} content pillar. 150-250 words.`
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -59,7 +56,7 @@ async function generatePost(client: Record<string, any>, platform: string, pilla
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: 500, system: MASTER_SYSTEM_PROMPT, messages: [{ role: 'user', content: userMessage }] }),
+    body: JSON.stringify({ model: MODEL, max_tokens: 600, system: systemPrompt, messages: [{ role: 'user', content: userMessage }] }),
   })
   const ai = await r.json()
   return ai?.content?.[0]?.text?.trim() ?? ''
@@ -74,31 +71,44 @@ serve(async () => {
   const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
   try {
-    // Tomorrow's weekday name (UK time) — matched against client.post_days.
+    // Tomorrow's day_of_week (0=Sun..6=Sat) in UK time — matched against
+    // mkt_content_schedule.day_of_week.
     const tomorrow = new Date()
     tomorrow.setDate(tomorrow.getDate() + 1)
-    const tomorrowName = tomorrow.toLocaleDateString('en-GB', { weekday: 'long', timeZone: 'Europe/London' })
+    const tomorrowDow = Number(
+      new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'Europe/London' })
+        .format(tomorrow)
+        .replace(/Sun/, '0').replace(/Mon/, '1').replace(/Tue/, '2').replace(/Wed/, '3')
+        .replace(/Thu/, '4').replace(/Fri/, '5').replace(/Sat/, '6')
+    )
 
-    const { data: clients } = await admin.from('mkt_clients').select('*').eq('active', true)
+    // All active schedules due tomorrow, with their client joined.
+    const { data: schedules } = await admin
+      .from('mkt_content_schedule')
+      .select('*, client:mkt_clients(*)')
+      .eq('active', true)
+      .eq('day_of_week', tomorrowDow)
 
-    for (const client of clients ?? []) {
+    for (const sched of schedules ?? []) {
       clientsProcessed++
+      const client = sched.client
+      if (!client || client.active === false) continue
       try {
-        const postDays: string[] = client.post_days ?? []
-        if (!postDays.includes(tomorrowName)) continue   // not a posting day for them
+        const platform: string = sched.platform || 'facebook'
 
-        // Skip if they already have something waiting (pending or scheduled).
+        // Skip if this client+platform already has something waiting for tomorrow.
         const { count } = await admin
           .from('mkt_content_queue')
           .select('id', { count: 'exact', head: true })
           .eq('client_id', client.id)
-          .in('status', ['pending', 'scheduled'])
+          .eq('platform', platform)
+          .in('status', ['draft', 'pending', 'scheduled'])
         if ((count ?? 0) > 0) continue
 
-        // Pillar rotation — never repeat the last pillar back to back.
+        // Pillar: schedule's own pillar wins; otherwise rotate the client's pillars.
         const pillars: string[] = client.content_pillars ?? []
-        let pillar = pillars[0] ?? 'General'
-        if (pillars.length > 1) {
+        let pillar = sched.pillar || pillars[0] || 'General'
+        if (!sched.pillar && pillars.length > 1) {
           const { data: last } = await admin
             .from('mkt_content_queue').select('pillar')
             .eq('client_id', client.id).order('created_at', { ascending: false }).limit(1).maybeSingle()
@@ -108,20 +118,16 @@ serve(async () => {
           }
         }
 
-        // ⚠️ Platform: the schedule (post_days/post_time) doesn't carry a platform,
-        // so we default to Facebook. Change here if you want per-client platforms.
-        const platform = 'facebook'
-
         const body = await generatePost(client, platform, pillar)
         if (!body) { errors.push(`${client.name}: empty AI response`); continue }
 
-        // Planned slot = tomorrow at the client's post_time (kept as a hint).
-        const [hh, mm] = String(client.post_time ?? '09:00').split(':')
+        // Planned slot = tomorrow at the schedule's time_uk (kept as a hint).
+        const [hh, mm] = String(sched.time_uk ?? client.post_time ?? '09:00').split(':')
         const slot = new Date(tomorrow); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
 
         const { error } = await admin.from('mkt_content_queue').insert({
           client_id: client.id, platform, content_type: 'post', pillar, body,
-          status: 'pending', generated_by: 'cron', scheduled_for: slot.toISOString(),
+          status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
         })
         if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); continue }
         postsGenerated++
