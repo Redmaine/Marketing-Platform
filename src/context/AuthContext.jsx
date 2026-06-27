@@ -22,7 +22,9 @@ export function AuthProvider({ children }) {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => resolve(session))
+    // Supabase v2 fires a synthetic INITIAL_SESSION event on mount, delivering
+    // the current session — so getSession() is redundant and causes a second
+    // mkt_is_admin RPC call and a race to setLoading(false).
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => resolve(session))
     return () => subscription.unsubscribe()
   }, [])
