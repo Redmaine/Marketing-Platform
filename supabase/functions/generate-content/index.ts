@@ -88,9 +88,19 @@ serve(async (req) => {
         messages: [{ role: 'user', content: userMessage }],
       }),
     })
+
+    if (!aiRes.ok) {
+      const errText = await aiRes.text()
+      console.error(`[generate-content] Anthropic ${aiRes.status} for client "${client.name}" (${platform}/${pillar}):`, errText)
+      return json({ error: `Anthropic API error ${aiRes.status}`, detail: errText.slice(0, 400) }, 502)
+    }
+
     const ai = await aiRes.json()
     const body = ai?.content?.[0]?.text?.trim()
-    if (!body) return json({ error: 'No copy came back — try again.', detail: ai?.error?.message }, 502)
+    if (!body) {
+      console.error(`[generate-content] Empty response for client "${client.name}":`, JSON.stringify(ai))
+      return json({ error: 'No copy came back — try again.', detail: ai?.error?.message }, 502)
+    }
 
     const { data: item, error: iErr } = await admin.from('mkt_content_queue').insert({
       client_id, platform, content_type: 'post', pillar, body,

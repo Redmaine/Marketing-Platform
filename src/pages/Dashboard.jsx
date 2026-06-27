@@ -11,7 +11,7 @@ function todayLabel() {
   return new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
 }
 
-const CLIENT_ORDER = ['yca', 'ps', 'ouay', 'hormonely', 'quill']
+const CLIENT_ORDER = ['yca', 'ps', 'ouay', 'hormonely', 'quill', 'riverside']
 
 export function Dashboard() {
   const navigate = useNavigate()
