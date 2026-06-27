@@ -57,13 +57,13 @@ export function GeneratePostModal({ client, onClose, onDone }) {
       .eq('id', draft.id)
     if (upErr) { setWorking(false); setError('Could not approve — try again.'); return }
 
-    const { data, error } = await supabase.functions.invoke('schedule-to-buffer', {
+    const { data, error } = await supabase.functions.invoke('schedule-to-metricool', {
       body: { content_queue_id: draft.id, scheduled_for: iso },
     })
     setWorking(false)
     if (error || data?.error) {
-      // Approved but Buffer scheduling failed — keep it approved, surface why.
-      setError(data?.error || 'Approved, but Buffer scheduling failed. Check the Buffer profile/token.')
+      // Approved but Metricool scheduling failed — keep it approved, surface why.
+      setError(data?.error || 'Approved, but Metricool scheduling failed. Check the brand ID and API key.')
       onDone?.()
       return
     }

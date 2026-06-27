@@ -35,8 +35,7 @@ export function ContentQueue() {
       .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: user?.email })
       .eq('id', item.id)
     if (error) { setNotice('Something went wrong — try again.'); return }
-    // Auto-schedule on approval (Edge Function ships in Phase 3 — ignore if absent).
-    supabase.functions.invoke('schedule-to-buffer', { body: { content_queue_id: item.id } }).catch(() => {})
+    supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: item.id } }).catch(() => {})
     setItems((p) => p.map((i) => i.id === item.id ? { ...i, status: 'approved' } : i))
   }
   async function reject(item) {

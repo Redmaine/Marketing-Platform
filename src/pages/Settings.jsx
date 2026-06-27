@@ -102,7 +102,7 @@ function InviteModal({ onClose }) {
 const CONNECTIONS = [
   { name: 'Supabase', note: 'Database, auth, storage — anon key in Netlify env.' },
   { name: 'Anthropic (claude-haiku-4-5)', note: 'Content + reports. Key in Supabase vault.' },
-  { name: 'Buffer', note: 'Social scheduling. Token in Supabase vault.' },
+  { name: 'Metricool', note: 'Social scheduling. API key in Supabase vault (METRICOOL_API_KEY).' },
   { name: 'Google My Business', note: 'Reviews. Key in Supabase vault.' },
   { name: 'Resend', note: 'Email. Key in Supabase vault.' },
 ]
