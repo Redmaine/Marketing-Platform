@@ -106,7 +106,7 @@ serve(async (req) => {
       {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'X-Mc-Auth': apiKey,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
