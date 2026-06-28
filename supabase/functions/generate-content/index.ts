@@ -66,6 +66,14 @@ serve(async (req) => {
     const { data: client, error: cErr } = await admin.from('mkt_clients').select('*').eq('id', client_id).single()
     if (cErr || !client) return json({ error: 'Client not found' }, 404)
 
+    // Block generation for platforms not in the client's connected_platforms list.
+    const connected: string[] = client.connected_platforms || ['facebook']
+    if (!connected.includes(platform)) {
+      return json({
+        error: `Platform "${platform}" is not connected for ${client.name}. Connected platforms: ${connected.join(', ')}.`,
+      }, 422)
+    }
+
     // v3: the client's own master_prompt is the system prompt. Fall back to the
     // shared house style if a client has none set yet.
     const systemPrompt = (client.master_prompt && client.master_prompt.trim())

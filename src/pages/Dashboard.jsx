@@ -19,7 +19,6 @@ export function Dashboard() {
   const [clients, setClients] = useState([])
   const [postsByClient, setPostsByClient] = useState({})
   const [postsToday, setPostsToday] = useState(0)
-  const [tasksDue, setTasksDue] = useState(0)
   const [awaitingApproval, setAwaitingApproval] = useState(0)
   const [genClient, setGenClient] = useState(null)
 
@@ -27,12 +26,8 @@ export function Dashboard() {
     setLoading(true)
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
     const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
-    const todayStr = new Date().toISOString().split('T')[0]
-
-    const [c, tasks, approval, today] = await Promise.all([
+    const [c, approval, today] = await Promise.all([
       supabase.from('mkt_clients').select('*').eq('active', true).order('name'),
-      supabase.from('mkt_tasks').select('id', { count: 'exact', head: true })
-        .eq('completed', false).lte('due_date', todayStr),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'draft'),
       supabase.from('mkt_content_queue')
@@ -49,7 +44,6 @@ export function Dashboard() {
     setClients(c.data || [])
     setPostsByClient(byClient)
     setPostsToday((today.data || []).length)
-    setTasksDue(tasks.count || 0)
     setAwaitingApproval(approval.count || 0)
     setLoading(false)
   }
@@ -69,8 +63,8 @@ export function Dashboard() {
     <div className="page">
       <div className="skel" style={{ height: 34, width: 200, marginBottom: 8 }} />
       <div className="skel" style={{ height: 16, width: 160, marginBottom: 22 }} />
-      <div className="grid grid-3" style={{ marginBottom: 20 }}>
-        {[1, 2, 3].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 56 }} /></div>)}
+      <div className="grid grid-2" style={{ marginBottom: 20 }}>
+        {[1, 2].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 56 }} /></div>)}
       </div>
       <div className="cards-swipe">
         {[1, 2, 3, 4].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 140 }} /></div>)}
@@ -83,9 +77,8 @@ export function Dashboard() {
       <h1 style={{ fontSize: 28 }}>{greetingWord()}.</h1>
       <p className="page-sub" style={{ marginBottom: 22 }}>{todayLabel()}</p>
 
-      <div className="grid grid-3" style={{ marginBottom: 20 }}>
+      <div className="grid grid-2" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} />
-        <StatPill label="Tasks due" value={tasksDue} accent={tasksDue > 0} />
         <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=draft')} />
       </div>
 
