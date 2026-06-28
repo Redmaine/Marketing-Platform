@@ -80,7 +80,13 @@ serve(async (req) => {
       ? client.master_prompt
       : MASTER_SYSTEM_PROMPT
 
-    const userMessage = `Write a ${platform} post for the ${pillar} content pillar. 150-250 words.`
+    const contextLines: string[] = [
+      `Write a ${platform} post for the "${pillar}" content pillar.`,
+    ]
+    if (client.key_services) contextLines.push(`Services: ${client.key_services}`)
+    if (client.target_customer) contextLines.push(`Target reader: ${client.target_customer}`)
+    contextLines.push('\n150-250 words. Return only the post copy — no preamble, no label.')
+    const userMessage = contextLines.join('\n')
 
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
