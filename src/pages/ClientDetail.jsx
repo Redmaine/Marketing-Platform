@@ -125,6 +125,8 @@ function statusColour(s) {
 function ContentTab({ content, onRefresh }) {
   const [filter, setFilter] = useState('all')
   const [editing, setEditing] = useState(null)
+  const [retrying, setRetrying] = useState(null)   // item id currently being retried
+  const [notice, setNotice] = useState('')
 
   const FILTERS = ['all', 'draft', 'pending', 'approved', 'scheduled', 'published']
   const filtered = filter === 'all' ? content : content.filter((c) => c.status === filter)
@@ -143,6 +145,20 @@ function ContentTab({ content, onRefresh }) {
     onRefresh()
   }
 
+  async function retryMetricool(item) {
+    setRetrying(item.id); setNotice('')
+    const { data, error } = await supabase.functions.invoke('schedule-to-metricool', {
+      body: { content_queue_id: item.id, scheduled_for: item.scheduled_for },
+    })
+    setRetrying(null)
+    if (error || data?.error) {
+      setNotice('Metricool error: ' + (data?.error || data?.detail || error?.message || 'unknown'))
+    } else {
+      setNotice('Scheduled to Metricool for ' + new Date(data.scheduled_for).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))
+      onRefresh()
+    }
+  }
+
   return (
     <>
       <div style={{ display: 'flex', gap: 6, marginBottom: 14, overflowX: 'auto', paddingBottom: 4 }}>
@@ -152,6 +168,14 @@ function ContentTab({ content, onRefresh }) {
             style={{ textTransform: 'capitalize', whiteSpace: 'nowrap' }}>{s}</button>
         ))}
       </div>
+      {notice && (
+        <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 8, fontSize: 13,
+          background: notice.startsWith('Metricool error') ? 'var(--red-pale, #FEE2E2)' : '#D1FAE5',
+          color: notice.startsWith('Metricool error') ? 'var(--red, #DC2626)' : '#065F46' }}>
+          {notice}
+          <button onClick={() => setNotice('')} style={{ marginLeft: 10, fontSize: 12, background: 'none', border: 'none', cursor: 'pointer', opacity: 0.6 }}>✕</button>
+        </div>
+      )}
 
       {filtered.length === 0 ? <p className="empty">Nothing here.</p> : (
         <div className="card">
@@ -180,9 +204,15 @@ function ContentTab({ content, onRefresh }) {
                     <span className="pill" style={{ background: statusColour(c.status).bg, color: statusColour(c.status).text }}>
                       {c.status}
                     </span>
-                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                       {(c.status === 'draft' || c.status === 'pending') && (
                         <button className="btn btn-primary btn-sm" style={{ fontSize: 12 }} onClick={() => approve(c)}>Approve</button>
+                      )}
+                      {!c.metricool_post_id && (c.status === 'approved' || c.status === 'scheduled') && (
+                        <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, color: '#92400E', background: '#FEF3C7', border: '1px solid #F59E0B' }}
+                          disabled={retrying === c.id} onClick={() => retryMetricool(c)}>
+                          {retrying === c.id ? 'Sending…' : 'Retry Metricool'}
+                        </button>
                       )}
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 12 }} onClick={() => setEditing(c.id)}>Edit</button>
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, color: 'var(--red)' }} onClick={() => del(c)}>Delete</button>
