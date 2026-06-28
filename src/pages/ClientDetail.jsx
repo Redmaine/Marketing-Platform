@@ -152,7 +152,8 @@ function ContentTab({ content, onRefresh }) {
     })
     setRetrying(null)
     if (error || data?.error) {
-      setNotice('Metricool error: ' + (data?.error || data?.detail || error?.message || 'unknown'))
+      const detail = data?.detail ? ' — ' + (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : ''
+      setNotice('Metricool error: ' + (data?.error || error?.message || 'unknown') + detail)
     } else {
       setNotice('Scheduled to Metricool for ' + new Date(data.scheduled_for).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))
       onRefresh()

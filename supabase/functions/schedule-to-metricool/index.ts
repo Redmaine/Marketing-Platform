@@ -112,10 +112,17 @@ serve(async (req) => {
         body: JSON.stringify(body),
       }
     )
-    const mData = await mRes.json()
+    const mRaw = await mRes.text()
+    let mData: unknown
+    try { mData = JSON.parse(mRaw) } catch { mData = mRaw }
 
     if (!mRes.ok) {
-      return json({ error: 'Metricool rejected the post.', detail: mData }, 502)
+      console.error(
+        `[schedule-to-metricool] Metricool ${mRes.status} for client "${client?.name}" (${item.platform}):`,
+        JSON.stringify(mData),
+        '| request body:', JSON.stringify(body),
+      )
+      return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
     }
 
     const metricoolPostId = mData?.id ?? mData?.postId ?? null
