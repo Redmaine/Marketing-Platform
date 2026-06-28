@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import supabase from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
@@ -6,6 +7,8 @@ const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 
 export function ContentQueue() {
   const { user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const statusFilter = searchParams.get('status') // 'pending' when coming from dashboard
   const [items, setItems] = useState([])
   const [clients, setClients] = useState([])
   const [loading, setLoading] = useState(true)
@@ -65,6 +68,81 @@ export function ContentQueue() {
 
   if (loading) return <div className="page"><span className="spinner" /></div>
 
+  // ── Approval queue view (/content?status=pending) ────────────────────────────
+  // Flat list of all pending posts across all clients, with one-click approve/reject.
+  if (statusFilter === 'pending') {
+    return (
+      <div className="page">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
+          <h1 style={{ flex: 1 }}>Awaiting approval</h1>
+          <button className="btn btn-ghost btn-sm" onClick={() => setSearchParams({})}>
+            View all posts
+          </button>
+        </div>
+        <p className="page-sub">
+          {pending.length === 0 ? 'Nothing waiting for approval.' : `${pending.length} post${pending.length === 1 ? '' : 's'} waiting for approval across all brands.`}
+        </p>
+        {notice && <p style={{ color: 'var(--ember)', fontSize: 13, marginTop: 8, marginBottom: 4 }}>{notice}</p>}
+
+        {pending.length === 0 ? (
+          <p className="empty" style={{ marginTop: 24 }}>All caught up.</p>
+        ) : (
+          <div style={{ marginTop: 16 }}>
+            {pending.map((item) => (
+              <div key={item.id} className="card" style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>
+                      {item.client?.short_name || item.client?.name}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--mist)', textTransform: 'capitalize' }}>
+                      {item.platform}{item.pillar ? ` · ${item.pillar}` : ''}
+                      {item.scheduled_for && (
+                        <span style={{ marginLeft: 8 }}>
+                          · {new Date(item.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                          {' at '}
+                          {new Date(item.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="pill" style={{ background: '#FEF3C7', color: '#92400E', flexShrink: 0 }}>pending</span>
+                </div>
+
+                {editing === item.id ? (
+                  <>
+                    <textarea className="input" rows={4} value={draft} onChange={(e) => setDraft(e.target.value)}
+                      style={{ marginBottom: 8 }} />
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn btn-primary btn-sm" onClick={() => saveEdit(item)}>Save</button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => approve(item)}>
+                        Approve &amp; schedule
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(item.id); setDraft(item.body) }}>
+                        Edit
+                      </button>
+                      <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} onClick={() => reject(item)}>
+                        Reject
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── Full queue view (/content) ───────────────────────────────────────────────
   return (
     <div className="page">
       <h1>Content queue</h1>

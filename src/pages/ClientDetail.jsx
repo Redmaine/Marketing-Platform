@@ -238,11 +238,19 @@ function ContentTab({ content, onRefresh }) {
   )
 }
 
+function defaultDatetime(item) {
+  if (item.scheduled_for) return item.scheduled_for.slice(0, 16)
+  // No scheduled time yet — default to tomorrow at 09:00 local time.
+  const d = new Date()
+  d.setDate(d.getDate() + 1)
+  d.setHours(9, 0, 0, 0)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T09:00`
+}
+
 function EditInline({ item, onDone }) {
   const [body, setBody] = useState(item.body || '')
-  const [scheduledFor, setScheduledFor] = useState(
-    item.scheduled_for ? item.scheduled_for.slice(0, 16) : ''
-  )
+  const [scheduledFor, setScheduledFor] = useState(defaultDatetime(item))
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
 
