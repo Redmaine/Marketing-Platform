@@ -34,7 +34,7 @@ export function Dashboard() {
       supabase.from('mkt_tasks').select('id', { count: 'exact', head: true })
         .eq('completed', false).lte('due_date', todayStr),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
-        .in('status', ['draft', 'pending']),
+        .eq('status', 'draft'),
       supabase.from('mkt_content_queue')
         .select('client_id, body, status, platform')
         .gte('scheduled_for', todayStart.toISOString())
@@ -86,7 +86,7 @@ export function Dashboard() {
       <div className="grid grid-3" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} />
         <StatPill label="Tasks due" value={tasksDue} accent={tasksDue > 0} />
-        <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=pending')} />
+        <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=draft')} />
       </div>
 
       <div className="cards-swipe">

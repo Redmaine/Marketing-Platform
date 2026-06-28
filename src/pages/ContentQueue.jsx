@@ -8,7 +8,7 @@ const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 export function ContentQueue() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
-  const statusFilter = searchParams.get('status') // 'pending' when coming from dashboard
+  const statusFilter = searchParams.get('status') // 'draft' when coming from dashboard
   const [items, setItems] = useState([])
   const [clients, setClients] = useState([])
   const [loading, setLoading] = useState(true)
@@ -31,7 +31,7 @@ export function ContentQueue() {
   }
   useEffect(() => { load() }, [])
 
-  const pending = items.filter((i) => i.status === 'pending')
+  const pending = items.filter((i) => i.status === 'draft')
 
   async function approve(item) {
     const { error } = await supabase.from('mkt_content_queue')
@@ -70,7 +70,7 @@ export function ContentQueue() {
 
   // ── Approval queue view (/content?status=pending) ────────────────────────────
   // Flat list of all pending posts across all clients, with one-click approve/reject.
-  if (statusFilter === 'pending') {
+  if (statusFilter === 'draft') {
     return (
       <div className="page">
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
