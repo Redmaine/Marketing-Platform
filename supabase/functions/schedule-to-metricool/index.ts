@@ -16,7 +16,7 @@ const DOW = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Frida
 
 const METRICOOL_USER_ID = '4984082'
 
-// Maps our internal platform slugs to Metricool's network keys.
+// Metricool network slugs — must match the provider names the API expects.
 const PLATFORM_MAP: Record<string, string> = {
   facebook:  'facebook',
   instagram: 'instagram',
@@ -68,14 +68,14 @@ serve(async (req) => {
       return json({ error: `No Metricool brand ID set for client "${client?.name}". Run 16_metricool_schema.sql to populate metricool_brand_id.` }, 422)
     }
 
-    // Metricool network key for this platform.
+    // Metricool network slug for this platform.
     const networkKey = PLATFORM_MAP[item.platform]
     if (!networkKey) {
       return json({ error: `Unsupported platform "${item.platform}" — expected one of: ${Object.keys(PLATFORM_MAP).join(', ')}` }, 422)
     }
 
-    // Prefer an explicit time chosen at approval (body, then the row), else
-    // fall back to the client's next scheduled slot.
+    // Prefer an explicit time passed in the request body, then the row value,
+    // then fall back to the client's next calculated slot.
     const chosen = scheduled_for || item.scheduled_for
     const chosenDate = chosen ? new Date(chosen) : null
     const slot = (chosenDate && !isNaN(chosenDate.getTime()) && chosenDate > new Date())
@@ -85,33 +85,44 @@ serve(async (req) => {
     const apiKey = Deno.env.get('METRICOOL_API_KEY')
     if (!apiKey) return json({ error: 'METRICOOL_API_KEY not configured in Supabase vault' }, 500)
 
-    // Metricool expects the date as a local-time string (no Z suffix) — strip the Z.
-    // We store/schedule in UTC; Metricool interprets it as UTC when no TZ is given.
-    const dateStr = slot.toISOString().replace('Z', '')
+    // ISO datetime without Z — Metricool interprets as UTC when no timezone is given.
+    const dateTimeStr = slot.toISOString().replace('Z', '')
 
-    const body = {
-      blogId: brandId,
-      draft: false,
-      date: dateStr,
-      networks: {
-        [networkKey]: {
-          active: true,
-          text: item.body,
-        },
+    // Metricool v2 API request structure:
+    // - userId and blogId go in the query string
+    // - X-Mc-Auth header (not Authorization: Bearer)
+    // - providers is an array of objects: [{ "network": "facebook" }]
+    // - text is top-level
+    // - publicationDate is an object: { dateTime, timezone }
+    // - autoPublish: true to publish directly (false = draft)
+    const url = `https://app.metricool.com/api/v2/scheduler/posts?userId=${METRICOOL_USER_ID}&blogId=${brandId}`
+
+    const requestBody = {
+      text: item.body,
+      publicationDate: {
+        dateTime: dateTimeStr,
+        timezone: 'Europe/London',
       },
+      providers: [{ network: networkKey }],
+      autoPublish: true,
     }
 
-    const mRes = await fetch(
-      `https://app.metricool.com/api/v2/posts?userId=${METRICOOL_USER_ID}`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Mc-Auth': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      }
-    )
+    // Diagnostic log: confirm key is being read and exact request being sent.
+    console.log('[schedule-to-metricool] PRE-REQUEST DIAGNOSTIC:')
+    console.log('  API key prefix (first 8 chars):', apiKey.slice(0, 8))
+    console.log('  URL:', url)
+    console.log('  Headers: { X-Mc-Auth: <masked>, Content-Type: application/json }')
+    console.log('  Body:', JSON.stringify(requestBody))
+
+    const mRes = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-Mc-Auth': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    })
+
     const mRaw = await mRes.text()
     let mData: unknown
     try { mData = JSON.parse(mRaw) } catch { mData = mRaw }
@@ -120,12 +131,13 @@ serve(async (req) => {
       console.error(
         `[schedule-to-metricool] Metricool ${mRes.status} for client "${client?.name}" (${item.platform}):`,
         JSON.stringify(mData),
-        '| request body:', JSON.stringify(body),
       )
       return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
     }
 
-    const metricoolPostId = mData?.id ?? mData?.postId ?? null
+    const metricoolPostId = (mData as Record<string, unknown>)?.id
+      ?? (mData as Record<string, unknown>)?.postId
+      ?? null
 
     await admin.from('mkt_content_queue')
       .update({ status: 'scheduled', scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
