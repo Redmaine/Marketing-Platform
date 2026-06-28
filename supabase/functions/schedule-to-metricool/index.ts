@@ -86,7 +86,7 @@ serve(async (req) => {
     if (!apiKey) return json({ error: 'METRICOOL_API_KEY not configured in Supabase vault' }, 500)
 
     // ISO datetime without Z — Metricool interprets as UTC when no timezone is given.
-    const dateTimeStr = slot.toISOString().replace('Z', '')
+    const dateTimeStr = slot.toISOString().slice(0, 19)
 
     // Metricool v2 API request structure:
     // - userId and blogId go in the query string
