@@ -205,14 +205,23 @@ function ContentTab({ content, onRefresh }) {
                     <span className="pill" style={{ background: statusColour(c.status).bg, color: statusColour(c.status).text }}>
                       {c.status}
                     </span>
+                    {/* Issue 4: show scheduled date/time under status badge */}
+                    {c.scheduled_for && (c.status === 'approved' || c.status === 'scheduled') && (
+                      <span style={{ fontSize: 11, color: 'var(--mist)', textAlign: 'right', lineHeight: 1.3 }}>
+                        {new Date(c.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                        {' at '}
+                        {new Date(c.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    )}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                       {(c.status === 'draft' || c.status === 'pending') && (
                         <button className="btn btn-primary btn-sm" style={{ fontSize: 12 }} onClick={() => approve(c)}>Approve</button>
                       )}
-                      {!c.metricool_post_id && (c.status === 'approved' || c.status === 'scheduled') && (
+                      {/* Issue 1: only show Retry when status is 'approved' — once scheduled, status is the source of truth */}
+                      {c.status === 'approved' && (
                         <button className="btn btn-ghost btn-sm" style={{ fontSize: 12, color: '#92400E', background: '#FEF3C7', border: '1px solid #F59E0B' }}
                           disabled={retrying === c.id} onClick={() => retryMetricool(c)}>
-                          {retrying === c.id ? 'Sending…' : 'Retry Metricool'}
+                          {retrying === c.id ? 'Sending…' : 'Send to Metricool'}
                         </button>
                       )}
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: 12 }} onClick={() => setEditing(c.id)}>Edit</button>
@@ -231,19 +240,55 @@ function ContentTab({ content, onRefresh }) {
 
 function EditInline({ item, onDone }) {
   const [body, setBody] = useState(item.body || '')
+  const [scheduledFor, setScheduledFor] = useState(
+    item.scheduled_for ? item.scheduled_for.slice(0, 16) : ''
+  )
   const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
 
   async function save() {
-    setBusy(true)
-    await supabase.from('mkt_content_queue').update({ body }).eq('id', item.id)
+    setBusy(true); setNotice('')
+    const updates = { body }
+    if (scheduledFor) updates.scheduled_for = new Date(scheduledFor).toISOString()
+    await supabase.from('mkt_content_queue').update(updates).eq('id', item.id)
+
+    // Issue 5: if post is approved or already has a Metricool ID, re-send with
+    // the new time. The edge function handles PATCH vs POST (issue 8).
+    const shouldResend = item.status === 'approved' || item.metricool_post_id
+    if (shouldResend && scheduledFor) {
+      const iso = new Date(scheduledFor).toISOString()
+      const { data, error } = await supabase.functions.invoke('schedule-to-metricool', {
+        body: { content_queue_id: item.id, scheduled_for: iso },
+      })
+      if (error || data?.error) {
+        const detail = data?.detail
+          ? ' — ' + (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail))
+          : ''
+        setNotice('Saved, but Metricool error: ' + (data?.error || error?.message || 'unknown') + detail)
+        setBusy(false)
+        return
+      }
+    }
+
     setBusy(false); onDone()
   }
 
   return (
     <>
-      <textarea className="input" rows={5} value={body} onChange={(e) => setBody(e.target.value)} style={{ marginBottom: 8 }} />
+      <textarea className="input" rows={5} value={body} onChange={(e) => setBody(e.target.value)}
+        style={{ marginBottom: 8 }} />
+      <div className="field" style={{ marginBottom: 8 }}>
+        <label style={{ fontSize: 11, fontWeight: 600, color: 'var(--mist)', display: 'block', marginBottom: 4 }}>
+          Scheduled for
+        </label>
+        <input className="input" type="datetime-local" value={scheduledFor}
+          onChange={(e) => setScheduledFor(e.target.value)} disabled={busy} />
+      </div>
+      {notice && (
+        <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>{notice}</p>
+      )}
       <div style={{ display: 'flex', gap: 8 }}>
-        <button className="btn btn-ghost btn-sm" onClick={onDone}>Cancel</button>
+        <button className="btn btn-ghost btn-sm" onClick={onDone} disabled={busy}>Cancel</button>
         <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>
       </div>
     </>

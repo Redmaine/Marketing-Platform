@@ -86,7 +86,7 @@ export function Dashboard() {
       <div className="grid grid-3" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} />
         <StatPill label="Tasks due" value={tasksDue} accent={tasksDue > 0} />
-        <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} />
+        <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=pending')} />
       </div>
 
       <div className="cards-swipe">
@@ -124,9 +124,10 @@ export function Dashboard() {
   )
 }
 
-function StatPill({ label, value, accent }) {
+function StatPill({ label, value, accent, onClick }) {
   return (
-    <div className="card" style={{ textAlign: 'center', padding: '14px 16px' }}>
+    <div className="card" onClick={onClick}
+      style={{ textAlign: 'center', padding: '14px 16px', cursor: onClick ? 'pointer' : 'default' }}>
       <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-0.03em', color: accent ? 'var(--ember)' : 'var(--ink)' }}>
         {value}
       </div>

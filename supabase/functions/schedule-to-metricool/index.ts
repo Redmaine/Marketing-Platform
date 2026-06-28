@@ -16,7 +16,6 @@ const DOW = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Frida
 
 const METRICOOL_USER_ID = '4984082'
 
-// Metricool network slugs — must match the provider names the API expects.
 const PLATFORM_MAP: Record<string, string> = {
   facebook:  'facebook',
   instagram: 'instagram',
@@ -24,7 +23,6 @@ const PLATFORM_MAP: Record<string, string> = {
   twitter:   'twitter',
 }
 
-// Next datetime matching one of post_days at post_time, after now.
 function nextSlot(postDays: string[], postTime: string | null): Date {
   const now = new Date()
   const [hh, mm] = (postTime || '09:00').split(':').map(Number)
@@ -62,94 +60,100 @@ serve(async (req) => {
 
     const client = item.client
 
-    // Metricool brand ID — stored on the client row.
     const brandId = client?.metricool_brand_id
     if (!brandId) {
-      return json({ error: `No Metricool brand ID set for client "${client?.name}". Run 16_metricool_schema.sql to populate metricool_brand_id.` }, 422)
+      return json({ error: `No Metricool brand ID set for client "${client?.name}".` }, 422)
     }
 
-    // Metricool network slug for this platform.
     const networkKey = PLATFORM_MAP[item.platform]
     if (!networkKey) {
-      return json({ error: `Unsupported platform "${item.platform}" — expected one of: ${Object.keys(PLATFORM_MAP).join(', ')}` }, 422)
+      return json({ error: `Unsupported platform "${item.platform}" — expected: ${Object.keys(PLATFORM_MAP).join(', ')}` }, 422)
     }
 
-    // Prefer an explicit time passed in the request body, then the row value,
-    // then fall back to the client's next calculated slot.
     const chosen = scheduled_for || item.scheduled_for
     const chosenDate = chosen ? new Date(chosen) : null
     const slot = (chosenDate && !isNaN(chosenDate.getTime()) && chosenDate > new Date())
       ? chosenDate
       : nextSlot(client.post_days, client.post_time)
 
+    // Issue 6: reject if the resolved slot is in the past.
+    if (slot <= new Date()) {
+      return json({ error: 'Scheduled time has passed — please reschedule before retrying.' }, 422)
+    }
+
     const apiKey = Deno.env.get('METRICOOL_API_KEY')
     if (!apiKey) return json({ error: 'METRICOOL_API_KEY not configured in Supabase vault' }, 500)
 
-    // ISO datetime without Z — Metricool interprets as UTC when no timezone is given.
     const dateTimeStr = slot.toISOString().slice(0, 19)
-
-    // Metricool v2 API request structure:
-    // - userId and blogId go in the query string
-    // - X-Mc-Auth header (not Authorization: Bearer)
-    // - providers is an array of objects: [{ "network": "facebook" }]
-    // - text is top-level
-    // - publicationDate is an object: { dateTime, timezone }
-    // - autoPublish: true to publish directly (false = draft)
-    const url = `https://app.metricool.com/api/v2/scheduler/posts?userId=${METRICOOL_USER_ID}&blogId=${brandId}`
 
     const requestBody = {
       text: item.body,
-      publicationDate: {
-        dateTime: dateTimeStr,
-        timezone: 'Europe/London',
-      },
+      publicationDate: { dateTime: dateTimeStr, timezone: 'Europe/London' },
       providers: [{ network: networkKey }],
       autoPublish: true,
     }
 
-    // Diagnostic log: confirm key is being read and exact request being sent.
+    // Issue 8: if metricool_post_id already exists, PATCH the existing post
+    // rather than creating a duplicate.
+    const existingPostId = item.metricool_post_id
+    const method = existingPostId ? 'PATCH' : 'POST'
+    const url = existingPostId
+      ? `https://app.metricool.com/api/v2/scheduler/posts/${existingPostId}?userId=${METRICOOL_USER_ID}&blogId=${brandId}`
+      : `https://app.metricool.com/api/v2/scheduler/posts?userId=${METRICOOL_USER_ID}&blogId=${brandId}`
+
     console.log('[schedule-to-metricool] PRE-REQUEST DIAGNOSTIC:')
+    console.log('  method:', method, existingPostId ? `(updating post ${existingPostId})` : '(creating new)')
     console.log('  API key prefix (first 8 chars):', apiKey.slice(0, 8))
     console.log('  URL:', url)
     console.log('  Headers: { X-Mc-Auth: <masked>, Content-Type: application/json }')
     console.log('  Body:', JSON.stringify(requestBody))
 
-    const mRes = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'X-Mc-Auth': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-    })
-
-    const mRaw = await mRes.text()
+    // Issue 2: wrap the fetch in its own try/catch so the response is always
+    // logged before the function exits, even on network-level failures.
+    let mRes: Response
+    let mRaw: string
     let mData: unknown
-    try { mData = JSON.parse(mRaw) } catch { mData = mRaw }
+    try {
+      mRes = await fetch(url, {
+        method,
+        headers: { 'X-Mc-Auth': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      })
+      mRaw = await mRes.text()
+      try { mData = JSON.parse(mRaw) } catch { mData = mRaw }
+      console.log(`[schedule-to-metricool] Metricool response ${mRes.status}:`, JSON.stringify(mData))
+    } catch (fetchErr) {
+      const msg = String((fetchErr as Error)?.message ?? fetchErr)
+      console.error('[schedule-to-metricool] Network error calling Metricool:', msg)
+      return json({ error: 'Network error calling Metricool: ' + msg }, 502)
+    }
 
     if (!mRes.ok) {
-      console.error(
-        `[schedule-to-metricool] Metricool ${mRes.status} for client "${client?.name}" (${item.platform}):`,
-        JSON.stringify(mData),
-      )
+      console.error(`[schedule-to-metricool] Metricool ${mRes.status} rejected post for "${client?.name}" (${item.platform})`)
       return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
     }
 
     const metricoolPostId = (mData as Record<string, unknown>)?.id
       ?? (mData as Record<string, unknown>)?.postId
+      ?? existingPostId
       ?? null
 
-    await admin.from('mkt_content_queue')
+    // Issue 1: log any DB update failures rather than silently ignoring them.
+    const { error: updateErr } = await admin.from('mkt_content_queue')
       .update({ status: 'scheduled', scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
       .eq('id', item.id)
+    if (updateErr) console.error('[schedule-to-metricool] Failed to update mkt_content_queue:', updateErr.message)
 
-    await admin.from('mkt_scheduled_posts').insert({
+    // Upsert to mkt_scheduled_posts to avoid duplicate-key errors on retry.
+    const { error: upsertErr } = await admin.from('mkt_scheduled_posts').upsert({
       client_id: item.client_id, content_queue_id: item.id, platform: item.platform,
       body: item.body, scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId, status: 'scheduled',
-    })
+    }, { onConflict: 'content_queue_id' })
+    if (upsertErr) console.error('[schedule-to-metricool] Failed to upsert mkt_scheduled_posts:', upsertErr.message)
 
     return json({ scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
   } catch (e) {
+    console.error('[schedule-to-metricool] Unhandled error:', String((e as Error)?.message ?? e))
     return json({ error: String((e as Error)?.message ?? e) }, 500)
   }
 })

@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import supabase from '../lib/supabase'
 
-const PLATFORMS = [
+const ALL_PLATFORMS = [
   { value: 'facebook', label: 'Facebook' },
+  { value: 'instagram', label: 'Instagram' },
   { value: 'linkedin', label: 'LinkedIn' },
+  { value: 'twitter', label: 'Twitter (X)' },
 ]
 
 // Default the schedule picker to tomorrow at the client's usual post time.
@@ -19,7 +21,10 @@ function defaultSchedule(client) {
 
 export function GeneratePostModal({ client, onClose, onDone }) {
   const pillars = client?.content_pillars || []
-  const [platform, setPlatform] = useState('facebook')
+  const PLATFORMS = ALL_PLATFORMS.filter((p) =>
+    (client?.connected_platforms || ['facebook']).includes(p.value)
+  )
+  const [platform, setPlatform] = useState(PLATFORMS[0]?.value || 'facebook')
   const [pillar, setPillar] = useState(pillars[0] || '')
   const [draft, setDraft] = useState(null)        // the created mkt_content_queue row
   const [generating, setGenerating] = useState(false)
