@@ -20,13 +20,15 @@ export function Dashboard() {
   const [postsByClient, setPostsByClient] = useState({})
   const [postsToday, setPostsToday] = useState(0)
   const [awaitingApproval, setAwaitingApproval] = useState(0)
+  const [failedToSchedule, setFailedToSchedule] = useState(0)
   const [genClient, setGenClient] = useState(null)
 
   async function load() {
     setLoading(true)
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
     const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
-    const [c, approval, today] = await Promise.all([
+    const nowIso = new Date().toISOString()
+    const [c, approval, today, failed] = await Promise.all([
       supabase.from('mkt_clients').select('*').eq('active', true).order('name'),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'draft'),
@@ -34,6 +36,8 @@ export function Dashboard() {
         .select('client_id, body, status, platform')
         .gte('scheduled_for', todayStart.toISOString())
         .lte('scheduled_for', todayEnd.toISOString()),
+      supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
+        .eq('status', 'approved').is('metricool_post_id', null).lt('scheduled_for', nowIso),
     ])
 
     const byClient = {}
@@ -45,6 +49,7 @@ export function Dashboard() {
     setPostsByClient(byClient)
     setPostsToday((today.data || []).length)
     setAwaitingApproval(approval.count || 0)
+    setFailedToSchedule(failed.count || 0)
     setLoading(false)
   }
 
@@ -63,8 +68,8 @@ export function Dashboard() {
     <div className="page">
       <div className="skel" style={{ height: 34, width: 200, marginBottom: 8 }} />
       <div className="skel" style={{ height: 16, width: 160, marginBottom: 22 }} />
-      <div className="grid grid-2" style={{ marginBottom: 20 }}>
-        {[1, 2].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 56 }} /></div>)}
+      <div className="grid grid-3" style={{ marginBottom: 20 }}>
+        {[1, 2, 3].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 56 }} /></div>)}
       </div>
       <div className="cards-swipe">
         {[1, 2, 3, 4].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 140 }} /></div>)}
@@ -77,9 +82,10 @@ export function Dashboard() {
       <h1 style={{ fontSize: 28 }}>{greetingWord()}.</h1>
       <p className="page-sub" style={{ marginBottom: 22 }}>{todayLabel()}</p>
 
-      <div className="grid grid-2" style={{ marginBottom: 20 }}>
+      <div className="grid grid-3" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} />
         <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=draft')} />
+        <StatPill label="Failed to schedule" value={failedToSchedule} accent={failedToSchedule > 0} onClick={() => navigate('/content?status=failed')} />
       </div>
 
       <div className="cards-swipe">
