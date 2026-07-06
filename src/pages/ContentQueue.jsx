@@ -27,7 +27,9 @@ export function ContentQueue() {
   async function load() {
     setLoading(true)
     const [q, b, c] = await Promise.all([
-      supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('created_at', { ascending: false }),
+      // Soonest-scheduled first so the most urgent approvals surface at the
+      // top; posts with no scheduled_for sort to the bottom (nullsFirst: false).
+      supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('scheduled_for', { ascending: true, nullsFirst: false }),
       supabase.from('mkt_blog_posts').select('*, client:mkt_clients(short_name,name)').order('created_at', { ascending: false }),
       supabase.from('mkt_clients').select('id, name, short_name, content_pillars').eq('active', true).order('name'),
     ])
@@ -44,10 +46,14 @@ export function ContentQueue() {
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
 
   async function approve(item) {
-    const { error } = await supabase.from('mkt_content_queue')
+    // .select() lets us confirm the update actually matched a row — an RLS
+    // policy mismatch or stale id returns error: null with zero rows changed,
+    // which would otherwise look like success and leave the card stuck.
+    const { data, error } = await supabase.from('mkt_content_queue')
       .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: user?.email })
       .eq('id', item.id)
-    if (error) { setNotice('Something went wrong — try again.'); return }
+      .select('id')
+    if (error || !data?.length) { setNotice('Something went wrong — try again.'); return }
     supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: item.id } }).catch(() => {})
     setItems((p) => p.map((i) => i.id === item.id ? { ...i, status: 'approved' } : i))
   }

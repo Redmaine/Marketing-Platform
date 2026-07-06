@@ -1,7 +1,8 @@
 // Supabase Edge Function: midnight-cron  (Deno) — runs 00:00 daily via pg_cron
 // Keeps every active client topped up with ~4 weeks of approved/scheduled
-// content (weekdays only), rotates through their content pillars, and
-// generates one blog post per client per week (scheduled for Sunday).
+// content, on each client's own posting days (client.post_days — see
+// _shared/fill.ts), rotates through their content pillars, and generates
+// one blog post per client per week (scheduled for Sunday).
 //
 // Why it doesn't call generate-content: that function is admin-gated (mkt_is_admin
 // on the caller's JWT). Cron runs with the service role (no user email), so it
@@ -16,7 +17,13 @@ import { sundayOfWeek } from '../_shared/generate.ts'
 import { ensureWeeklyBlog } from '../_shared/blog.ts'
 import { fillClientGap } from '../_shared/fill.ts'
 
-const MAX_POSTS_PER_RUN = 20
+// Per-client safety ceiling passed to fillClientGap as its `budget` param.
+// This is NOT a shared pool split across clients — every active client gets
+// this full budget independently, so client 1 needing a big catch-up fill
+// can never starve client 2..N of that night's content generation. It only
+// exists as a sane upper bound; fillClientGap already stops itself once a
+// client's own posting-frequency target is met.
+const PER_CLIENT_POST_BUDGET = 20
 
 serve(async () => {
   const started = Date.now()
@@ -29,7 +36,9 @@ serve(async () => {
 
   try {
     const now = new Date()
-    const { data: clients } = await admin.from('mkt_clients').select('*').eq('active', true).order('name')
+    const { data: clients, error: clientsError } = await admin.from('mkt_clients').select('*').eq('active', true).order('name')
+    if (clientsError) throw new Error(`could not load active clients: ${clientsError.message}`)
+    console.log(`[midnight-cron] starting run — ${clients?.length ?? 0} active client(s)`)
 
     for (const client of clients ?? []) {
       clientsProcessed++
@@ -40,26 +49,44 @@ serve(async () => {
         const title = await ensureWeeklyBlog(admin, client, sundayOfWeek(now))
         if (title) blogsGenerated++
       } catch (e) {
-        errors.push(`${client.name} (blog): ${String((e as Error)?.message ?? e)}`)
+        const msg = `${client.name} (blog): ${String((e as Error)?.message ?? e)}`
+        errors.push(msg)
+        console.error(`[midnight-cron] ${msg}`)
       }
 
-      if (postsGenerated >= MAX_POSTS_PER_RUN) continue
-
-      const { generated, errors: fillErrors } = await fillClientGap(admin, client, MAX_POSTS_PER_RUN - postsGenerated)
-      postsGenerated += generated
-      errors.push(...fillErrors)
+      // Every client gets its own full budget — see PER_CLIENT_POST_BUDGET
+      // comment above. A per-client try/catch means one client throwing
+      // (e.g. Anthropic API error) can't abort the run for everyone after it.
+      try {
+        const { generated, errors: fillErrors } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET)
+        postsGenerated += generated
+        if (fillErrors.length) {
+          errors.push(...fillErrors)
+          for (const fe of fillErrors) console.error(`[midnight-cron] ${fe}`)
+        }
+        console.log(`[midnight-cron] ${client.name}: ${generated} post(s) generated`)
+      } catch (e) {
+        const msg = `${client.name} (fill): ${String((e as Error)?.message ?? e)}`
+        errors.push(msg)
+        console.error(`[midnight-cron] ${msg}`)
+      }
     }
   } catch (e) {
-    errors.push(`fatal: ${String((e as Error)?.message ?? e)}`)
+    const msg = `fatal: ${String((e as Error)?.message ?? e)}`
+    errors.push(msg)
+    console.error(`[midnight-cron] ${msg}`)
   }
 
-  await admin.from('mkt_cron_log').insert({
+  const { error: logError } = await admin.from('mkt_cron_log').insert({
     job_name: 'midnight-content-generation',
     clients_processed: clientsProcessed,
     posts_generated: postsGenerated,
     errors: errors.length ? errors : null,
     duration_ms: Date.now() - started,
   })
+  if (logError) console.error(`[midnight-cron] failed to write mkt_cron_log: ${logError.message}`)
+
+  console.log(`[midnight-cron] run complete — ${clientsProcessed} client(s), ${postsGenerated} post(s), ${blogsGenerated} blog(s), ${errors.length} error(s)`)
 
   return new Response(JSON.stringify({ ok: true, clientsProcessed, postsGenerated, blogsGenerated, errors }), {
     headers: { 'Content-Type': 'application/json' },

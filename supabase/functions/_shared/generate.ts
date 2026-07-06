@@ -77,13 +77,19 @@ export function nextPillar(client: Record<string, any>): string {
 }
 
 // ── Weekday helpers (UK time) ─────────────────────────────────────────────
-export function isWeekday(d: Date): boolean {
-  const dow = Number(
+// 0=Sun .. 6=Sat, computed in UK local time (not UTC) so a post scheduled
+// near midnight always lands on the day a UK reader would call "today".
+export function dayOfWeekUK(d: Date): number {
+  return Number(
     new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'Europe/London' })
       .format(d)
       .replace(/Sun/, '0').replace(/Mon/, '1').replace(/Tue/, '2').replace(/Wed/, '3')
       .replace(/Thu/, '4').replace(/Fri/, '5').replace(/Sat/, '6')
   )
+}
+
+export function isWeekday(d: Date): boolean {
+  const dow = dayOfWeekUK(d)
   return dow >= 1 && dow <= 5
 }
 
@@ -108,12 +114,7 @@ export function weekNumber(d: Date): number {
 
 // The Sunday (UK time) of the week containing `d`, at local midnight.
 export function sundayOfWeek(d: Date): Date {
-  const dow = Number(
-    new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'Europe/London' })
-      .format(d)
-      .replace(/Sun/, '0').replace(/Mon/, '1').replace(/Tue/, '2').replace(/Wed/, '3')
-      .replace(/Thu/, '4').replace(/Fri/, '5').replace(/Sat/, '6')
-  )
+  const dow = dayOfWeekUK(d)
   return addDays(d, (7 - dow) % 7)
 }
 

@@ -18,7 +18,7 @@ import { ensureWeeklyBlog } from '../_shared/blog.ts'
 import { fillClientGap } from '../_shared/fill.ts'
 
 const WEEKS_OF_BLOGS = 4
-const PER_CLIENT_POST_BUDGET = 40 // fillClientGap self-limits to its 20-post/28-day target anyway
+const PER_CLIENT_POST_BUDGET = 40 // fillClientGap self-limits to each client's own posting-frequency target anyway
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })

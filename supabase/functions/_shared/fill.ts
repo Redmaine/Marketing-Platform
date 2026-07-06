@@ -1,14 +1,36 @@
 // Shared "fill this client's content calendar" logic — used by both
-// midnight-cron (daily top-up, capped at MAX_POSTS_PER_RUN globally) and
+// midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
-import { generatePost, nextPillar, isWeekday, addDays, isPlatformConnected } from './generate.ts'
+import { generatePost, nextPillar, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
 const TARGET_WINDOW_DAYS = 28
-const TARGET_POSTS_PER_CLIENT = 20 // ~5/week x 4 weeks
+const WEEKS_IN_WINDOW = TARGET_WINDOW_DAYS / 7 // 4
 const SAFETY_MAX_DAYS_WALKED = 45
+
+const DAY_NAME_TO_NUM: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6,
+}
+
+// The set of UK weekdays (0=Sun..6=Sat) this client actually posts on, per
+// their own posting_frequency setting (client.post_days, e.g.
+// ['Monday','Wednesday','Friday']). Falls back to Mon-Fri for clients that
+// predate this field so existing behaviour is unchanged for them.
+function clientPostingDays(client: Record<string, any>): Set<number> {
+  const names: string[] = Array.isArray(client.post_days) ? client.post_days : []
+  const nums = names
+    .map((n) => DAY_NAME_TO_NUM[String(n).trim().toLowerCase()])
+    .filter((n): n is number => n !== undefined)
+  return nums.length ? new Set(nums) : new Set([1, 2, 3, 4, 5])
+}
+
+// How many posts this client should have queued across the 4-week window,
+// based on their own posting days — not a flat count assumed for everyone.
+function targetPostsForClient(client: Record<string, any>): number {
+  return clientPostingDays(client).size * WEEKS_IN_WINDOW
+}
 
 // The platform(s) this client is scheduled to post on, filtered to only those
 // they've actually connected. Falls back to connected_platforms[0] (or
@@ -41,11 +63,14 @@ export interface FillResult {
   errors: string[]
 }
 
-// Walks forward weekday-by-weekday from tomorrow, filling the gap between
-// this client's current approved/scheduled post count (in the next 28 days)
-// and TARGET_POSTS_PER_CLIENT, never generating more than `budget` posts.
-// Rotates pillars via last_pillar_used; hard-blocks disconnected platforms
-// (clientPlatforms already filters to connected only).
+// Walks forward day-by-day from tomorrow, filling the gap between this
+// client's current approved/scheduled post count (in the next 28 days) and
+// their own posting-frequency target (targetPostsForClient — derived from
+// client.post_days, not a flat count assumed for every client), never
+// generating more than `budget` posts. Only generates on the days of the
+// week this client actually posts on (clientPostingDays). Rotates pillars
+// via last_pillar_used; hard-blocks disconnected platforms (clientPlatforms
+// already filters to connected only).
 export async function fillClientGap(admin: Admin, client: Record<string, any>, budget: number): Promise<FillResult> {
   const errors: string[] = []
   if (budget <= 0) return { generated: 0, errors }
@@ -55,6 +80,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     return { generated: 0, errors: [`${client.name}: no connected platform to post to`] }
   }
   const platform = platforms[0]
+  const postingDays = clientPostingDays(client)
 
   const now = new Date()
   const windowEnd = addDays(now, TARGET_WINDOW_DAYS)
@@ -66,7 +92,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     .in('status', ['approved', 'scheduled'])
     .gte('scheduled_for', now.toISOString()).lte('scheduled_for', windowEnd.toISOString())
 
-  const gap = Math.max(0, TARGET_POSTS_PER_CLIENT - (existingCount ?? 0))
+  const gap = Math.max(0, targetPostsForClient(client) - (existingCount ?? 0))
   if (gap === 0) return { generated: 0, errors }
 
   let localLastPillar: string | null = client.last_pillar_used ?? null
@@ -77,7 +103,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   while (generated < gap && generated < budget && daysWalked < SAFETY_MAX_DAYS_WALKED) {
     daysWalked++
     if (day > windowEnd) break
-    if (!isWeekday(day)) { day = addDays(day, 1); continue }
+    if (!postingDays.has(dayOfWeekUK(day))) { day = addDays(day, 1); continue }
 
     if (await hasQueueRowOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
 
