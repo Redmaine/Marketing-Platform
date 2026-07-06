@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useLocation } from 'react-router-dom'
 import supabase from '../lib/supabase'
 
 const TABS = ['overview', 'content', 'calendar', 'notes', 'report', 'settings']
@@ -7,7 +7,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export function ClientDetail() {
   const { slug } = useParams()
-  const [tab, setTab] = useState('overview')
+  const location = useLocation()
+  // Dashboard brand cards navigate here with state.tab='content' so clicking
+  // the card lands straight on that brand's content view.
+  const [tab, setTab] = useState(TABS.includes(location.state?.tab) ? location.state.tab : 'overview')
   const [client, setClient] = useState(null)
   const [content, setContent] = useState([])
   const [reports, setReports] = useState([])
@@ -24,7 +27,9 @@ export function ClientDetail() {
     if (!found) { setClient(null); setLoading(false); return }
 
     const [q, r] = await Promise.all([
-      supabase.from('mkt_content_queue').select('*').eq('client_id', found.id).order('created_at', { ascending: false }),
+      // Soonest-scheduled first, unscheduled posts last — same convention as
+      // the global approval queue (ContentQueue.jsx).
+      supabase.from('mkt_content_queue').select('*').eq('client_id', found.id).order('scheduled_for', { ascending: true, nullsFirst: false }),
       supabase.from('mkt_reports').select('*').eq('client_id', found.id).order('created_at', { ascending: false }),
     ])
     setClient(found); setContent(q.data || []); setReports(r.data || [])

@@ -99,7 +99,10 @@ export function Dashboard() {
           const post = postsByClient[c.id]
           const to = `/clients/${c.slug || c.id}`
           return (
-            <div key={c.id} className="card" style={{ borderLeft: `4px solid ${accent}`, padding: '16px 18px' }}>
+            <div key={c.id} className="card" role="button" tabIndex={0}
+              style={{ borderLeft: `4px solid ${accent}`, padding: '16px 18px', cursor: 'pointer' }}
+              onClick={() => navigate(to, { state: { tab: 'content' } })}
+              onKeyDown={(e) => { if (e.key === 'Enter') navigate(to, { state: { tab: 'content' } }) }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
                 <span className={'dot dot-' + (c.traffic_light || 'green')} />
                 <span style={{ fontWeight: 800, fontSize: 15, flex: 1 }}>{c.short_name || c.name}</span>
@@ -111,10 +114,9 @@ export function Dashboard() {
                   : 'No post scheduled today.'}
               </p>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => setGenClient(c)}>
+                <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={(e) => { e.stopPropagation(); setGenClient(c) }}>
                   Generate post
                 </button>
-                <button className="btn btn-ghost btn-sm" onClick={() => navigate(to)}>View</button>
               </div>
             </div>
           )

@@ -18,6 +18,7 @@ import { ensureWeeklyBlog } from '../_shared/blog.ts'
 import { fillClientGap } from '../_shared/fill.ts'
 
 const WEEKS_OF_BLOGS = 4
+const DEFAULT_WINDOW_DAYS = 28
 const PER_CLIENT_POST_BUDGET = 40 // fillClientGap self-limits to each client's own posting-frequency target anyway
 
 serve(async (req) => {
@@ -26,6 +27,15 @@ serve(async (req) => {
   const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
   if (bearer !== SERVICE_ROLE_KEY) return json({ error: 'Not authorised' }, 401)
+
+  // Optional override — defaults to the normal 4-week backfill window.
+  // Used for one-off shorter fills (e.g. a fresh 2-week restart) without
+  // changing the default behaviour of this endpoint.
+  let windowDays = DEFAULT_WINDOW_DAYS
+  try {
+    const body = await req.json()
+    if (body?.window_days) windowDays = Number(body.window_days) || DEFAULT_WINDOW_DAYS
+  } catch { /* no body sent — use default */ }
 
   const started = Date.now()
   const errors: string[] = []
@@ -54,8 +64,8 @@ serve(async (req) => {
         sunday = addDays(sunday, 7)
       }
 
-      // Full 4-week social post gap.
-      const { generated, errors: fillErrors } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET)
+      // Full social post gap across the requested window.
+      const { generated, errors: fillErrors } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET, windowDays)
       postsGenerated += generated
       errors.push(...fillErrors)
     }
