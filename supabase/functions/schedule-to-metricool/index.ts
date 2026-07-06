@@ -23,6 +23,14 @@ const PLATFORM_MAP: Record<string, string> = {
   twitter:   'twitter',
 }
 
+// Best-effort — persists why a post failed so the dashboard's "Failed to
+// schedule" view can show a reason. Never throws; a write failure here must
+// not mask the original error being returned to the caller.
+async function markFailed(admin: ReturnType<typeof createClient>, id: string, message: string) {
+  const { error } = await admin.from('mkt_content_queue').update({ error_message: message }).eq('id', id)
+  if (error) console.error('[schedule-to-metricool] Failed to persist error_message:', error.message)
+}
+
 function nextSlot(postDays: string[], postTime: string | null): Date {
   const now = new Date()
   const [hh, mm] = (postTime || '09:00').split(':').map(Number)
@@ -62,12 +70,16 @@ serve(async (req) => {
 
     const brandId = client?.metricool_brand_id
     if (!brandId) {
-      return json({ error: `No Metricool brand ID set for client "${client?.name}".` }, 422)
+      const msg = `No Metricool brand ID set for client "${client?.name}".`
+      await markFailed(admin, item.id, msg)
+      return json({ error: msg }, 422)
     }
 
     const networkKey = PLATFORM_MAP[item.platform]
     if (!networkKey) {
-      return json({ error: `Unsupported platform "${item.platform}" — expected: ${Object.keys(PLATFORM_MAP).join(', ')}` }, 422)
+      const msg = `Unsupported platform "${item.platform}" — expected: ${Object.keys(PLATFORM_MAP).join(', ')}`
+      await markFailed(admin, item.id, msg)
+      return json({ error: msg }, 422)
     }
 
     const chosen = scheduled_for || item.scheduled_for
@@ -78,11 +90,17 @@ serve(async (req) => {
 
     // Issue 6: reject if the resolved slot is in the past.
     if (slot <= new Date()) {
-      return json({ error: 'Scheduled time has passed — please reschedule before retrying.' }, 422)
+      const msg = 'Scheduled time has passed — please reschedule before retrying.'
+      await markFailed(admin, item.id, msg)
+      return json({ error: msg }, 422)
     }
 
     const apiKey = Deno.env.get('METRICOOL_API_KEY')
-    if (!apiKey) return json({ error: 'METRICOOL_API_KEY not configured in Supabase vault' }, 500)
+    if (!apiKey) {
+      const msg = 'METRICOOL_API_KEY not configured in Supabase vault'
+      await markFailed(admin, item.id, msg)
+      return json({ error: msg }, 500)
+    }
 
     const dateTimeStr = slot.toISOString().slice(0, 19)
 
@@ -125,11 +143,15 @@ serve(async (req) => {
     } catch (fetchErr) {
       const msg = String((fetchErr as Error)?.message ?? fetchErr)
       console.error('[schedule-to-metricool] Network error calling Metricool:', msg)
+      await markFailed(admin, item.id, 'Network error calling Metricool: ' + msg)
       return json({ error: 'Network error calling Metricool: ' + msg }, 502)
     }
 
     if (!mRes.ok) {
       console.error(`[schedule-to-metricool] Metricool ${mRes.status} rejected post for "${client?.name}" (${item.platform})`)
+      const detailStr = typeof mData === 'string' ? mData : JSON.stringify(mData)
+      const msg = `Metricool rejected the post (${mRes.status}): ${detailStr}`.slice(0, 500)
+      await markFailed(admin, item.id, msg)
       return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
     }
 
@@ -140,7 +162,7 @@ serve(async (req) => {
 
     // Issue 1: log any DB update failures rather than silently ignoring them.
     const { error: updateErr } = await admin.from('mkt_content_queue')
-      .update({ status: 'scheduled', scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
+      .update({ status: 'scheduled', scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId, error_message: null })
       .eq('id', item.id)
     if (updateErr) console.error('[schedule-to-metricool] Failed to update mkt_content_queue:', updateErr.message)
 

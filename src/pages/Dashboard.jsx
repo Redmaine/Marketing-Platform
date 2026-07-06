@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import supabase from '../lib/supabase'
 import { GeneratePostModal } from '../components/GeneratePostModal'
+import { PostsTodayModal } from '../components/PostsTodayModal'
 
 function greetingWord() {
   const h = new Date().getHours()
@@ -18,10 +19,12 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [clients, setClients] = useState([])
   const [postsByClient, setPostsByClient] = useState({})
+  const [todayPosts, setTodayPosts] = useState([])
   const [postsToday, setPostsToday] = useState(0)
   const [awaitingApproval, setAwaitingApproval] = useState(0)
   const [failedToSchedule, setFailedToSchedule] = useState(0)
   const [genClient, setGenClient] = useState(null)
+  const [showToday, setShowToday] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -33,9 +36,10 @@ export function Dashboard() {
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'draft'),
       supabase.from('mkt_content_queue')
-        .select('client_id, body, status, platform')
+        .select('id, client_id, body, status, platform, scheduled_for, metricool_post_id')
         .gte('scheduled_for', todayStart.toISOString())
-        .lte('scheduled_for', todayEnd.toISOString()),
+        .lte('scheduled_for', todayEnd.toISOString())
+        .order('scheduled_for', { ascending: true }),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'approved').is('metricool_post_id', null).lt('scheduled_for', nowIso),
     ])
@@ -47,6 +51,7 @@ export function Dashboard() {
 
     setClients(c.data || [])
     setPostsByClient(byClient)
+    setTodayPosts(today.data || [])
     setPostsToday((today.data || []).length)
     setAwaitingApproval(approval.count || 0)
     setFailedToSchedule(failed.count || 0)
@@ -83,7 +88,7 @@ export function Dashboard() {
       <p className="page-sub" style={{ marginBottom: 22 }}>{todayLabel()}</p>
 
       <div className="grid grid-3" style={{ marginBottom: 20 }}>
-        <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} />
+        <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} onClick={() => setShowToday(true)} />
         <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=draft')} />
         <StatPill label="Failed to schedule" value={failedToSchedule} accent={failedToSchedule > 0} onClick={() => navigate('/content?status=failed')} />
       </div>
@@ -118,6 +123,10 @@ export function Dashboard() {
 
       {genClient && (
         <GeneratePostModal client={genClient} onClose={() => setGenClient(null)} onDone={load} />
+      )}
+
+      {showToday && (
+        <PostsTodayModal posts={todayPosts} clients={clients} onClose={() => setShowToday(false)} />
       )}
     </div>
   )

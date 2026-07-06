@@ -162,6 +162,11 @@ export function ContentQueue() {
                 </div>
                 <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B', flexShrink: 0 }}>failed</span>
               </div>
+              {item.error_message && (
+                <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                  {item.error_message}
+                </p>
+              )}
               <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
               <button className="btn btn-primary btn-sm" onClick={() => retry(item)}>Retry</button>
             </div>
