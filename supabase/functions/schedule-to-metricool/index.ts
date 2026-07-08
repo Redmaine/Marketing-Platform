@@ -155,10 +155,20 @@ serve(async (req) => {
       return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
     }
 
-    const metricoolPostId = (mData as Record<string, unknown>)?.id
-      ?? (mData as Record<string, unknown>)?.postId
-      ?? existingPostId
-      ?? null
+    // Issue 9: the previous top-level-only `.id ?? .postId` lookup was always
+    // coming up empty (every one of the 27 historically "scheduled" rows has
+    // metricool_post_id = NULL despite mRes.ok being true) — Metricool's
+    // actual success body isn't shaped the way that assumed. Widened to also
+    // check a nested `.data` object and the first element if the body is an
+    // array, and logs the raw keys seen on success so a future shape change
+    // is diagnosable from the logs instead of silently swallowed again.
+    const bodyObj = (mData && typeof mData === 'object') ? (mData as Record<string, unknown>) : null
+    const nested = (bodyObj?.data && typeof bodyObj.data === 'object') ? (bodyObj.data as Record<string, unknown>) : null
+    const firstOfArray = Array.isArray(mData) && mData.length > 0 && typeof mData[0] === 'object' ? (mData[0] as Record<string, unknown>) : null
+    const metricoolPostId = (bodyObj?.id ?? bodyObj?.postId ?? nested?.id ?? nested?.postId ?? firstOfArray?.id ?? firstOfArray?.postId ?? existingPostId ?? null) as string | number | null
+    if (metricoolPostId == null) {
+      console.error('[schedule-to-metricool] Metricool returned 2xx but no post id could be extracted. Response keys:', bodyObj ? Object.keys(bodyObj) : typeof mData, 'Full body:', mRaw.slice(0, 1000))
+    }
 
     // Issue 1: log any DB update failures rather than silently ignoring them.
     const { error: updateErr } = await admin.from('mkt_content_queue')

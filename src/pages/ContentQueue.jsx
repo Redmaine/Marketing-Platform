@@ -54,8 +54,18 @@ export function ContentQueue() {
       .eq('id', item.id)
       .select('id')
     if (error || !data?.length) { setNotice('Something went wrong — try again.'); return }
-    supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: item.id } }).catch(() => {})
     setItems((p) => p.map((i) => i.id === item.id ? { ...i, status: 'approved' } : i))
+    // Was previously fire-and-forget (`.catch(() => {})`) — a Metricool
+    // failure (401, rejected post, etc.) was silently swallowed and the
+    // card just sat there with no indication anything was wrong. Now
+    // awaited, and a real failure surfaces a notice + reloads so the card
+    // shows its true state (schedule-to-metricool persists error_message
+    // on failure, which the card already renders).
+    const { data: schedData, error: schedErr } = await supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: item.id } })
+    if (schedErr || schedData?.error) {
+      setNotice(`Approved, but scheduling to Metricool failed for ${item.client?.short_name || item.client?.name}: ${schedData?.error || schedErr?.message || 'unknown error'}`)
+    }
+    load()
   }
   async function reject(item) {
     const { error } = await supabase.from('mkt_content_queue').update({ status: 'rejected' }).eq('id', item.id)
