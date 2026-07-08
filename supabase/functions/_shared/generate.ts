@@ -4,21 +4,61 @@ import { buildSystemPrompt, buildUserMessage } from './prompts.ts'
 
 export const MODEL = 'claude-haiku-4-5-20251001'
 
-export async function callAnthropic(system: string, userMessage: string, maxTokens = 600): Promise<string> {
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': Deno.env.get('ANTHROPIC_API_KEY')!,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: userMessage }] }),
-  })
-  if (!r.ok) {
+// Transient Anthropic failures — rate limits (429) and server/overload errors
+// (500/502/503/529) — are the real cause of the "some clients generate, others
+// fail silently" symptom: on a busy night one client's call hits a 429 while
+// the next succeeds, with no retry. These are safe to retry with backoff.
+// A 400 (e.g. "credit balance too low") or 401 is terminal and NOT retried —
+// retrying those just wastes time and hides the real, actionable error.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 529])
+const MAX_ATTEMPTS = 4
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms))
+}
+
+// Shared, retrying POST to the Anthropic messages API. Returns the parsed JSON
+// response. Retries transient failures (and network errors) up to MAX_ATTEMPTS
+// with exponential backoff (0.8s, 1.6s, 3.2s), honouring a Retry-After header
+// when present. Throws a descriptive error on terminal failures or once
+// retries are exhausted, so callers can surface a real reason.
+async function anthropicRequest(payload: Record<string, unknown>): Promise<Record<string, any>> {
+  let lastErr = ''
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let r: Response
+    try {
+      r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': Deno.env.get('ANTHROPIC_API_KEY')!,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      })
+    } catch (netErr) {
+      // Network-level failure — retryable.
+      lastErr = `network error: ${String((netErr as Error)?.message ?? netErr)}`
+      if (attempt < MAX_ATTEMPTS) { await sleep(800 * 2 ** (attempt - 1)); continue }
+      throw new Error(`Anthropic request failed after ${MAX_ATTEMPTS} attempts — ${lastErr}`)
+    }
+
+    if (r.ok) return await r.json()
+
     const errText = await r.text()
-    throw new Error(`Anthropic API error ${r.status}: ${errText.slice(0, 400)}`)
+    lastErr = `Anthropic API error ${r.status}: ${errText.slice(0, 400)}`
+    if (!RETRYABLE_STATUSES.has(r.status) || attempt === MAX_ATTEMPTS) throw new Error(lastErr)
+
+    // Backoff — respect Retry-After (seconds) if the API gave us one.
+    const retryAfter = Number(r.headers.get('retry-after'))
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 800 * 2 ** (attempt - 1)
+    await sleep(waitMs)
   }
-  const ai = await r.json()
+  throw new Error(lastErr || 'Anthropic request failed')
+}
+
+export async function callAnthropic(system: string, userMessage: string, maxTokens = 600): Promise<string> {
+  const ai = await anthropicRequest({ model: MODEL, max_tokens: maxTokens, system, messages: [{ role: 'user', content: userMessage }] })
   return ai?.content?.[0]?.text?.trim() ?? ''
 }
 
@@ -31,27 +71,14 @@ export async function callAnthropicStructured(
   schema: Record<string, any>,
   maxTokens = 2000,
 ): Promise<Record<string, any>> {
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': Deno.env.get('ANTHROPIC_API_KEY')!,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: 'user', content: userMessage }],
-      tools: [{ name: toolName, description: `Return ${toolName} as structured data.`, input_schema: schema }],
-      tool_choice: { type: 'tool', name: toolName },
-    }),
+  const ai = await anthropicRequest({
+    model: MODEL,
+    max_tokens: maxTokens,
+    system,
+    messages: [{ role: 'user', content: userMessage }],
+    tools: [{ name: toolName, description: `Return ${toolName} as structured data.`, input_schema: schema }],
+    tool_choice: { type: 'tool', name: toolName },
   })
-  if (!r.ok) {
-    const errText = await r.text()
-    throw new Error(`Anthropic API error ${r.status}: ${errText.slice(0, 400)}`)
-  }
-  const ai = await r.json()
   const toolUse = (ai?.content ?? []).find((b: Record<string, any>) => b.type === 'tool_use')
   if (!toolUse) throw new Error('Anthropic did not return a structured tool_use response')
   return toolUse.input
