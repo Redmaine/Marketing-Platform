@@ -164,18 +164,18 @@ input, select, textarea { font-family: inherit; }
   @keyframes slideup { from { transform: translateY(60%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 }
 
-/* ---- Phase 8: swipeable client cards on mobile ---- */
+/* ---- Client cards ---- */
 .cards-swipe {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; align-items: start;
 }
+/* Mobile: a single vertical column that scrolls with the page (Item 8d) —
+   replaces the old horizontal swipe/scroll-snap, which also swallowed taps as
+   the start of a swipe (Item 8b). Full-width cards tap cleanly. */
 @media (max-width: 767px) {
   .cards-swipe {
-    display: flex; overflow-x: auto; scroll-snap-type: x mandatory;
-    gap: 12px; padding-bottom: 8px; -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
+    display: flex; flex-direction: column; gap: 12px;
   }
-  .cards-swipe::-webkit-scrollbar { display: none; }
-  .cards-swipe > * { flex-shrink: 0; width: 82vw; scroll-snap-align: start; }
+  .cards-swipe > * { width: 100%; }
 }
 
 /* ---- Phase 8: error state ---- */

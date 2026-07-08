@@ -5,6 +5,15 @@ import { useAuth } from '../context/AuthContext'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 
+// ISO timestamp -> value for <input type="datetime-local"> in local time.
+function toLocalInput(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 export function ContentQueue() {
   const { user } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -23,6 +32,7 @@ export function ContentQueue() {
   const [publishedBrand, setPublishedBrand] = useState('all')
   const [graphics, setGraphics] = useState([])
   const [busyGraphicId, setBusyGraphicId] = useState(null)
+  const [scheduleAt, setScheduleAt] = useState({}) // id -> datetime-local override
   const [selected, setSelected] = useState(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 })
@@ -55,11 +65,17 @@ export function ContentQueue() {
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
 
   async function approve(item) {
+    // Item 8c: honour a per-post send-time override from the queue's time
+    // picker; fall back to the post's existing scheduled_for (client default).
+    const override = scheduleAt[item.id]
+    const iso = override ? new Date(override).toISOString() : (item.scheduled_for || null)
     // .select() lets us confirm the update actually matched a row — an RLS
     // policy mismatch or stale id returns error: null with zero rows changed,
     // which would otherwise look like success and leave the card stuck.
+    const patch = { status: 'approved', approved_at: new Date().toISOString(), approved_by: user?.email }
+    if (iso) patch.scheduled_for = iso
     const { data, error } = await supabase.from('mkt_content_queue')
-      .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: user?.email })
+      .update(patch)
       .eq('id', item.id)
       .select('id')
     if (error || !data?.length) { setNotice('Something went wrong — try again.'); return }
@@ -70,7 +86,7 @@ export function ContentQueue() {
     // awaited, and a real failure surfaces a notice + reloads so the card
     // shows its true state (schedule-to-metricool persists error_message
     // on failure, which the card already renders).
-    const { data: schedData, error: schedErr } = await supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: item.id } })
+    const { data: schedData, error: schedErr } = await supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: item.id, scheduled_for: iso } })
     if (schedErr || schedData?.error) {
       setNotice(`Approved, but scheduling to Metricool failed for ${item.client?.short_name || item.client?.name}: ${schedData?.error || schedErr?.message || 'unknown error'}`)
     }
@@ -281,6 +297,12 @@ export function ContentQueue() {
                     ) : (
                       <>
                         <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                          <label style={{ fontSize: 12, color: 'var(--mist)' }}>Send at</label>
+                          <input type="datetime-local" className="input" style={{ width: 'auto', fontSize: 13, padding: '6px 8px' }}
+                            value={scheduleAt[item.id] ?? toLocalInput(item.scheduled_for)}
+                            onChange={(e) => setScheduleAt((s) => ({ ...s, [item.id]: e.target.value }))} />
+                        </div>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                           <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => approve(item)}>
                             Approve &amp; schedule

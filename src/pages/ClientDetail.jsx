@@ -146,7 +146,11 @@ function ContentTab({ content, onRefresh }) {
 
   async function del(item) {
     if (!window.confirm('Delete this post?')) return
-    await supabase.from('mkt_content_queue').delete().eq('id', item.id)
+    // .select() confirms a row actually went — previously the result was
+    // ignored, so an RLS/FK failure looked like success and the post stayed.
+    const { data, error } = await supabase.from('mkt_content_queue').delete().eq('id', item.id).select('id')
+    if (error) { setNotice(`Couldn't delete that post: ${error.message}`); return }
+    if (!data?.length) { setNotice("Couldn't delete that post — you may not have permission."); return }
     onRefresh()
   }
 
