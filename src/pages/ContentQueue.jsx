@@ -234,8 +234,23 @@ export function ContentQueue() {
                           )}
                         </div>
                       </div>
-                      <span className="pill" style={{ background: '#FEF3C7', color: '#92400E', flexShrink: 0 }}>pending</span>
+                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                        {item.review_status === 'passed' && (
+                          <span className="pill" title={item.reviewed_at ? `Reviewed ${new Date(item.reviewed_at).toLocaleString('en-GB')}` : 'Reviewed'}
+                            style={{ background: '#DCFCE7', color: '#166534' }}>✓ Reviewed</span>
+                        )}
+                        {item.review_status === 'needs_attention' && (
+                          <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B' }}>Needs attention</span>
+                        )}
+                        <span className="pill" style={{ background: '#FEF3C7', color: '#92400E' }}>pending</span>
+                      </div>
                     </div>
+
+                    {item.review_status === 'needs_attention' && item.review_reason && (
+                      <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                        Review failed twice — {item.review_reason}. Edit and approve manually, or reject.
+                      </p>
+                    )}
 
                     {editing === item.id ? (
                       <>

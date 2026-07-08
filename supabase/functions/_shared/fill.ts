@@ -1,7 +1,8 @@
 // Shared "fill this client's content calendar" logic — used by both
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
-import { generatePost, nextPillar, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
+import { nextPillar, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
+import { generateReviewedPost } from './review.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -109,17 +110,31 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     const pillar = nextPillar({ ...client, last_pillar_used: localLastPillar })
 
     try {
-      const body = await generatePost(client, platform, pillar)
-      if (!body) { errors.push(`${client.name}: empty AI response`); day = addDays(day, 1); continue }
+      // Item 3: every post is reviewed before it reaches the queue. A pass is
+      // queued with a "passed" badge; two failures queue a "needs_attention"
+      // placeholder (still fills the slot so we don't loop it) with the reason
+      // shown to Adrian.
+      const review = await generateReviewedPost(admin, client, platform, pillar)
 
       const [hh, mm] = String(client.post_time ?? '09:00').split(':')
       const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
 
-      const { error } = await admin.from('mkt_content_queue').insert({
-        client_id: client.id, platform, content_type: 'post', pillar, body,
-        status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
-      })
+      const row = review.ok
+        ? {
+            client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
+            status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+            review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
+          }
+        : {
+            client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
+            status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+            review_status: 'needs_attention', reviewed_at: review.reviewedAt,
+            review_reason: review.reason, generation_attempts: review.attempts,
+          }
+
+      const { error } = await admin.from('mkt_content_queue').insert(row)
       if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
+      if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
 
       localLastPillar = pillar
       await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)

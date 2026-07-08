@@ -9,8 +9,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
-import { buildSystemPrompt, buildUserMessage } from '../_shared/prompts.ts'
-import { callAnthropic, isPlatformConnected } from '../_shared/generate.ts'
+import { isPlatformConnected } from '../_shared/generate.ts'
+import { generateReviewedPost } from '../_shared/review.ts'
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -39,24 +39,23 @@ serve(async (req) => {
       }, 422)
     }
 
-    const systemPrompt = buildSystemPrompt(client)
-    const userMessage = buildUserMessage(client, platform, pillar)
-
-    let body: string
-    try {
-      body = await callAnthropic(systemPrompt, userMessage, 600)
-    } catch (e) {
-      console.error(`[generate-content] Anthropic error for client "${client.name}" (${platform}/${pillar}):`, e)
-      return json({ error: String((e as Error)?.message ?? e) }, 502)
-    }
-    if (!body) {
-      console.error(`[generate-content] Empty response for client "${client.name}"`)
-      return json({ error: 'No copy came back — try again.' }, 502)
+    // Item 3: generate → automated review → (on fail) one regenerate → review.
+    // A pass is queued with the "passed" review badge; two failures queue a
+    // "needs_attention" draft with the reason, and the modal shows the warning
+    // so Adrian knows why (rather than silently queueing a rule-breaking post).
+    const review = await generateReviewedPost(admin, client, platform, pillar)
+    if (!review.body) {
+      console.error(`[generate-content] No copy produced for "${client.name}": ${review.reason}`)
+      return json({ error: review.reason || 'No copy came back — try again.' }, 502)
     }
 
     const { data: item, error: iErr } = await admin.from('mkt_content_queue').insert({
-      client_id, platform, content_type: 'post', pillar, body,
+      client_id, platform, content_type: 'post', pillar, body: review.body,
       status: 'draft', generated_by: 'ai',
+      review_status: review.ok ? 'passed' : 'needs_attention',
+      reviewed_at: review.reviewedAt,
+      review_reason: review.ok ? null : review.reason,
+      generation_attempts: review.attempts,
     }).select('*, client:mkt_clients(short_name,name)').single()
     if (iErr) return json({ error: iErr.message }, 500)
 
