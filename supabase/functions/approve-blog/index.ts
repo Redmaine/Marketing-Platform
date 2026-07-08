@@ -55,6 +55,40 @@ serve(async (req) => {
     const { error: approveErr } = await admin.from('mkt_blog_posts').update({ status: 'approved' }).eq('id', blog_id)
     if (approveErr) return json({ error: approveErr.message }, 500)
 
+    // Item 6 — on approval, publish the blog. No brand has an automated CMS
+    // publish path wired yet, so the fallback applies to all: email the ready
+    // post to the agency. Best-effort — a mail failure must not roll back the
+    // approval or block the social repurposing below.
+    let emailedTo: string | null = null
+    try {
+      const resendKey = Deno.env.get('RESEND_API_KEY')
+      if (resendKey) {
+        const dateStr = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+        const html = `<div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#1C1C2E">
+          <p style="font-size:13px;color:#6B7280">Approved blog post ready to publish — ${esc(client.name)}</p>
+          <h1 style="font-size:22px">${esc(blog.title)}</h1>
+          <p style="font-size:12px;color:#6B7280">Target keyword: ${esc(blog.target_keyword || '—')} · Slug: ${esc(blog.slug)} · Publish date: ${esc(blog.publish_date || '')}</p>
+          <p style="font-size:12px;color:#6B7280">Meta title: ${esc(blog.meta_title || '')}<br/>Meta description: ${esc(blog.meta_description || '')}</p>
+          <hr style="border:none;border-top:1px solid #eee;margin:16px 0"/>
+          ${blog.content_html || ''}
+        </div>`
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: 'Your Company AI <hello@yourcompanyai.co.uk>',
+            to: 'hello@yourcompanyai.co.uk',
+            subject: `Blog post ready — ${client.name} — ${dateStr}`,
+            html,
+          }),
+        })
+        if (res.ok) emailedTo = 'hello@yourcompanyai.co.uk'
+        else console.error('[approve-blog] blog email failed:', await res.text())
+      }
+    } catch (e) {
+      console.error('[approve-blog] blog email error:', String((e as Error)?.message ?? e))
+    }
+
     const connected: string[] = client.connected_platforms?.length ? client.connected_platforms : ['facebook']
     const blogUrl = client.website ? `${client.website.replace(/\/$/, '')}/blog/${blog.slug}` : `/blog/${blog.slug}`
 
@@ -96,9 +130,9 @@ serve(async (req) => {
     })
 
     const { error: insErr } = await admin.from('mkt_content_queue').insert(rows)
-    if (insErr) return json({ ok: true, blog_approved: true, repurposed: false, error: insErr.message })
+    if (insErr) return json({ ok: true, blog_approved: true, repurposed: false, emailed_to: emailedTo, error: insErr.message })
 
-    return json({ ok: true, blog_approved: true, repurposed: true, posts_created: rows.length })
+    return json({ ok: true, blog_approved: true, repurposed: true, posts_created: rows.length, emailed_to: emailedTo })
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500)
   }
@@ -106,4 +140,7 @@ serve(async (req) => {
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+function esc(s: string): string {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }

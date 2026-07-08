@@ -375,9 +375,13 @@ export function ContentQueue() {
             <div key={blog.id} className="card" style={{ marginBottom: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>{blog.client?.short_name || blog.client?.name}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                    <span className="pill" style={{ background: '#EDE9FE', color: '#5B21B6', fontSize: 10 }}>Blog — Sunday</span>
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>{blog.client?.short_name || blog.client?.name}</span>
+                  </div>
                   <div style={{ fontSize: 11, color: 'var(--mist)' }}>
                     {blog.publish_date && new Date(blog.publish_date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    {blog.target_keyword && <span> · keyword: <strong>{blog.target_keyword}</strong></span>}
                   </div>
                 </div>
                 <span className="pill" style={{
