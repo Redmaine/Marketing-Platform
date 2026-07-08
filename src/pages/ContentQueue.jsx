@@ -18,7 +18,9 @@ export function ContentQueue() {
   const [gen, setGen] = useState({ client_id: '', platform: 'facebook', pillar: '' })
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
-  const [tab, setTab] = useState('posts') // 'posts' | 'blogs' — full queue view only
+  const [tab, setTab] = useState('posts') // 'posts' | 'blogs' | 'published' — full queue view only
+  const [published, setPublished] = useState([])
+  const [publishedBrand, setPublishedBrand] = useState('all')
   const [selected, setSelected] = useState(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 })
@@ -26,16 +28,19 @@ export function ContentQueue() {
 
   async function load() {
     setLoading(true)
-    const [q, b, c] = await Promise.all([
+    const [q, b, c, p] = await Promise.all([
       // Soonest-scheduled first so the most urgent approvals surface at the
       // top; posts with no scheduled_for sort to the bottom (nullsFirst: false).
       supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('scheduled_for', { ascending: true, nullsFirst: false }),
       supabase.from('mkt_blog_posts').select('*, client:mkt_clients(short_name,name)').order('created_at', { ascending: false }),
       supabase.from('mkt_clients').select('id, name, short_name, content_pillars').eq('active', true).order('name'),
+      // Published log — only rows whose send time has actually passed.
+      supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
     ])
     setItems(q.data || [])
     setBlogs(b.data || [])
     setClients(c.data || [])
+    setPublished(p.data || [])
     if (c.data?.[0] && !gen.client_id) setGen((g) => ({ ...g, client_id: c.data[0].id }))
     setLoading(false)
   }
@@ -296,11 +301,14 @@ export function ContentQueue() {
       <div style={{ display: 'flex', gap: 8, marginTop: 16, marginBottom: 4 }}>
         <button className={'btn btn-sm ' + (tab === 'posts' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('posts')}>Posts</button>
         <button className={'btn btn-sm ' + (tab === 'blogs' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('blogs')}>Blogs</button>
+        <button className={'btn btn-sm ' + (tab === 'published' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('published')}>Published</button>
       </div>
 
       {notice && <p style={{ color: 'var(--ember)', fontSize: 13, marginTop: 8 }}>{notice}</p>}
 
-      {tab === 'posts' ? (
+      {tab === 'published' ? (
+        <PublishedTab published={published} brand={publishedBrand} setBrand={setPublishedBrand} />
+      ) : tab === 'posts' ? (
         <>
           <div className="card" style={{ marginTop: 12 }}>
             <h2 style={{ fontSize: 15, marginBottom: 10 }}>Generate a post</h2>
@@ -396,6 +404,53 @@ export function ContentQueue() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Item 4 — Published tab. Shows what has actually gone out (published_posts,
+// filtered server-side to date_sent <= now), with brand / date / platform /
+// first 100 chars of the copy, filterable by brand.
+function PublishedTab({ published, brand, setBrand }) {
+  const brands = Array.from(new Set(published.map((p) => p.brand))).sort()
+  const rows = brand === 'all' ? published : published.filter((p) => p.brand === brand)
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="field" style={{ maxWidth: 260, marginBottom: 12 }}>
+        <label>Filter by brand</label>
+        <select className="input" value={brand} onChange={(e) => setBrand(e.target.value)}>
+          <option value="all">All brands</option>
+          {brands.map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
+      </div>
+      {rows.length === 0 ? (
+        <p className="empty">Nothing published yet. Posts appear here once their scheduled send time has passed.</p>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--mist)', borderBottom: '1px solid var(--chalk)' }}>
+                <th style={{ padding: '10px 12px' }}>Brand</th>
+                <th style={{ padding: '10px 12px' }}>Date</th>
+                <th style={{ padding: '10px 12px' }}>Platform</th>
+                <th style={{ padding: '10px 12px' }}>Post</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id} style={{ borderBottom: '1px solid var(--chalk)' }}>
+                  <td style={{ padding: '10px 12px', fontWeight: 700, whiteSpace: 'nowrap' }}>{p.brand}</td>
+                  <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--mist)' }}>
+                    {new Date(p.date_sent).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </td>
+                  <td style={{ padding: '10px 12px', textTransform: 'capitalize', whiteSpace: 'nowrap' }}>{String(p.platform).replace('_', ' ')}</td>
+                  <td style={{ padding: '10px 12px' }}>{String(p.post_copy || '').slice(0, 100)}{String(p.post_copy || '').length > 100 ? '…' : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

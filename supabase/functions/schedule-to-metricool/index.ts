@@ -183,6 +183,21 @@ serve(async (req) => {
     }, { onConflict: 'content_queue_id' })
     if (upsertErr) console.error('[schedule-to-metricool] Failed to upsert mkt_scheduled_posts:', upsertErr.message)
 
+    // Item 4 — published posts log. Metricool has accepted the post (real post
+    // id above) with autoPublish on, which is the strongest "it will be sent"
+    // confirmation this integration gets (Metricool has no delivery webhook
+    // back to us). Log it with date_sent = the scheduled send time; the
+    // Published tab only surfaces rows whose date_sent has passed, and the
+    // review step's repeat-topic check reads this log. Upsert on
+    // content_queue_id so a reschedule/retry updates rather than duplicates.
+    const { error: pubErr } = await admin.from('published_posts').upsert({
+      client_id: item.client_id, brand: client?.name ?? 'Unknown',
+      date_sent: slot.toISOString(), platform: item.platform,
+      content_pillar: item.pillar ?? null, post_copy: item.body,
+      metricool_post_id: metricoolPostId, content_queue_id: item.id,
+    }, { onConflict: 'content_queue_id' })
+    if (pubErr) console.error('[schedule-to-metricool] Failed to upsert published_posts:', pubErr.message)
+
     return json({ scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
   } catch (e) {
     console.error('[schedule-to-metricool] Unhandled error:', String((e as Error)?.message ?? e))
