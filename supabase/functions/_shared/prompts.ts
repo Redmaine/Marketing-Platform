@@ -44,6 +44,19 @@ export function buildSystemPrompt(client: Record<string, any>): string {
   return `${base}\n\n${FACTUAL_ACCURACY_CONSTRAINT}`
 }
 
+// Brand-specific compliance lines the automated review (Item 3) enforces, so
+// the generator is told up front — otherwise every Hormonely/Steady post fails
+// review for a missing disclaimer and lands as "needs attention".
+const HORMONELY_DISCLAIMER = 'Always speak to your GP before making changes to your health routine.'
+const STEADY_DISCLAIMER = 'Steady provides lifestyle and wellbeing guidance only. Always follow the advice of your prescriber or GP.'
+
+export function brandComplianceLine(client: Record<string, any>): string {
+  const name = String(client.name || '').toLowerCase()
+  if (name.includes('hormonely')) return `\nThis post MUST end with exactly: "${HORMONELY_DISCLAIMER}"`
+  if (name.includes('steady')) return `\nThis post MUST include exactly: "${STEADY_DISCLAIMER}" — and if you cite any statistic, cite its source inline.`
+  return ''
+}
+
 // Builds the contextual user message for a social post: pillar + full client
 // profile (key_services, target_customer, industry) so no post is generic.
 export function buildUserMessage(client: Record<string, any>, platform: string, pillar: string): string {
@@ -54,6 +67,9 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
   if (client.key_services) lines.push(`Services: ${client.key_services}`)
   if (client.target_customer) lines.push(`Target reader: ${client.target_customer}`)
   if (client.tone_of_voice) lines.push(`Tone of voice: ${client.tone_of_voice}`)
+  lines.push('No emojis, no exclamation marks, no bullet points, no bold markdown.')
+  const compliance = brandComplianceLine(client)
+  if (compliance) lines.push(compliance)
   lines.push('\n150-250 words. Return only the post copy — no preamble, no label.')
   return lines.join('\n')
 }
