@@ -103,6 +103,55 @@ export function nextPillar(client: Record<string, any>): string {
   return pillars[(i + 1) % pillars.length]
 }
 
+// deno-lint-ignore no-explicit-any
+type AdminClient = any
+
+// Fix 4 — topic diversity. Returns the content pillars of this brand's last
+// `n` published posts, most recent first, for the diversity check.
+export async function recentPublishedPillars(admin: AdminClient, clientId: string, n = 3): Promise<string[]> {
+  const { data } = await admin
+    .from('published_posts')
+    .select('content_pillar, date_sent')
+    .eq('client_id', clientId)
+    .order('date_sent', { ascending: false })
+    .limit(n)
+  return (data ?? []).map((r: Record<string, any>) => r.content_pillar).filter(Boolean)
+}
+
+// Fix 4 — short "[pillar] opening…" summaries of this brand's most recent
+// published posts, so the generator can be shown what to steer away from
+// (buildUserMessage lists them). This attacks repeat-topic at the source
+// rather than leaving it all to the review step to catch.
+export async function recentPublishedSummaries(admin: AdminClient, clientId: string, n = 6): Promise<string[]> {
+  const { data } = await admin
+    .from('published_posts')
+    .select('content_pillar, post_copy, date_sent')
+    .eq('client_id', clientId)
+    .order('date_sent', { ascending: false })
+    .limit(n)
+  return (data ?? []).map((r: Record<string, any>) =>
+    `[${r.content_pillar || 'n/a'}] ${String(r.post_copy || '').replace(/\s+/g, ' ').trim().slice(0, 140)}`)
+}
+
+// Picks a pillar that differs from the brand's last three published posts (and
+// from `alsoAvoid`, used to prevent repeats within a single fill run). Falls
+// back to the plain rotation if every pillar is in the avoid set (i.e. the
+// brand has <= 3 pillars), so a post is always produced.
+export async function pickDiversePillar(
+  admin: AdminClient,
+  client: Record<string, any>,
+  alsoAvoid: string[] = [],
+): Promise<string> {
+  const pillars: string[] = client.content_pillars ?? []
+  if (pillars.length === 0) return 'General'
+  if (pillars.length === 1) return pillars[0]
+
+  const recent = await recentPublishedPillars(admin, client.id, 3)
+  const avoid = new Set([...recent, ...alsoAvoid])
+  const fresh = pillars.find((p) => !avoid.has(p))
+  return fresh ?? nextPillar(client)
+}
+
 // ── Weekday helpers (UK time) ─────────────────────────────────────────────
 // 0=Sun .. 6=Sat, computed in UK local time (not UTC) so a post scheduled
 // near midnight always lands on the day a UK reader would call "today".

@@ -1,7 +1,7 @@
 // Shared "fill this client's content calendar" logic — used by both
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
-import { nextPillar, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
+import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
 import { generateReviewedPost } from './review.ts'
 
 // deno-lint-ignore no-explicit-any
@@ -95,7 +95,12 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   const gap = Math.max(0, targetPostsForClient(client, windowDays) - (existingCount ?? 0))
   if (gap === 0) return { generated: 0, errors }
 
-  let localLastPillar: string | null = client.last_pillar_used ?? null
+  // Fix 4 — pillars used earlier in this same fill run, so consecutive posts
+  // don't repeat a pillar even before any of them are published. recentTopics
+  // seeds the generator with what to avoid (published history + posts produced
+  // earlier in this run).
+  const usedThisRun: string[] = []
+  const recentTopics: string[] = await recentPublishedSummaries(admin, client.id, 6)
   let generated = 0
   let day = addDays(now, 1)
   let daysWalked = 0
@@ -107,14 +112,17 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
 
     if (await hasQueueRowOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
 
-    const pillar = nextPillar({ ...client, last_pillar_used: localLastPillar })
+    // A pillar that differs from the brand's last three published posts and
+    // from anything already generated in this run.
+    const pillar = await pickDiversePillar(admin, client, usedThisRun)
 
     try {
       // Item 3: every post is reviewed before it reaches the queue. A pass is
       // queued with a "passed" badge; two failures queue a "needs_attention"
       // placeholder (still fills the slot so we don't loop it) with the reason
-      // shown to Adrian.
-      const review = await generateReviewedPost(admin, client, platform, pillar)
+      // shown to Adrian. The generator is shown recent topics (Fix 4) via the
+      // client object so it steers away from them — no review-step change.
+      const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics }, platform, pillar)
 
       const [hh, mm] = String(client.post_time ?? '09:00').split(':')
       const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
@@ -136,7 +144,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
       if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
       if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
 
-      localLastPillar = pillar
+      usedThisRun.push(pillar)
+      // Keep the just-generated post in view so the next post in this run
+      // avoids repeating it too (it isn't in published_posts yet).
+      if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
       await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
       generated++
     } catch (e) {

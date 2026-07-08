@@ -9,7 +9,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
-import { isPlatformConnected } from '../_shared/generate.ts'
+import { isPlatformConnected, recentPublishedSummaries } from '../_shared/generate.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
 
 serve(async (req) => {
@@ -43,7 +43,9 @@ serve(async (req) => {
     // A pass is queued with the "passed" review badge; two failures queue a
     // "needs_attention" draft with the reason, and the modal shows the warning
     // so Adrian knows why (rather than silently queueing a rule-breaking post).
-    const review = await generateReviewedPost(admin, client, platform, pillar)
+    // Fix 4: show the generator recent topics so it avoids repeats at source.
+    const recentTopics = await recentPublishedSummaries(admin, client_id, 6)
+    const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics }, platform, pillar)
     if (!review.body) {
       console.error(`[generate-content] No copy produced for "${client.name}": ${review.reason}`)
       return json({ error: review.reason || 'No copy came back — try again.' }, 502)
