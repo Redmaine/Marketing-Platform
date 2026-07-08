@@ -1,14 +1,30 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import supabase from '../lib/supabase'
 
+// Item 8e — email + password only. Magic-link sign-in was unreliable and has
+// been removed as a sign-in method. "Forgot password" sends a reset link;
+// arriving via that link (PASSWORD_RECOVERY) shows the set-new-password form so
+// an admin who only ever used magic links can set a password once and then use
+// it. Sessions persist via supabase.js (persistSession + autoRefreshToken), so
+// a signed-in admin stays signed in well beyond a working day.
 export function SignIn() {
-  // 'password' is the default/primary flow. 'magiclink' and 'reset' are fallbacks.
-  const [mode, setMode] = useState('password')
+  const [mode, setMode] = useState('password') // 'password' | 'reset' | 'recovery'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
   const [sent, setSent] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
+
+  // When the user opens a password-reset link, Supabase fires PASSWORD_RECOVERY.
+  // Switch to the set-new-password form.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') { setMode('recovery'); setError(''); setInfo('') }
+    })
+    return () => subscription.unsubscribe()
+  }, [])
 
   async function signInPassword(e) {
     e.preventDefault()
@@ -16,37 +32,33 @@ export function SignIn() {
     setBusy(true); setError('')
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
     setBusy(false)
-    if (error) { setError('Wrong email or password — try again, or use a magic link.'); return }
+    if (error) { setError('Wrong email or password. If you have never set a password, use "Forgot password".'); return }
     // AuthContext's onAuthStateChange picks up the new session automatically.
-  }
-
-  async function sendMagicLink(e) {
-    e.preventDefault()
-    if (!email.trim()) return
-    setBusy(true); setError('')
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: window.location.origin },
-    })
-    setBusy(false)
-    if (error) { setError("Couldn't send the link — try again."); return }
-    setSent(true)
   }
 
   async function sendResetLink(e) {
     e.preventDefault()
     if (!email.trim()) return
     setBusy(true); setError('')
-    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: window.location.origin,
-    })
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
     setBusy(false)
     if (error) { setError("Couldn't send the reset link — try again."); return }
     setSent(true)
   }
 
+  async function setNewPasswordSubmit(e) {
+    e.preventDefault()
+    if (newPassword.length < 8) { setError('Password must be at least 8 characters.'); return }
+    setBusy(true); setError('')
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    setBusy(false)
+    if (error) { setError(error.message); return }
+    // updateUser leaves them signed in — AuthContext takes over from here.
+    setInfo('Password set. Signing you in…')
+  }
+
   function switchMode(next) {
-    setMode(next); setSent(false); setError(''); setPassword('')
+    setMode(next); setSent(false); setError(''); setInfo(''); setPassword('')
   }
 
   return (
@@ -71,65 +83,46 @@ export function SignIn() {
             <button className="btn btn-primary btn-block" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
-              <button type="button" className="btn-link" style={linkStyle} onClick={() => switchMode('reset')}>
-                Forgot password?
-              </button>
-              <button type="button" className="btn-link" style={linkStyle} onClick={() => switchMode('magiclink')}>
-                Use a magic link instead
-              </button>
-            </div>
+            <button type="button" className="btn-link" style={{ ...linkStyle, marginTop: 12, display: 'block' }} onClick={() => switchMode('reset')}>
+              Forgot password?
+            </button>
           </form>
-        )}
-
-        {mode === 'magiclink' && (
-          sent ? (
-            <div>
-              <p style={{ fontWeight: 600 }}>Check your email.</p>
-              <p className="muted" style={{ marginTop: 6 }}>We sent a sign-in link to {email}. Tap it on this device.</p>
-            </div>
-          ) : (
-            <form onSubmit={sendMagicLink}>
-              <p className="muted" style={{ marginBottom: 14, fontSize: 13 }}>No password — we'll email you a sign-in link.</p>
-              <div className="field">
-                <label htmlFor="email-link">Email</label>
-                <input id="email-link" className="input" type="email" autoComplete="email" inputMode="email"
-                  value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@yourcompanyai.co.uk" />
-              </div>
-              {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{error}</p>}
-              <button className="btn btn-primary btn-block" disabled={busy}>
-                {busy ? 'Sending…' : 'Send me a link'}
-              </button>
-              <button type="button" className="btn-link" style={{ ...linkStyle, marginTop: 12, display: 'block' }} onClick={() => switchMode('password')}>
-                Use password instead
-              </button>
-            </form>
-          )
         )}
 
         {mode === 'reset' && (
           sent ? (
             <div>
               <p style={{ fontWeight: 600 }}>Check your email.</p>
-              <p className="muted" style={{ marginTop: 6 }}>We sent a password reset link to {email}.</p>
+              <p className="muted" style={{ marginTop: 6 }}>We sent a link to {email} to set a new password. Open it on this device.</p>
+              <button type="button" className="btn-link" style={{ ...linkStyle, marginTop: 12, display: 'block' }} onClick={() => switchMode('password')}>Back to sign in</button>
             </div>
           ) : (
             <form onSubmit={sendResetLink}>
-              <p className="muted" style={{ marginBottom: 14, fontSize: 13 }}>We'll email you a link to set a new password.</p>
+              <p className="muted" style={{ marginBottom: 14, fontSize: 13 }}>We'll email you a link to set your password.</p>
               <div className="field">
                 <label htmlFor="email-reset">Email</label>
                 <input id="email-reset" className="input" type="email" autoComplete="email" inputMode="email"
                   value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@yourcompanyai.co.uk" />
               </div>
               {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{error}</p>}
-              <button className="btn btn-primary btn-block" disabled={busy}>
-                {busy ? 'Sending…' : 'Send reset link'}
-              </button>
-              <button type="button" className="btn-link" style={{ ...linkStyle, marginTop: 12, display: 'block' }} onClick={() => switchMode('password')}>
-                Back to sign in
-              </button>
+              <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Sending…' : 'Send link'}</button>
+              <button type="button" className="btn-link" style={{ ...linkStyle, marginTop: 12, display: 'block' }} onClick={() => switchMode('password')}>Back to sign in</button>
             </form>
           )
+        )}
+
+        {mode === 'recovery' && (
+          <form onSubmit={setNewPasswordSubmit}>
+            <p className="muted" style={{ marginBottom: 14, fontSize: 13 }}>Set a new password for your account.</p>
+            <div className="field">
+              <label htmlFor="new-password">New password</label>
+              <input id="new-password" className="input" type="password" autoComplete="new-password"
+                value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="At least 8 characters" />
+            </div>
+            {error && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{error}</p>}
+            {info && <p style={{ color: 'var(--green, #059669)', fontSize: 13, marginBottom: 10 }}>{info}</p>}
+            <button className="btn btn-primary btn-block" disabled={busy}>{busy ? 'Saving…' : 'Set password'}</button>
+          </form>
         )}
       </div>
     </div>
