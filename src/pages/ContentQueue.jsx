@@ -21,6 +21,8 @@ export function ContentQueue() {
   const [tab, setTab] = useState('posts') // 'posts' | 'blogs' | 'published' — full queue view only
   const [published, setPublished] = useState([])
   const [publishedBrand, setPublishedBrand] = useState('all')
+  const [graphics, setGraphics] = useState([])
+  const [busyGraphicId, setBusyGraphicId] = useState(null)
   const [selected, setSelected] = useState(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 })
@@ -37,10 +39,12 @@ export function ContentQueue() {
       // Published log — only rows whose send time has actually passed.
       supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
     ])
+    const g = await supabase.from('mkt_graphic_copy').select('*, client:mkt_clients(short_name,name)').order('week_of', { ascending: false })
     setItems(q.data || [])
     setBlogs(b.data || [])
     setClients(c.data || [])
     setPublished(p.data || [])
+    setGraphics(g.data || [])
     if (c.data?.[0] && !gen.client_id) setGen((g) => ({ ...g, client_id: c.data[0].id }))
     setLoading(false)
   }
@@ -135,6 +139,14 @@ export function ContentQueue() {
   function copyHtml(blog) {
     navigator.clipboard.writeText(blog.content_html)
     setNotice('HTML copied to clipboard.')
+  }
+
+  async function setGraphicStatus(g, status) {
+    setBusyGraphicId(g.id); setNotice('')
+    const { error } = await supabase.from('mkt_graphic_copy').update({ status }).eq('id', g.id)
+    setBusyGraphicId(null)
+    if (error) { setNotice('Something went wrong — try again.'); return }
+    setGraphics((prev) => prev.map((x) => x.id === g.id ? { ...x, status } : x))
   }
 
   async function generate() {
@@ -301,12 +313,15 @@ export function ContentQueue() {
       <div style={{ display: 'flex', gap: 8, marginTop: 16, marginBottom: 4 }}>
         <button className={'btn btn-sm ' + (tab === 'posts' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('posts')}>Posts</button>
         <button className={'btn btn-sm ' + (tab === 'blogs' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('blogs')}>Blogs</button>
+        <button className={'btn btn-sm ' + (tab === 'graphics' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('graphics')}>Graphics</button>
         <button className={'btn btn-sm ' + (tab === 'published' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('published')}>Published</button>
       </div>
 
       {notice && <p style={{ color: 'var(--ember)', fontSize: 13, marginTop: 8 }}>{notice}</p>}
 
-      {tab === 'published' ? (
+      {tab === 'graphics' ? (
+        <GraphicsTab graphics={graphics} busyId={busyGraphicId} onApprove={(g) => setGraphicStatus(g, 'approved')} onReject={(g) => setGraphicStatus(g, 'rejected')} />
+      ) : tab === 'published' ? (
         <PublishedTab published={published} brand={publishedBrand} setBrand={setPublishedBrand} />
       ) : tab === 'posts' ? (
         <>
@@ -457,6 +472,53 @@ function PublishedTab({ published, brand, setBrand }) {
           </table>
         </div>
       )}
+    </div>
+  )
+}
+
+// Item 7 — Graphics tab. Weekly brand graphic copy: headline (highlight word
+// in the brand accent colour), subline, labelled "Graphic — week of [date]".
+// Copy only — approving marks it ready for the designer, it never auto-posts.
+function GraphicsTab({ graphics, busyId, onApprove, onReject }) {
+  function renderHeadline(g) {
+    const hw = (g.highlight_word || '').trim()
+    if (!hw) return g.headline
+    const parts = String(g.headline).split(new RegExp(`(\\b${hw.replace(/[^\w]/g, '')}\\b)`, 'i'))
+    return parts.map((p, i) =>
+      p.toLowerCase() === hw.toLowerCase()
+        ? <span key={i} style={{ color: 'var(--ember, #E8410A)' }}>{p}</span>
+        : <span key={i}>{p}</span>
+    )
+  }
+  if (graphics.length === 0) return <p className="empty" style={{ marginTop: 16 }}>No graphic copy yet — the Monday 07:00 cron writes one per brand per week.</p>
+  return (
+    <div style={{ marginTop: 12 }}>
+      {graphics.map((g) => (
+        <div key={g.id} className="card" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+            <div>
+              <span className="pill" style={{ background: '#E0F2FE', color: '#075985', fontSize: 10 }}>
+                Graphic — week of {new Date(g.week_of).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+              </span>
+              <div style={{ fontSize: 13, fontWeight: 800, marginTop: 4 }}>{g.client?.short_name || g.client?.name}</div>
+            </div>
+            <span className="pill" style={{
+              background: g.status === 'draft' ? '#FEF3C7' : g.status === 'approved' ? '#D1FAE5' : '#FEE2E2',
+              color: g.status === 'draft' ? '#92400E' : g.status === 'approved' ? '#065F46' : '#991B1B', flexShrink: 0,
+            }}>{g.status}</span>
+          </div>
+          <div style={{ fontSize: 24, fontWeight: 800, lineHeight: 1.15, marginBottom: 6 }}>{renderHeadline(g)}</div>
+          <div style={{ fontSize: 15, color: 'var(--mist)' }}>{g.subline}</div>
+          {g.status === 'draft' && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+              <button className="btn btn-primary btn-sm" disabled={busyId === g.id} onClick={() => onApprove(g)}>
+                {busyId === g.id ? '…' : 'Approve'}
+              </button>
+              <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} disabled={busyId === g.id} onClick={() => onReject(g)}>Reject</button>
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
