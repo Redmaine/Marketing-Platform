@@ -275,9 +275,23 @@ export function ContentQueue() {
                         {item.review_status === 'needs_attention' && (
                           <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B' }}>Needs attention</span>
                         )}
+                        {/* Task 2 — any pending post with no review timestamp never
+                            went through _shared/review.ts. Flag it distinctly (amber
+                            with a border) rather than letting it read as a normal
+                            reviewed-pending post. */}
+                        {!item.reviewed_at && (
+                          <span className="pill" title="Queued without an automated review — reviewed_at is null."
+                            style={{ background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}>⚠ Unreviewed</span>
+                        )}
                         <span className="pill" style={{ background: '#FEF3C7', color: '#92400E' }}>pending</span>
                       </div>
                     </div>
+
+                    {!item.reviewed_at && (
+                      <p style={{ fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                        This post has not been through the automated review — it was queued before the review step existed. Read it carefully before approving.
+                      </p>
+                    )}
 
                     {item.review_status === 'needs_attention' && item.review_reason && (
                       <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>

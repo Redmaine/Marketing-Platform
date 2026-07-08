@@ -20,6 +20,22 @@ export const REAL_CLIENTS = [
   'Steady',
 ]
 
+// Fix 2 — permitted references for a specific brand. Problem. Solution. is a
+// sub-brand of Your Company AI whose entire pitch IS the YCA platform (YCA is
+// named in its master prompt and key services), so a reference to YCA is the
+// parent product it promotes, not an invented client. The YCA brand itself may
+// obviously reference its own product too. Everything else stays a fabrication.
+export function permittedReferences(client: Record<string, any>): string[] {
+  const name = String(client.name || '').toLowerCase()
+  const list = [...REAL_CLIENTS]
+  const isPS = name.includes('problem') && name.includes('solution')
+  const isYCA = name.includes('your company') || name.includes('yca')
+  if (isPS || isYCA) {
+    list.push('Your Company AI (also written YCA) — the parent product this brand exists to promote')
+  }
+  return list
+}
+
 const HORMONELY_DISCLAIMER = 'Always speak to your GP before making changes to your health routine.'
 const STEADY_DISCLAIMER = 'Steady provides lifestyle and wellbeing guidance only. Always follow the advice of your prescriber or GP.'
 
@@ -79,11 +95,17 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
   if (missingDisclaimer) return { pass: false, reason: `missing disclaimer: ${missingDisclaimer}` }
 
   // Layer 2 — judgement. Pull recent published copy for the repeat-topic check.
+  // Fix 1 — only genuinely-past posts count as "already published". date_sent
+  // was backfilled with future scheduled dates for some brands, so without the
+  // upper bound a post scheduled for next week would block new content on the
+  // same topic today. A future-scheduled post must not gate present generation.
+  const now = new Date().toISOString()
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString()
   const { data: recent } = await admin.from('published_posts')
     .select('content_pillar, post_copy, date_sent')
     .eq('client_id', client.id)
     .gte('date_sent', thirtyDaysAgo)
+    .lte('date_sent', now)
     .order('date_sent', { ascending: false })
     .limit(30)
 
