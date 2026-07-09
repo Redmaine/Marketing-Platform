@@ -84,10 +84,34 @@ export async function callAnthropicStructured(
   return toolUse.input
 }
 
+// Fix 5 — the words "tradies" and "craft" must never appear in generated
+// content for any brand. The prompts already avoid and steer away from them,
+// but this is a deterministic final guarantee applied to every generated post,
+// whatever the brand. Whole-word, case-insensitive, and inflection-aware:
+//   tradies -> tradespeople
+//   craft / crafts / crafting / crafted -> skill / skills / creating / made
+// The \b boundaries mean "aircraft", "crafted into a URL", etc. are never
+// touched unless they are the standalone word. Case of the first letter is
+// preserved so sentence starts stay capitalised.
+function scrubBannedWords(text: string): string {
+  if (!text) return text
+  const preserveCase = (replacement: string, original: string) =>
+    original[0] === original[0].toUpperCase()
+      ? replacement[0].toUpperCase() + replacement.slice(1)
+      : replacement
+  return text
+    .replace(/\btradies\b/gi, (m) => preserveCase('tradespeople', m))
+    .replace(/\bcrafting\b/gi, (m) => preserveCase('creating', m))
+    .replace(/\bcrafted\b/gi, (m) => preserveCase('made', m))
+    .replace(/\bcrafts\b/gi, (m) => preserveCase('skills', m))
+    .replace(/\bcraft\b/gi, (m) => preserveCase('skill', m))
+}
+
 export async function generatePost(client: Record<string, any>, platform: string, pillar: string): Promise<string> {
   const system = buildSystemPrompt(client)
   const userMessage = buildUserMessage(client, platform, pillar)
-  return callAnthropic(system, userMessage, 600)
+  const body = await callAnthropic(system, userMessage, 600)
+  return scrubBannedWords(body)
 }
 
 // ── Pillar rotation ────────────────────────────────────────────────────────

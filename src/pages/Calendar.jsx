@@ -189,23 +189,14 @@ export function Calendar() {
         </div>
       )}
 
-      {/* Post detail modal */}
+      {/* Post action sheet — View / Edit / Delete */}
       {viewPost && (
-        <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) setViewPost(null) }}>
-          <div className="modal">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-              <div>
-                <div style={{ fontWeight: 800, fontSize: 16 }}>{nameOf[viewPost.client_id] || 'Post'}</div>
-                <div className="muted" style={{ fontSize: 12, textTransform: 'capitalize', marginTop: 3 }}>
-                  {viewPost.platform}
-                  {viewPost.scheduled_for && ` · ${new Date(viewPost.scheduled_for).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${new Date(viewPost.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`}
-                </div>
-              </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setViewPost(null)}>Close</button>
-            </div>
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6 }}>{viewPost.body}</div>
-          </div>
-        </div>
+        <PostActionModal
+          post={viewPost}
+          nameOf={nameOf}
+          onClose={() => setViewPost(null)}
+          onChanged={() => { setViewPost(null); setReloadKey((k) => k + 1) }}
+        />
       )}
 
       {/* Add post modal */}
@@ -217,6 +208,107 @@ export function Calendar() {
           onSaved={() => { setAddDate(null); setReloadKey((k) => k + 1) }}
         />
       )}
+    </div>
+  )
+}
+
+// Fix 3 — tapping a post on the calendar opens this on any device (including
+// iPhone). It offers View, Edit and Delete. Delete removes the post from
+// mkt_content_queue and cancels it in Metricool if it was already scheduled
+// there (via the delete-post edge function). Edit updates the body and, if the
+// post is already scheduled in Metricool, re-syncs it there.
+function PostActionModal({ post, nameOf, onClose, onChanged }) {
+  // A calendar chip can come from mkt_scheduled_posts (carries content_queue_id)
+  // or straight from mkt_content_queue (its own id IS the queue id).
+  const contentQueueId = post.content_queue_id || post.id
+  const isScheduled = post.status === 'scheduled' || Boolean(post.metricool_post_id)
+
+  const [mode, setMode] = useState('menu') // menu | view | edit
+  const [body, setBody] = useState(post.body || '')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const when = post.scheduled_for
+    ? `${new Date(post.scheduled_for).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${new Date(post.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
+    : ''
+
+  async function saveEdit() {
+    if (!body.trim()) return
+    setBusy(true); setErr('')
+    const { error } = await supabase.from('mkt_content_queue').update({ body: body.trim() }).eq('id', contentQueueId)
+    if (error) { setBusy(false); setErr('Could not save — try again.'); return }
+    // If it is already scheduled in Metricool, push the new text through so the
+    // scheduled post matches. schedule-to-metricool PATCHes when a Metricool
+    // post id already exists.
+    if (isScheduled) {
+      try { await supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id: contentQueueId } }) }
+      catch { /* the DB edit still saved; a Metricool sync failure is non-fatal here */ }
+    }
+    setBusy(false)
+    onChanged()
+  }
+
+  async function doDelete() {
+    if (!window.confirm('Delete this post? If it is already scheduled it will also be cancelled in Metricool. This cannot be undone.')) return
+    setBusy(true); setErr('')
+    const { data, error } = await supabase.functions.invoke('delete-post', { body: { content_queue_id: contentQueueId } })
+    setBusy(false)
+    if (error || data?.error) { setErr(data?.error || 'Could not delete — try again.'); return }
+    onChanged()
+  }
+
+  return (
+    <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="modal">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{nameOf[post.client_id] || 'Post'}</div>
+            <div className="muted" style={{ fontSize: 12, textTransform: 'capitalize', marginTop: 3 }}>
+              {post.platform}{when && ` · ${when}`}{isScheduled ? ' · scheduled' : ''}
+            </div>
+          </div>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+        </div>
+
+        {mode === 'menu' && (
+          <>
+            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, color: 'var(--mist)', maxHeight: 96, overflow: 'hidden', marginBottom: 14 }}>
+              {(post.body || '').slice(0, 160)}{(post.body || '').length > 160 ? '…' : ''}
+            </div>
+            {err && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</p>}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button className="btn btn-dark btn-block" onClick={() => setMode('view')}>View</button>
+              <button className="btn btn-primary btn-block" onClick={() => setMode('edit')}>Edit</button>
+              <button className="btn btn-block" style={{ background: 'var(--red, #DC2626)', color: '#fff' }} disabled={busy} onClick={doDelete}>
+                {busy ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </>
+        )}
+
+        {mode === 'view' && (
+          <>
+            <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>{post.body}</div>
+            <button className="btn btn-ghost btn-block" onClick={() => setMode('menu')}>Back</button>
+          </>
+        )}
+
+        {mode === 'edit' && (
+          <>
+            <div className="field">
+              <label>Post body</label>
+              <textarea className="input" rows={7} value={body} onChange={(e) => setBody(e.target.value)} />
+            </div>
+            {err && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 8 }}>{err}</p>}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-ghost" disabled={busy} onClick={() => setMode('menu')}>Back</button>
+              <button className="btn btn-primary btn-block" disabled={busy || !body.trim()} onClick={saveEdit}>
+                {busy ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

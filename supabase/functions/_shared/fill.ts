@@ -46,13 +46,21 @@ export async function clientPlatforms(admin: Admin, client: Record<string, any>)
   return candidates.filter((p: string) => isPlatformConnected(client, p))
 }
 
-async function hasQueueRowOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
+// Whether an AUTO-generated post already exists for this brand on this day.
+// Fix 2 / Fix 4: the cron generates a maximum of one post per brand per day
+// and must skip a brand for a day that already has an auto-generated post.
+// Manual posts (generated_by = 'human') are deliberately NOT counted here:
+// Adrian can add manual posts freely on any day for any brand, and they must
+// neither block the cron nor be blocked by it. Only 'ai' and 'cron' posts,
+// in a live (non-rejected) status, count as an existing auto post.
+async function hasAutoPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999)
   const { count } = await admin
     .from('mkt_content_queue')
     .select('id', { count: 'exact', head: true })
     .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
+    .in('generated_by', ['ai', 'cron'])
     .neq('status', 'rejected')
     .gte('scheduled_for', dayStart.toISOString()).lte('scheduled_for', dayEnd.toISOString())
   return (count ?? 0) > 0
@@ -110,7 +118,9 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     if (day > windowEnd) break
     if (!postingDays.has(dayOfWeekUK(day))) { day = addDays(day, 1); continue }
 
-    if (await hasQueueRowOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
+    // Skip this brand for this day if an auto-generated post already exists —
+    // one auto post per brand per day. Manual posts do not count (see above).
+    if (await hasAutoPostOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
 
     // A pillar that differs from the brand's last three published posts and
     // from anything already generated in this run.
