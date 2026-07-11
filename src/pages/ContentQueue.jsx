@@ -148,8 +148,13 @@ export function ContentQueue() {
     const { data, error } = await supabase.functions.invoke('approve-blog', { body: { blog_id: blog.id } })
     setBusyBlogId(null)
     if (error || !data?.ok) { setNotice(data?.error || "Couldn't approve that blog — try again."); return }
-    if (data.repurposed) setNotice(`Approved. ${data.posts_created} social posts generated from it.`)
-    else setNotice(`Blog approved, but repurposing failed: ${data.error || 'unknown error'}. Generate those posts manually.`)
+    const repurposeMsg = data.repurposed
+      ? `${data.posts_created} social posts generated from it.`
+      : `repurposing failed: ${data.error || 'unknown error'}. Generate those posts manually.`
+    const websiteMsg = data.website_post_id
+      ? 'A draft is ready in Blog to publish.'
+      : `couldn't create a Blog draft: ${data.website_post_error || 'unknown error'} — add it manually.`
+    setNotice(`Approved. ${repurposeMsg} ${websiteMsg}`)
     load()
   }
   function copyHtml(blog) {

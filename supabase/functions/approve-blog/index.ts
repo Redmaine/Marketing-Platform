@@ -9,7 +9,8 @@
 //   { body: { blog_id } })
 //
 // Deploy:  supabase functions deploy approve-blog
-// Secrets (vault): ANTHROPIC_API_KEY.
+// Secrets (vault): ANTHROPIC_API_KEY. (RESEND_API_KEY no longer used here —
+// see the mkt_website_posts insert below, which replaced the email step.)
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
@@ -55,39 +56,41 @@ serve(async (req) => {
     const { error: approveErr } = await admin.from('mkt_blog_posts').update({ status: 'approved' }).eq('id', blog_id)
     if (approveErr) return json({ error: approveErr.message }, 500)
 
-    // Item 6 — on approval, publish the blog. No brand has an automated CMS
-    // publish path wired yet, so the fallback applies to all: email the ready
-    // post to the agency. Best-effort — a mail failure must not roll back the
-    // approval or block the social repurposing below.
-    let emailedTo: string | null = null
+    // Item 6 — on approval, the blog needs to actually get published. This
+    // used to email the HTML to the agency inbox for someone to manually
+    // paste onto the site ("No brand has an automated CMS publish path wired
+    // yet"). Now there is one (see publish-blog-post): drop a matching draft
+    // into mkt_website_posts so it shows up in the ops platform's Blog
+    // section, one tap from being live. Best-effort — a failure here must
+    // not roll back the approval or block the social repurposing below.
+    let websitePostId: string | null = null
+    let websitePostError: string | null = null
     try {
-      const resendKey = Deno.env.get('RESEND_API_KEY')
-      if (resendKey) {
-        const dateStr = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
-        const html = `<div style="font-family:Arial,sans-serif;max-width:720px;margin:0 auto;color:#1C1C2E">
-          <p style="font-size:13px;color:#6B7280">Approved blog post ready to publish — ${esc(client.name)}</p>
-          <h1 style="font-size:22px">${esc(blog.title)}</h1>
-          <p style="font-size:12px;color:#6B7280">Target keyword: ${esc(blog.target_keyword || '—')} · Slug: ${esc(blog.slug)} · Publish date: ${esc(blog.publish_date || '')}</p>
-          <p style="font-size:12px;color:#6B7280">Meta title: ${esc(blog.meta_title || '')}<br/>Meta description: ${esc(blog.meta_description || '')}</p>
-          <hr style="border:none;border-top:1px solid #eee;margin:16px 0"/>
-          ${blog.content_html || ''}
-        </div>`
-        const res = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            from: 'Your Company AI <hello@yourcompanyai.co.uk>',
-            to: 'hello@yourcompanyai.co.uk',
-            subject: `Blog post ready — ${client.name} — ${dateStr}`,
-            html,
-          }),
-        })
-        if (res.ok) emailedTo = 'hello@yourcompanyai.co.uk'
-        else console.error('[approve-blog] blog email failed:', await res.text())
-      }
+      const baseSlug = String(blog.slug || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+      const { data: existingSlugs } = await admin
+        .from('mkt_website_posts')
+        .select('slug')
+        .eq('client_id', client.id)
+        .ilike('slug', `${baseSlug}%`)
+      const taken = new Set((existingSlugs || []).map((r: { slug: string }) => r.slug))
+      let slug = baseSlug
+      for (let n = 2; taken.has(slug); n++) slug = `${baseSlug}-${n}`
+
+      const { data: inserted, error: insErr } = await admin.from('mkt_website_posts').insert({
+        client_id: client.id,
+        title: blog.title,
+        slug,
+        body: blog.content_html || '',
+        excerpt: blog.meta_description || null,
+        seo_keyword: blog.target_keyword || null,
+        status: 'draft',
+      }).select('id').single()
+      if (insErr) websitePostError = insErr.message
+      else websitePostId = inserted?.id ?? null
     } catch (e) {
-      console.error('[approve-blog] blog email error:', String((e as Error)?.message ?? e))
+      websitePostError = String((e as Error)?.message ?? e)
     }
+    if (websitePostError) console.error('[approve-blog] mkt_website_posts insert failed:', websitePostError)
 
     const connected: string[] = client.connected_platforms?.length ? client.connected_platforms : ['facebook']
     const blogUrl = client.website ? `${client.website.replace(/\/$/, '')}/blog/${blog.slug}` : `/blog/${blog.slug}`
@@ -130,9 +133,9 @@ serve(async (req) => {
     })
 
     const { error: insErr } = await admin.from('mkt_content_queue').insert(rows)
-    if (insErr) return json({ ok: true, blog_approved: true, repurposed: false, emailed_to: emailedTo, error: insErr.message })
+    if (insErr) return json({ ok: true, blog_approved: true, repurposed: false, website_post_id: websitePostId, website_post_error: websitePostError, error: insErr.message })
 
-    return json({ ok: true, blog_approved: true, repurposed: true, posts_created: rows.length, emailed_to: emailedTo })
+    return json({ ok: true, blog_approved: true, repurposed: true, posts_created: rows.length, website_post_id: websitePostId, website_post_error: websitePostError })
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500)
   }
@@ -140,7 +143,4 @@ serve(async (req) => {
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-}
-function esc(s: string): string {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }

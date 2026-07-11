@@ -9,6 +9,7 @@ import { Clients } from './pages/Clients'
 import { ClientDetail } from './pages/ClientDetail'
 import { ContentQueue } from './pages/ContentQueue'
 import { Calendar } from './pages/Calendar'
+import { Blog } from './pages/Blog'
 import { Reports } from './pages/Reports'
 import { Settings } from './pages/Settings'
 
@@ -34,6 +35,7 @@ export default function App() {
         <Route path="/clients/:slug" element={<ClientDetail />} />
         <Route path="/content" element={<ContentQueue />} />
         <Route path="/calendar" element={<Calendar />} />
+        <Route path="/blog" element={<Blog />} />
         <Route path="/reports" element={<Reports />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
