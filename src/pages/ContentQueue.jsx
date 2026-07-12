@@ -41,6 +41,8 @@ export function ContentQueue() {
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 })
   const [busyBlogId, setBusyBlogId] = useState(null)
+  const [rejectingItem, setRejectingItem] = useState(null)
+  const [rejectReasonInput, setRejectReasonInput] = useState('')
 
   async function load() {
     setLoading(true)
@@ -68,6 +70,7 @@ export function ContentQueue() {
   const now = new Date()
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
   const rejected = items.filter((i) => i.status === 'rejected')
+  const needsAttention = pending.filter((i) => i.review_status === 'needs_attention')
   // Rejected posts must never clutter the main queue — they get their own
   // tab (below), not a spot in the default "Posts" list.
   const visibleItems = items.filter((i) => i.status !== 'rejected')
@@ -100,16 +103,38 @@ export function ContentQueue() {
     }
     load()
   }
-  async function reject(item) {
-    // Cancelling the prompt aborts the rejection — an empty string (Adrian
-    // hit OK with nothing typed) is a deliberate "no reason given" and still
-    // goes through, since the digest email needs *something* to show either way.
-    const reason = window.prompt('Reason for rejecting this post? (shows in the daily rejected-posts email)')
-    if (reason === null) return
-    const patch = { status: 'rejected', rejection_reason: reason, rejected_at: new Date().toISOString() }
+  function reject(item) {
+    setRejectingItem(item)
+    setRejectReasonInput('')
+  }
+  async function submitReject(reason) {
+    const item = rejectingItem
+    if (!item) return
+    // Reason is optional — blank (or skipped entirely) falls back to a
+    // default so there's always something for the daily rejected-posts email.
+    const finalReason = (reason || '').trim() || 'Rejected by Adrian'
+    const patch = { status: 'rejected', rejection_reason: finalReason, rejected_at: new Date().toISOString() }
     const { error } = await supabase.from('mkt_content_queue').update(patch).eq('id', item.id)
+    setRejectingItem(null)
     if (error) { setNotice('Something went wrong — try again.'); return }
     setItems((p) => p.map((i) => i.id === item.id ? { ...i, ...patch } : i))
+  }
+  async function rejectAllFailed() {
+    if (needsAttention.length === 0) return
+    if (!window.confirm(`Reject all ${needsAttention.length} post${needsAttention.length === 1 ? '' : 's'} marked "needs attention"? This can't be undone.`)) return
+    setBulkBusy(true); setBulkProgress({ done: 0, total: needsAttention.length }); setNotice('')
+    const rejectedAt = new Date().toISOString()
+    let failures = 0
+    for (const item of needsAttention) {
+      const { error } = await supabase.from('mkt_content_queue')
+        .update({ status: 'rejected', rejection_reason: 'Rejected by Adrian', rejected_at: rejectedAt })
+        .eq('id', item.id)
+      if (error) failures++
+      setBulkProgress((p) => ({ ...p, done: p.done + 1 }))
+    }
+    setBulkBusy(false)
+    if (failures > 0) setNotice(`${failures} post${failures === 1 ? '' : 's'} failed to reject — try again.`)
+    load()
   }
   async function saveEdit(item) {
     const { error } = await supabase.from('mkt_content_queue').update({ body: draft }).eq('id', item.id)
@@ -276,6 +301,11 @@ export function ContentQueue() {
               <button className="btn btn-primary btn-sm" disabled={selected.size === 0 || bulkBusy} onClick={bulkApprove}>
                 {bulkBusy ? `Approving ${bulkProgress.done}/${bulkProgress.total}…` : `Approve selected${selected.size ? ` (${selected.size})` : ''}`}
               </button>
+              {needsAttention.length > 0 && (
+                <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} disabled={bulkBusy} onClick={rejectAllFailed}>
+                  {bulkBusy ? `Rejecting ${bulkProgress.done}/${bulkProgress.total}…` : `Reject all failed (${needsAttention.length})`}
+                </button>
+              )}
             </div>
 
             <div style={{ marginTop: 12 }}>
@@ -368,6 +398,8 @@ export function ContentQueue() {
             </div>
           </>
         )}
+        <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
+          onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
       </div>
     )
   }
@@ -501,6 +533,34 @@ export function ContentQueue() {
           ))}
         </div>
       )}
+      <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
+        onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
+    </div>
+  )
+}
+
+// Reject flow — reason is optional (defaults to "Rejected by Adrian" if left
+// blank), so a fast bulk-reject session doesn't require typing anything.
+// "Skip & reject" is the explicit no-typing path; "Reject" uses whatever's
+// in the textarea, falling back to the same default if it's empty too.
+function RejectModal({ item, reason, setReason, onCancel, onSubmit }) {
+  if (!item) return null
+  return (
+    <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="modal">
+        <h2 style={{ fontSize: 18, marginBottom: 4 }}>Reject post</h2>
+        <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>{item.client?.short_name || item.client?.name}</p>
+        <div className="field">
+          <label>Reason (optional)</label>
+          <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
+            placeholder="Shows in the daily rejected-posts email — leave blank to skip." />
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-ghost" onClick={() => onSubmit('')}>Skip &amp; reject</button>
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => onSubmit(reason)}>Reject</button>
+        </div>
+      </div>
     </div>
   )
 }
