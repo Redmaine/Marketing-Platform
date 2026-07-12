@@ -4,10 +4,6 @@ import supabase from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
-// Brands publish-approved-blog can commit/insert live for. Everyone else
-// gets the download-HTML fallback button instead of Publish — kept in sync
-// with supabase/functions/publish-approved-blog/index.ts.
-const WIRED_BLOG_BRANDS = new Set(['hormonely', 'neuro-decoded', 'steady'])
 
 // ISO timestamp -> value for <input type="datetime-local"> in local time.
 function toLocalInput(iso) {
@@ -23,7 +19,6 @@ export function ContentQueue() {
   const [searchParams, setSearchParams] = useSearchParams()
   const statusFilter = searchParams.get('status') // 'draft' or 'failed' when coming from dashboard
   const [items, setItems] = useState([])
-  const [blogs, setBlogs] = useState([])
   const [clients, setClients] = useState([])
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null)
@@ -31,7 +26,7 @@ export function ContentQueue() {
   const [gen, setGen] = useState({ client_id: '', platform: 'facebook', pillar: '' })
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
-  const [tab, setTab] = useState('posts') // 'posts' | 'blogs' | 'published' — full queue view only
+  const [tab, setTab] = useState('posts') // 'posts' | 'graphics' | 'published' | 'rejected' — full queue view only
   const [published, setPublished] = useState([])
   const [publishedBrand, setPublishedBrand] = useState('all')
   const [graphics, setGraphics] = useState([])
@@ -40,24 +35,21 @@ export function ContentQueue() {
   const [selected, setSelected] = useState(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 })
-  const [busyBlogId, setBusyBlogId] = useState(null)
   const [rejectingItem, setRejectingItem] = useState(null)
   const [rejectReasonInput, setRejectReasonInput] = useState('')
 
   async function load() {
     setLoading(true)
-    const [q, b, c, p] = await Promise.all([
+    const [q, c, p] = await Promise.all([
       // Soonest-scheduled first so the most urgent approvals surface at the
       // top; posts with no scheduled_for sort to the bottom (nullsFirst: false).
       supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('scheduled_for', { ascending: true, nullsFirst: false }),
-      supabase.from('mkt_blog_posts').select('*, client:mkt_clients(short_name,name,slug)').order('created_at', { ascending: false }),
       supabase.from('mkt_clients').select('id, name, short_name, content_pillars').eq('active', true).order('name'),
       // Published log — only rows whose send time has actually passed.
       supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
     ])
     const g = await supabase.from('mkt_graphic_copy').select('*, client:mkt_clients(short_name,name)').order('week_of', { ascending: false })
     setItems(q.data || [])
-    setBlogs(b.data || [])
     setClients(c.data || [])
     setPublished(p.data || [])
     setGraphics(g.data || [])
@@ -179,38 +171,6 @@ export function ContentQueue() {
     setBulkBusy(false)
     setSelected(new Set())
     if (failures > 0) setNotice(`${failures} post${failures === 1 ? '' : 's'} failed to schedule to Metricool — see "Failed to schedule" on the dashboard.`)
-    load()
-  }
-
-  async function approveBlog(blog) {
-    setBusyBlogId(blog.id); setNotice('')
-    const { data, error } = await supabase.functions.invoke('approve-blog', { body: { blog_id: blog.id } })
-    setBusyBlogId(null)
-    if (error || !data?.ok) { setNotice(data?.error || "Couldn't approve that blog — try again."); return }
-    const repurposeMsg = data.repurposed
-      ? `${data.posts_created} social posts generated from it.`
-      : `repurposing failed: ${data.error || 'unknown error'}. Generate those posts manually.`
-    const websiteMsg = data.website_post_id
-      ? 'A draft is ready in Blog to publish.'
-      : `couldn't create a Blog draft: ${data.website_post_error || 'unknown error'} — add it manually.`
-    setNotice(`Approved. ${repurposeMsg} ${websiteMsg}`)
-    load()
-  }
-  async function publishBlog(blog) {
-    setBusyBlogId(blog.id); setNotice('')
-    const { data, error } = await supabase.functions.invoke('publish-approved-blog', { body: { blog_id: blog.id, client_id: blog.client_id } })
-    setBusyBlogId(null)
-    if (error || !data?.ok) { setNotice(data?.error || "Couldn't publish that blog — try again."); return }
-    if (data.method === 'manual') {
-      const blobUrl = URL.createObjectURL(new Blob([data.htmlContent], { type: 'text/html' }))
-      const a = document.createElement('a')
-      a.href = blobUrl; a.download = data.filename || 'post.html'
-      document.body.appendChild(a); a.click(); a.remove()
-      URL.revokeObjectURL(blobUrl)
-      setNotice(`Marked published — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing yet, so the HTML downloaded for you to upload manually.`)
-    } else {
-      setNotice(`Published — live at ${data.liveUrl}`)
-    }
     load()
   }
 
@@ -412,7 +372,6 @@ export function ContentQueue() {
 
       <div style={{ display: 'flex', gap: 8, marginTop: 16, marginBottom: 4 }}>
         <button className={'btn btn-sm ' + (tab === 'posts' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('posts')}>Posts</button>
-        <button className={'btn btn-sm ' + (tab === 'blogs' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('blogs')}>Blogs</button>
         <button className={'btn btn-sm ' + (tab === 'graphics' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('graphics')}>Graphics</button>
         <button className={'btn btn-sm ' + (tab === 'published' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('published')}>Published</button>
         <button className={'btn btn-sm ' + (tab === 'rejected' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('rejected')}>Rejected{rejected.length > 0 ? ` (${rejected.length})` : ''}</button>
@@ -426,7 +385,7 @@ export function ContentQueue() {
         <PublishedTab published={published} brand={publishedBrand} setBrand={setPublishedBrand} />
       ) : tab === 'rejected' ? (
         <RejectedTab rejected={rejected} />
-      ) : tab === 'posts' ? (
+      ) : (
         <>
           <div className="card" style={{ marginTop: 12 }}>
             <h2 style={{ fontSize: 15, marginBottom: 10 }}>Generate a post</h2>
@@ -487,51 +446,6 @@ export function ContentQueue() {
             ))}
           </div>
         </>
-      ) : (
-        <div style={{ marginTop: 12 }}>
-          {blogs.length === 0 ? <p className="empty">No blogs generated yet — the Sunday cron writes one per client per week.</p> : blogs.map((blog) => (
-            <div key={blog.id} className="card" style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                    <span className="pill" style={{ background: '#EDE9FE', color: '#5B21B6', fontSize: 10 }}>Blog — Sunday</span>
-                    <span style={{ fontSize: 13, fontWeight: 800 }}>{blog.client?.short_name || blog.client?.name}</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--mist)' }}>
-                    {blog.publish_date && new Date(blog.publish_date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
-                    {blog.target_keyword && <span> · keyword: <strong>{blog.target_keyword}</strong></span>}
-                  </div>
-                </div>
-                <span className="pill" style={{
-                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'approved' ? '#D1FAE5' : 'var(--chalk)',
-                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'approved' ? '#065F46' : 'var(--steel)',
-                  flexShrink: 0,
-                }}>{blog.status}</span>
-              </div>
-              <h3 style={{ fontSize: 17, marginBottom: 6 }}>{blog.title}</h3>
-              <p style={{ fontSize: 12, color: 'var(--mist)', marginBottom: 10 }}>{blog.meta_description}</p>
-              <div style={{
-                maxHeight: 220, overflow: 'auto', border: '1px solid var(--border, #e5e5e5)', borderRadius: 6,
-                padding: 12, fontSize: 13, lineHeight: 1.6, marginBottom: 12,
-              }} dangerouslySetInnerHTML={{ __html: blog.content_html }} />
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {blog.status === 'draft' && (
-                  <button className="btn btn-primary btn-sm" disabled={busyBlogId === blog.id} onClick={() => approveBlog(blog)}>
-                    {busyBlogId === blog.id ? 'Approving…' : 'Approve'}
-                  </button>
-                )}
-                {blog.status === 'approved' && (
-                  <button className="btn btn-primary btn-sm" disabled={busyBlogId === blog.id} onClick={() => publishBlog(blog)}>
-                    {busyBlogId === blog.id ? 'Publishing…' : WIRED_BLOG_BRANDS.has(blog.client?.slug) ? 'Publish' : 'Download HTML'}
-                  </button>
-                )}
-                {blog.status === 'published' && (
-                  <span className="pill" style={{ background: '#D1FAE5', color: '#065F46' }}>✓ Published</span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
       )}
       <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
         onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
@@ -597,7 +511,8 @@ function RejectedTab({ rejected }) {
 
 // Item 4 — Published tab. Shows what has actually gone out (published_posts,
 // filtered server-side to date_sent <= now), with brand / date / platform /
-// first 100 chars of the copy, filterable by brand.
+// first 100 chars of the copy, filterable by brand. Vertical card list —
+// same layout as Posts/Rejected — not the old horizontally-scrolling table.
 function PublishedTab({ published, brand, setBrand }) {
   const brands = Array.from(new Set(published.map((p) => p.brand))).sort()
   const rows = brand === 'all' ? published : published.filter((p) => p.brand === brand)
@@ -612,32 +527,21 @@ function PublishedTab({ published, brand, setBrand }) {
       </div>
       {rows.length === 0 ? (
         <p className="empty">Nothing published yet. Posts appear here once their scheduled send time has passed.</p>
-      ) : (
-        <div className="card" style={{ padding: 0, overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ textAlign: 'left', color: 'var(--mist)', borderBottom: '1px solid var(--chalk)' }}>
-                <th style={{ padding: '10px 12px' }}>Brand</th>
-                <th style={{ padding: '10px 12px' }}>Date</th>
-                <th style={{ padding: '10px 12px' }}>Platform</th>
-                <th style={{ padding: '10px 12px' }}>Post</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((p) => (
-                <tr key={p.id} style={{ borderBottom: '1px solid var(--chalk)' }}>
-                  <td style={{ padding: '10px 12px', fontWeight: 700, whiteSpace: 'nowrap' }}>{p.brand}</td>
-                  <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--mist)' }}>
-                    {new Date(p.date_sent).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                  </td>
-                  <td style={{ padding: '10px 12px', textTransform: 'capitalize', whiteSpace: 'nowrap' }}>{String(p.platform).replace('_', ' ')}</td>
-                  <td style={{ padding: '10px 12px' }}>{String(p.post_copy || '').slice(0, 100)}{String(p.post_copy || '').length > 100 ? '…' : ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      ) : rows.map((p) => (
+        <div key={p.id} className="card" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)', textTransform: 'capitalize' }}>
+              {p.brand} · {String(p.platform).replace('_', ' ')}
+            </div>
+            <span className="pill" style={{ background: 'var(--chalk)', color: 'var(--steel)' }}>
+              {new Date(p.date_sent).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </span>
+          </div>
+          <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', margin: 0 }}>
+            {String(p.post_copy || '').slice(0, 100)}{String(p.post_copy || '').length > 100 ? '…' : ''}
+          </p>
         </div>
-      )}
+      ))}
     </div>
   )
 }

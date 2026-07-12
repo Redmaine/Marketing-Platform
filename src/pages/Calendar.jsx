@@ -23,6 +23,22 @@ function getMonday(date) {
   return d
 }
 
+// The 7-column grid (month and, worse, the hardcoded-width week view) forces
+// horizontal scrolling on phones — labels like client names don't wrap, so
+// grid tracks get pushed past their 1fr share of the viewport. Below the
+// same 767px breakpoint the rest of the app uses, both views render as a
+// single-column list instead, so nothing is ever cut off on the right.
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 767px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const onChange = (e) => setIsMobile(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return isMobile
+}
+
 export function Calendar() {
   const [view, setView] = useState('month')
   const [ref, setRef] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() } })
@@ -93,6 +109,8 @@ export function Calendar() {
   const weekDays  = Array.from({ length: 7 }, (_, i) => { const d = new Date(weekStart); d.setDate(d.getDate() + i); return d })
   const weekLabel = `${weekDays[0].toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${weekDays[6].toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
   const cells = monthGrid(ref.y, ref.m)
+  const isMobile = useIsMobile()
+  const listDays = view === 'month' ? cells.filter(Boolean) : weekDays
 
   return (
     <div className="page">
@@ -117,6 +135,34 @@ export function Calendar() {
 
       {loading ? (
         <div className="skel" style={{ height: 320, borderRadius: 14 }} />
+      ) : isMobile ? (
+        // Single-column list — same data, same click behaviour as the grid
+        // views below, just stacked so nothing needs horizontal scrolling.
+        <div className="card" style={{ padding: 4 }}>
+          {listDays.map((date, i) => {
+            const list = byDay[date.toDateString()] || []
+            const isToday = date.toDateString() === new Date().toDateString()
+            return (
+              <div key={i}
+                style={{ padding: '10px 8px', borderBottom: i < listDays.length - 1 ? '1px solid var(--line)' : 'none', cursor: 'pointer' }}
+                onClick={() => setAddDate(date)}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: isToday ? 'var(--ember)' : 'var(--mist)', marginBottom: list.length ? 6 : 0 }}>
+                  {date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                </div>
+                {list.map((p, j) => (
+                  <div key={j}
+                    onClick={(e) => { e.stopPropagation(); setViewPost(p) }}
+                    style={{ marginTop: 4, fontSize: 12, color: 'var(--white)', background: colourOf[p.client_id] || 'var(--steel)', borderRadius: 5, padding: '5px 8px', lineHeight: 1.3, cursor: 'pointer' }}>
+                    <div style={{ fontWeight: 700 }}>{nameOf[p.client_id] || p.platform}</div>
+                    <div style={{ opacity: 0.85, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {p.body?.slice(0, 60)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
       ) : view === 'month' ? (
         <div className="card" style={{ padding: 10 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4 }}>
