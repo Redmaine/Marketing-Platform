@@ -63,6 +63,10 @@ export function ContentQueue() {
   const pending = items.filter((i) => i.status === 'draft')
   const now = new Date()
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
+  const rejected = items.filter((i) => i.status === 'rejected')
+  // Rejected posts must never clutter the main queue — they get their own
+  // tab (below), not a spot in the default "Posts" list.
+  const visibleItems = items.filter((i) => i.status !== 'rejected')
 
   async function approve(item) {
     // Item 8c: honour a per-post send-time override from the queue's time
@@ -93,9 +97,15 @@ export function ContentQueue() {
     load()
   }
   async function reject(item) {
-    const { error } = await supabase.from('mkt_content_queue').update({ status: 'rejected' }).eq('id', item.id)
+    // Cancelling the prompt aborts the rejection — an empty string (Adrian
+    // hit OK with nothing typed) is a deliberate "no reason given" and still
+    // goes through, since the digest email needs *something* to show either way.
+    const reason = window.prompt('Reason for rejecting this post? (shows in the daily rejected-posts email)')
+    if (reason === null) return
+    const patch = { status: 'rejected', rejection_reason: reason, rejected_at: new Date().toISOString() }
+    const { error } = await supabase.from('mkt_content_queue').update(patch).eq('id', item.id)
     if (error) { setNotice('Something went wrong — try again.'); return }
-    setItems((p) => p.map((i) => i.id === item.id ? { ...i, status: 'rejected' } : i))
+    setItems((p) => p.map((i) => i.id === item.id ? { ...i, ...patch } : i))
   }
   async function saveEdit(item) {
     const { error } = await supabase.from('mkt_content_queue').update({ body: draft }).eq('id', item.id)
@@ -356,6 +366,7 @@ export function ContentQueue() {
         <button className={'btn btn-sm ' + (tab === 'blogs' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('blogs')}>Blogs</button>
         <button className={'btn btn-sm ' + (tab === 'graphics' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('graphics')}>Graphics</button>
         <button className={'btn btn-sm ' + (tab === 'published' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('published')}>Published</button>
+        <button className={'btn btn-sm ' + (tab === 'rejected' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('rejected')}>Rejected{rejected.length > 0 ? ` (${rejected.length})` : ''}</button>
       </div>
 
       {notice && <p style={{ color: 'var(--ember)', fontSize: 13, marginTop: 8 }}>{notice}</p>}
@@ -364,6 +375,8 @@ export function ContentQueue() {
         <GraphicsTab graphics={graphics} busyId={busyGraphicId} onApprove={(g) => setGraphicStatus(g, 'approved')} onReject={(g) => setGraphicStatus(g, 'rejected')} />
       ) : tab === 'published' ? (
         <PublishedTab published={published} brand={publishedBrand} setBrand={setPublishedBrand} />
+      ) : tab === 'rejected' ? (
+        <RejectedTab rejected={rejected} />
       ) : tab === 'posts' ? (
         <>
           <div className="card" style={{ marginTop: 12 }}>
@@ -390,7 +403,7 @@ export function ContentQueue() {
           </div>
 
           <div style={{ marginTop: 18 }}>
-            {items.length === 0 ? <p className="empty">Nothing here yet. Generate your first post above.</p> : items.map((item) => (
+            {visibleItems.length === 0 ? <p className="empty">Nothing here yet. Generate your first post above.</p> : visibleItems.map((item) => (
               <div key={item.id} className="card" style={{ marginBottom: 12 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)', textTransform: 'capitalize' }}>
@@ -466,6 +479,36 @@ export function ContentQueue() {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+// Rejected posts get their own tab rather than sitting in the main queue —
+// the log still exists (and feeds the daily email digest), it just doesn't
+// clutter the default view. Shows the reason captured at reject time.
+function RejectedTab({ rejected }) {
+  if (rejected.length === 0) return <p className="empty" style={{ marginTop: 16 }}>Nothing rejected.</p>
+  return (
+    <div style={{ marginTop: 12 }}>
+      {rejected.map((item) => (
+        <div key={item.id} className="card" style={{ marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)', textTransform: 'capitalize' }}>
+              {item.client?.short_name || item.client?.name} · {item.platform}{item.pillar ? ` · ${item.pillar}` : ''}
+            </div>
+            <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B' }}>rejected</span>
+          </div>
+          {item.rejected_at && (
+            <div style={{ fontSize: 11, color: 'var(--mist)', marginBottom: 8 }}>
+              Rejected {new Date(item.rejected_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+            </div>
+          )}
+          <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', marginBottom: 10 }}>{item.body}</p>
+          <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', margin: 0 }}>
+            {item.rejection_reason || 'No reason given.'}
+          </p>
+        </div>
+      ))}
     </div>
   )
 }

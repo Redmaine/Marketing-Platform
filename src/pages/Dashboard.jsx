@@ -39,6 +39,7 @@ export function Dashboard() {
         .select('id, client_id, body, status, platform, scheduled_for, metricool_post_id')
         .gte('scheduled_for', todayStart.toISOString())
         .lte('scheduled_for', todayEnd.toISOString())
+        .neq('status', 'rejected')
         .order('scheduled_for', { ascending: true }),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'approved').is('metricool_post_id', null).lt('scheduled_for', nowIso),
