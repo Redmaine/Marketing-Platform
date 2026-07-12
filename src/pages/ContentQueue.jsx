@@ -4,6 +4,10 @@ import supabase from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
+// Brands publish-approved-blog can commit/insert live for. Everyone else
+// gets the download-HTML fallback button instead of Publish — kept in sync
+// with supabase/functions/publish-approved-blog/index.ts.
+const WIRED_BLOG_BRANDS = new Set(['hormonely', 'neuro-decoded', 'steady'])
 
 // ISO timestamp -> value for <input type="datetime-local"> in local time.
 function toLocalInput(iso) {
@@ -44,7 +48,7 @@ export function ContentQueue() {
       // Soonest-scheduled first so the most urgent approvals surface at the
       // top; posts with no scheduled_for sort to the bottom (nullsFirst: false).
       supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('scheduled_for', { ascending: true, nullsFirst: false }),
-      supabase.from('mkt_blog_posts').select('*, client:mkt_clients(short_name,name)').order('created_at', { ascending: false }),
+      supabase.from('mkt_blog_posts').select('*, client:mkt_clients(short_name,name,slug)').order('created_at', { ascending: false }),
       supabase.from('mkt_clients').select('id, name, short_name, content_pillars').eq('active', true).order('name'),
       // Published log — only rows whose send time has actually passed.
       supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
@@ -167,9 +171,22 @@ export function ContentQueue() {
     setNotice(`Approved. ${repurposeMsg} ${websiteMsg}`)
     load()
   }
-  function copyHtml(blog) {
-    navigator.clipboard.writeText(blog.content_html)
-    setNotice('HTML copied to clipboard.')
+  async function publishBlog(blog) {
+    setBusyBlogId(blog.id); setNotice('')
+    const { data, error } = await supabase.functions.invoke('publish-approved-blog', { body: { blog_id: blog.id, client_id: blog.client_id } })
+    setBusyBlogId(null)
+    if (error || !data?.ok) { setNotice(data?.error || "Couldn't publish that blog — try again."); return }
+    if (data.method === 'manual') {
+      const blobUrl = URL.createObjectURL(new Blob([data.htmlContent], { type: 'text/html' }))
+      const a = document.createElement('a')
+      a.href = blobUrl; a.download = data.filename || 'post.html'
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(blobUrl)
+      setNotice(`Marked published — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing yet, so the HTML downloaded for you to upload manually.`)
+    } else {
+      setNotice(`Published — live at ${data.liveUrl}`)
+    }
+    load()
   }
 
   async function setGraphicStatus(g, status) {
@@ -471,8 +488,13 @@ export function ContentQueue() {
                     {busyBlogId === blog.id ? 'Approving…' : 'Approve'}
                   </button>
                 )}
-                {blog.status !== 'draft' && (
-                  <button className="btn btn-ghost btn-sm" onClick={() => copyHtml(blog)}>Copy HTML</button>
+                {blog.status === 'approved' && (
+                  <button className="btn btn-primary btn-sm" disabled={busyBlogId === blog.id} onClick={() => publishBlog(blog)}>
+                    {busyBlogId === blog.id ? 'Publishing…' : WIRED_BLOG_BRANDS.has(blog.client?.slug) ? 'Publish' : 'Download HTML'}
+                  </button>
+                )}
+                {blog.status === 'published' && (
+                  <span className="pill" style={{ background: '#D1FAE5', color: '#065F46' }}>✓ Published</span>
                 )}
               </div>
             </div>
