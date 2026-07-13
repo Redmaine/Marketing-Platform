@@ -104,12 +104,20 @@ serve(async (req) => {
 
     const dateTimeStr = slot.toISOString().slice(0, 19)
 
-    const requestBody = {
+    // AI-generated cover image (fill.ts / _shared/image.ts) — attached when
+    // present. NOTE: Metricool's public v2 scheduler docs weren't reachable
+    // from this environment to confirm the exact media field name/shape, and
+    // nothing in this codebase previously attached media to a Metricool post
+    // to copy from — `media` as an array of URL strings is Metricool's
+    // documented field for this as of last verification. If posts stop
+    // getting their image, check this first against the current API docs.
+    const requestBody: Record<string, unknown> = {
       text: item.body,
       publicationDate: { dateTime: dateTimeStr, timezone: 'Europe/London' },
       providers: [{ network: networkKey }],
       autoPublish: true,
     }
+    if (item.image_url) requestBody.media = [item.image_url]
 
     // Issue 8: if metricool_post_id already exists, PATCH the existing post
     // rather than creating a duplicate.

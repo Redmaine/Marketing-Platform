@@ -3,6 +3,7 @@
 // backfill-content (one-off manual fill of the full 4-week window).
 import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
 import { generateReviewedPost } from './review.ts'
+import { generatePostImage } from './image.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -150,9 +151,14 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
             review_reason: review.reason, generation_attempts: review.attempts,
           }
 
-      const { error } = await admin.from('mkt_content_queue').insert(row)
+      const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
       if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
       if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
+
+      // Image generation is best-effort and never blocks or fails the post —
+      // generatePostImage swallows its own errors and leaves image_url null
+      // (the column's default) on any failure. See _shared/image.ts.
+      if (review.body) await generatePostImage(admin, client, inserted.id, review.body)
 
       usedThisRun.push(pillar)
       // Keep the just-generated post in view so the next post in this run

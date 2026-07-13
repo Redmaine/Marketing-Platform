@@ -332,6 +332,7 @@ export function ContentQueue() {
                       </>
                     ) : (
                       <>
+                        <PostImage item={item} />
                         <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                           <label style={{ fontSize: 12, color: 'var(--mist)' }}>Send at</label>
@@ -423,7 +424,10 @@ export function ContentQueue() {
                 {editing === item.id ? (
                   <textarea className="input" rows={4} value={draft} onChange={(e) => setDraft(e.target.value)} />
                 ) : (
-                  <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{item.body}</p>
+                  <>
+                    <PostImage item={item} />
+                    <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{item.body}</p>
+                  </>
                 )}
 
                 {item.status === 'pending' && (
@@ -449,6 +453,27 @@ export function ContentQueue() {
       )}
       <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
         onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
+    </div>
+  )
+}
+
+// The image fill.ts generates alongside each post (see _shared/image.ts),
+// shown next to the copy in every place the queue renders a post. A null
+// image_url isn't an error state to hide — it's flagged so Adrian knows to
+// add one manually rather than approving a post that will go out bare.
+function PostImage({ item }) {
+  if (item.content_type && item.content_type !== 'post') return null
+  if (item.image_url) {
+    return (
+      <img src={item.image_url} alt="" style={{ width: '100%', maxWidth: 320, borderRadius: 8, display: 'block', marginBottom: 12 }} />
+    )
+  }
+  return (
+    <div style={{
+      fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px dashed #F59E0B',
+      borderRadius: 8, padding: '10px 12px', marginBottom: 12, maxWidth: 320,
+    }}>
+      Image missing — add manually
     </div>
   )
 }
