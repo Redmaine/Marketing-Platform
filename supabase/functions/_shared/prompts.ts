@@ -114,6 +114,24 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
     recent.forEach((t, i) => lines.push(`${i + 1}. ${t}`))
   }
 
+  // Combat Ready HQ only: midnight-cron attaches a fresh scrape of CRHQ's own
+  // last-48h YouTube uploads and news-page articles (see scrape-crhq-content /
+  // crhq_scrape_cache) as client._crhq_scrape before generation. Every other
+  // brand, and every non-cron generation path (generate-content, backfill),
+  // never sets this field, so this block is a no-op for them. A missing or
+  // empty scrape here is expected, not an error — the prompt just falls back
+  // to the pillars above with nothing extra appended.
+  const crhqScrape = client._crhq_scrape as { videos?: Array<Record<string, any>>; articles?: Array<Record<string, any>> } | undefined
+  const crhqVideos = crhqScrape?.videos ?? []
+  const crhqArticles = crhqScrape?.articles ?? []
+  if (crhqVideos.length || crhqArticles.length) {
+    const items = [
+      ...crhqVideos.map((v) => `- [Video] "${v.title}" (${v.view_count ?? 0} views, published ${v.published_at ?? 'recently'}) — ${v.url}`),
+      ...crhqArticles.map((a) => `- [Article] "${a.title}" — ${a.url}`),
+    ]
+    lines.push(`\nHere is Combat Ready HQ's latest content from the last 48 hours:\n${items.join('\n')}\nReference this actual content in the generated post.`)
+  }
+
   lines.push(FORMAT_RULES)
   lines.push('\n150-250 words. Return only the post copy — no preamble, no label.')
 

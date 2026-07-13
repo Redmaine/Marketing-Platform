@@ -25,6 +25,44 @@ import { fillClientGap } from '../_shared/fill.ts'
 // client's own posting-frequency target is met.
 const PER_CLIENT_POST_BUDGET = 20
 
+// CRHQ-specific: the 22:00 scrape-crhq-content cron (2 hours before this one)
+// writes a row to crhq_scrape_cache. A scrape counts as "fresh enough to use"
+// only within this window of its own run — an older row is stale and ignored,
+// not used, so a broken/missed 22:00 run never silently reuses yesterday's
+// content as if it were tonight's.
+const SCRAPE_FRESHNESS_HOURS = 3
+
+// Looks up the most recent crhq_scrape_cache row (if any, and if fresh) and
+// attaches it to a COPY of the client object as _crhq_scrape, which
+// buildUserMessage (prompts.ts) folds into the generation prompt. Every other
+// client is returned untouched. Any lookup failure, or no fresh row, or an
+// empty scrape, just returns the client as-is — fillClientGap then generates
+// exactly as it always has, off the standard master-prompt pillars, with no
+// error surfaced. This is the only integration point; fill.ts and review.ts
+// are unchanged.
+async function attachCrhqScrapeIfDue(admin: ReturnType<typeof createClient>, client: Record<string, any>): Promise<Record<string, any>> {
+  if (!String(client.name || '').toLowerCase().includes('combat ready')) return client
+  try {
+    const cutoff = new Date(Date.now() - SCRAPE_FRESHNESS_HOURS * 3600_000).toISOString()
+    const { data } = await admin
+      .from('crhq_scrape_cache')
+      .select('videos, articles, scraped_at')
+      .gte('scraped_at', cutoff)
+      .order('scraped_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!data) return client
+    const videos = Array.isArray(data.videos) ? data.videos : []
+    const articles = Array.isArray(data.articles) ? data.articles : []
+    if (videos.length === 0 && articles.length === 0) return client
+    console.log(`[midnight-cron] ${client.name}: using scrape from ${data.scraped_at} (${videos.length} video(s), ${articles.length} article(s))`)
+    return { ...client, _crhq_scrape: { videos, articles } }
+  } catch (e) {
+    console.error(`[midnight-cron] ${client.name}: crhq_scrape_cache lookup failed — ${String((e as Error)?.message ?? e)}`)
+    return client
+  }
+}
+
 serve(async () => {
   const started = Date.now()
   const errors: string[] = []
@@ -58,7 +96,8 @@ serve(async () => {
       // comment above. A per-client try/catch means one client throwing
       // (e.g. Anthropic API error) can't abort the run for everyone after it.
       try {
-        const { generated, errors: fillErrors } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET)
+        const clientForGeneration = await attachCrhqScrapeIfDue(admin, client)
+        const { generated, errors: fillErrors } = await fillClientGap(admin, clientForGeneration, PER_CLIENT_POST_BUDGET)
         postsGenerated += generated
         if (fillErrors.length) {
           errors.push(...fillErrors)
