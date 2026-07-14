@@ -182,7 +182,18 @@ serve(async (req) => {
 
     return json({ ok: true, blog_approved: true, repurposed: true, posts_created: rows.length, website_post_id: websitePostId, website_post_error: websitePostError })
   } catch (e) {
-    return json({ error: String((e as Error)?.message ?? e) }, 500)
+    const message = String((e as Error)?.message ?? e)
+    // Logged only for this true unhandled-failure path — the deliberate
+    // best-effort branches above (mkt_website_posts insert, repurposing)
+    // already return ok:true by design and aren't function-level failures.
+    try {
+      const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+      const { error: efeError } = await admin.from('edge_function_errors').insert({ function_name: 'approve-blog', error_message: message })
+      if (efeError) console.error(`[approve-blog] failed to write edge_function_errors: ${efeError.message}`)
+    } catch (logErr) {
+      console.error(`[approve-blog] failed to write edge_function_errors: ${String((logErr as Error)?.message ?? logErr)}`)
+    }
+    return json({ error: message }, 500)
   }
 })
 

@@ -125,6 +125,17 @@ serve(async () => {
   })
   if (logError) console.error(`[midnight-cron] failed to write mkt_cron_log: ${logError.message}`)
 
+  // One summary row per failed run in the cross-function error log (see
+  // generate-daily-status's edge_function_errors_last_24h) — same one-row-
+  // per-run granularity as mkt_cron_log above, not one row per client error.
+  if (errors.length) {
+    const { error: efeError } = await admin.from('edge_function_errors').insert({
+      function_name: 'midnight-cron',
+      error_message: errors.join(' | ').slice(0, 4000),
+    })
+    if (efeError) console.error(`[midnight-cron] failed to write edge_function_errors: ${efeError.message}`)
+  }
+
   console.log(`[midnight-cron] run complete — ${clientsProcessed} client(s), ${postsGenerated} post(s), ${blogsGenerated} blog(s), ${errors.length} error(s)`)
 
   return new Response(JSON.stringify({ ok: true, clientsProcessed, postsGenerated, blogsGenerated, errors }), {

@@ -9,9 +9,20 @@
   NODE_VERSION = "20"
 
 [[redirects]]
+  from = "/api/daily-status"
+  to = "https://fvyvtdwsomxfkpxwygpk.supabase.co/storage/v1/object/public/ops-exports/daily-status.json"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[headers]]
+  for = "/api/daily-status"
+  [headers.values]
+    Content-Type = "application/json"
 
 [[headers]]
   for = "/*"

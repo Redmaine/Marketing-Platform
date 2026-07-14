@@ -42,6 +42,15 @@ async function markFailed(admin: ReturnType<typeof createClient>, id: string, me
   if (error) console.error('[schedule-to-metricool] Failed to persist error_message:', error.message)
 }
 
+// Cross-function error log (see generate-daily-status's
+// edge_function_errors_last_24h) — called alongside every markFailed above,
+// plus the top-level catch, so every failure branch of this function is
+// visible there, not just the ones that also touch mkt_content_queue.
+async function logEdgeError(admin: ReturnType<typeof createClient>, message: string) {
+  const { error } = await admin.from('edge_function_errors').insert({ function_name: 'schedule-to-metricool', error_message: message })
+  if (error) console.error('[schedule-to-metricool] Failed to write edge_function_errors:', error.message)
+}
+
 function nextSlot(postDays: string[], postTime: string | null): Date {
   const now = new Date()
   const [hh, mm] = (postTime || '09:00').split(':').map(Number)
@@ -83,6 +92,7 @@ serve(async (req) => {
     if (!brandId) {
       const msg = `No Metricool brand ID set for client "${client?.name}".`
       await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
       return json({ error: msg }, 422)
     }
 
@@ -90,6 +100,7 @@ serve(async (req) => {
     if (!networkKey) {
       const msg = `Unsupported platform "${item.platform}" — expected: ${Object.keys(PLATFORM_MAP).join(', ')}`
       await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
       return json({ error: msg }, 422)
     }
 
@@ -103,6 +114,7 @@ serve(async (req) => {
     if (slot <= new Date()) {
       const msg = 'Scheduled time has passed — please reschedule before retrying.'
       await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
       return json({ error: msg }, 422)
     }
 
@@ -110,6 +122,7 @@ serve(async (req) => {
     if (!apiKey) {
       const msg = 'METRICOOL_API_KEY not configured in Supabase vault'
       await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
       return json({ error: msg }, 500)
     }
 
@@ -163,6 +176,7 @@ serve(async (req) => {
       const msg = String((fetchErr as Error)?.message ?? fetchErr)
       console.error('[schedule-to-metricool] Network error calling Metricool:', msg)
       await markFailed(admin, item.id, 'Network error calling Metricool: ' + msg)
+      await logEdgeError(admin, 'Network error calling Metricool: ' + msg)
       return json({ error: 'Network error calling Metricool: ' + msg }, 502)
     }
 
@@ -171,6 +185,7 @@ serve(async (req) => {
       const detailStr = typeof mData === 'string' ? mData : JSON.stringify(mData)
       const msg = `Metricool rejected the post (${mRes.status}): ${detailStr}`.slice(0, 500)
       await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
       return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
     }
 
@@ -219,7 +234,14 @@ serve(async (req) => {
 
     return json({ scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
   } catch (e) {
-    console.error('[schedule-to-metricool] Unhandled error:', String((e as Error)?.message ?? e))
-    return json({ error: String((e as Error)?.message ?? e) }, 500)
+    const message = String((e as Error)?.message ?? e)
+    console.error('[schedule-to-metricool] Unhandled error:', message)
+    try {
+      const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+      await logEdgeError(admin, message)
+    } catch (logErr) {
+      console.error('[schedule-to-metricool] Failed to write edge_function_errors:', String((logErr as Error)?.message ?? logErr))
+    }
+    return json({ error: message }, 500)
   }
 })

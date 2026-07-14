@@ -83,6 +83,11 @@ export function ContentQueue() {
       .select('id')
     if (error || !data?.length) { setNotice('Something went wrong — try again.'); return }
     setItems((p) => p.map((i) => i.id === item.id ? { ...i, status: 'approved' } : i))
+    // Best-effort ops-dashboard regen — the approval itself is already
+    // confirmed above, so a failure here must never block or surface in the
+    // approve UX, only in the console (see rejectAllFailed/bulkApprove for
+    // the same pattern).
+    supabase.functions.invoke('generate-daily-status').catch((e) => console.error('[generate-daily-status] regen failed:', e))
     // Was previously fire-and-forget (`.catch(() => {})`) — a Metricool
     // failure (401, rejected post, etc.) was silently swallowed and the
     // card just sat there with no indication anything was wrong. Now
@@ -110,6 +115,9 @@ export function ContentQueue() {
     setRejectingItem(null)
     if (error) { setNotice('Something went wrong — try again.'); return }
     setItems((p) => p.map((i) => i.id === item.id ? { ...i, ...patch } : i))
+    // Best-effort ops-dashboard regen — see approve() above for why this is
+    // fire-and-forget rather than awaited.
+    supabase.functions.invoke('generate-daily-status').catch((e) => console.error('[generate-daily-status] regen failed:', e))
   }
   async function rejectAllFailed() {
     if (needsAttention.length === 0) return
@@ -126,6 +134,9 @@ export function ContentQueue() {
     }
     setBulkBusy(false)
     if (failures > 0) setNotice(`${failures} post${failures === 1 ? '' : 's'} failed to reject — try again.`)
+    // Best-effort ops-dashboard regen — once for the whole batch, not once
+    // per item (see approve() above for why this is fire-and-forget).
+    supabase.functions.invoke('generate-daily-status').catch((e) => console.error('[generate-daily-status] regen failed:', e))
     load()
   }
   async function saveEdit(item) {
@@ -171,6 +182,9 @@ export function ContentQueue() {
     setBulkBusy(false)
     setSelected(new Set())
     if (failures > 0) setNotice(`${failures} post${failures === 1 ? '' : 's'} failed to schedule to Metricool — see "Failed to schedule" on the dashboard.`)
+    // Best-effort ops-dashboard regen — once for the whole batch, not once
+    // per item (see approve() above for why this is fire-and-forget).
+    supabase.functions.invoke('generate-daily-status').catch((e) => console.error('[generate-daily-status] regen failed:', e))
     load()
   }
 
