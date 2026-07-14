@@ -54,7 +54,7 @@ export async function clientPlatforms(admin: Admin, client: Record<string, any>)
 // Adrian can add manual posts freely on any day for any brand, and they must
 // neither block the cron nor be blocked by it. Only 'ai' and 'cron' posts,
 // in a live (non-rejected) status, count as an existing auto post.
-async function hasAutoPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
+export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999)
   const { count } = await admin
@@ -88,88 +88,104 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   if (platforms.length === 0) {
     return { generated: 0, errors: [`${client.name}: no connected platform to post to`] }
   }
-  const platform = platforms[0]
   const postingDays = clientPostingDays(client)
 
   const now = new Date()
   const windowEnd = addDays(now, windowDays)
 
-  const { count: existingCount } = await admin
-    .from('mkt_content_queue')
-    .select('id', { count: 'exact', head: true })
-    .eq('client_id', client.id).eq('content_type', 'post')
-    .in('status', ['approved', 'scheduled'])
-    .gte('scheduled_for', now.toISOString()).lte('scheduled_for', windowEnd.toISOString())
-
-  const gap = Math.max(0, targetPostsForClient(client, windowDays) - (existingCount ?? 0))
-  if (gap === 0) return { generated: 0, errors }
-
-  // Fix 4 — pillars used earlier in this same fill run, so consecutive posts
-  // don't repeat a pillar even before any of them are published. recentTopics
-  // seeds the generator with what to avoid (published history + posts produced
-  // earlier in this run).
-  const usedThisRun: string[] = []
-  const recentTopics: string[] = await recentPublishedSummaries(admin, client.id, 6)
   let generated = 0
-  let day = addDays(now, 1)
-  let daysWalked = 0
 
-  while (generated < gap && generated < budget && daysWalked < SAFETY_MAX_DAYS_WALKED) {
-    daysWalked++
-    if (day > windowEnd) break
-    if (!postingDays.has(dayOfWeekUK(day))) { day = addDays(day, 1); continue }
+  // Fix — a client with more than one connected platform (e.g. Combat Ready
+  // HQ: facebook + instagram) previously only ever got platforms[0] filled;
+  // instagram never received any auto-generated content at all. Every
+  // connected platform now gets its own independent gap-fill pass — its own
+  // target/gap, its own day-walk, its own hasAutoPostOnDate guard — sharing
+  // the client's overall per-run budget across all of them. For every
+  // existing single-platform client this loop runs exactly once, identically
+  // to before.
+  for (const platform of platforms) {
+    if (generated >= budget) break
+    const remainingBudget = budget - generated
 
-    // Skip this brand for this day if an auto-generated post already exists —
-    // one auto post per brand per day. Manual posts do not count (see above).
-    if (await hasAutoPostOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
+    const { count: existingCount } = await admin
+      .from('mkt_content_queue')
+      .select('id', { count: 'exact', head: true })
+      .eq('client_id', client.id).eq('platform', platform).eq('content_type', 'post')
+      .in('status', ['approved', 'scheduled'])
+      .gte('scheduled_for', now.toISOString()).lte('scheduled_for', windowEnd.toISOString())
 
-    // A pillar that differs from the brand's last three published posts and
-    // from anything already generated in this run.
-    const pillar = await pickDiversePillar(admin, client, usedThisRun)
+    const gap = Math.max(0, targetPostsForClient(client, windowDays) - (existingCount ?? 0))
+    if (gap === 0) continue
 
-    try {
-      // Item 3: every post is reviewed before it reaches the queue. A pass is
-      // queued with a "passed" badge; two failures queue a "needs_attention"
-      // placeholder (still fills the slot so we don't loop it) with the reason
-      // shown to Adrian. The generator is shown recent topics (Fix 4) via the
-      // client object so it steers away from them — no review-step change.
-      const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics }, platform, pillar)
+    // Fix 4 — pillars used earlier in this same fill run, so consecutive posts
+    // don't repeat a pillar even before any of them are published. recentTopics
+    // seeds the generator with what to avoid (published history + posts produced
+    // earlier in this run).
+    const usedThisRun: string[] = []
+    const recentTopics: string[] = await recentPublishedSummaries(admin, client.id, 6)
+    let generatedForPlatform = 0
+    let day = addDays(now, 1)
+    let daysWalked = 0
 
-      const [hh, mm] = String(client.post_time ?? '09:00').split(':')
-      const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+    while (generatedForPlatform < gap && generatedForPlatform < remainingBudget && daysWalked < SAFETY_MAX_DAYS_WALKED) {
+      daysWalked++
+      if (day > windowEnd) break
+      if (!postingDays.has(dayOfWeekUK(day))) { day = addDays(day, 1); continue }
 
-      const row = review.ok
-        ? {
-            client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
-            status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
-            review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
-          }
-        : {
-            client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
-            status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
-            review_status: 'needs_attention', reviewed_at: review.reviewedAt,
-            review_reason: review.reason, generation_attempts: review.attempts,
-          }
+      // Skip this brand+platform for this day if an auto-generated post
+      // already exists — one auto post per brand per platform per day.
+      // Manual posts do not count (see above).
+      if (await hasAutoPostOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
 
-      const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
-      if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
-      if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
+      // A pillar that differs from the brand's last three published posts and
+      // from anything already generated in this run.
+      const pillar = await pickDiversePillar(admin, client, usedThisRun)
 
-      // Image generation is best-effort and never blocks or fails the post —
-      // generatePostImage swallows its own errors and leaves image_url null
-      // (the column's default) on any failure. See _shared/image.ts.
-      if (review.body) await generatePostImage(admin, client, inserted.id, review.body)
+      try {
+        // Item 3: every post is reviewed before it reaches the queue. A pass is
+        // queued with a "passed" badge; two failures queue a "needs_attention"
+        // placeholder (still fills the slot so we don't loop it) with the reason
+        // shown to Adrian. The generator is shown recent topics (Fix 4) via the
+        // client object so it steers away from them — no review-step change.
+        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics }, platform, pillar)
 
-      usedThisRun.push(pillar)
-      // Keep the just-generated post in view so the next post in this run
-      // avoids repeating it too (it isn't in published_posts yet).
-      if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
-      await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
-      generated++
-    } catch (e) {
-      errors.push(`${client.name}: ${String((e as Error)?.message ?? e)}`)
+        const [hh, mm] = String(client.post_time ?? '09:00').split(':')
+        const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+
+        const row = review.ok
+          ? {
+              client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
+              status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+              review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
+            }
+          : {
+              client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
+              status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+              review_status: 'needs_attention', reviewed_at: review.reviewedAt,
+              review_reason: review.reason, generation_attempts: review.attempts,
+            }
+
+        const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
+        if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
+        if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
+
+        // Image generation is best-effort and never blocks or fails the post —
+        // generatePostImage swallows its own errors and leaves image_url null
+        // (the column's default) on any failure. See _shared/image.ts.
+        if (review.body) await generatePostImage(admin, client, inserted.id, review.body, platform)
+
+        usedThisRun.push(pillar)
+        // Keep the just-generated post in view so the next post in this run
+        // avoids repeating it too (it isn't in published_posts yet).
+        if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
+        await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
+        generatedForPlatform++
+        generated++
+      } catch (e) {
+        errors.push(`${client.name}: ${String((e as Error)?.message ?? e)}`)
+      }
+      day = addDays(day, 1)
     }
-    day = addDays(day, 1)
   }
 
   return { generated, errors }

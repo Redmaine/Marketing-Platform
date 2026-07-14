@@ -31,6 +31,39 @@ function buildImagePrompt(postBody: string, visualStyle: string | null): string 
   return parts.join('. ')
 }
 
+// Deterministic style-prefix check (not an AI/vision check) — does the prompt
+// actually being sent to Stability contain this client's own configured
+// visual_style verbatim? Stability has no vision-verification step of its
+// own, so this is a pre-flight guard against the style silently getting
+// dropped (a bad client row, a future buildImagePrompt refactor, etc.) rather
+// than a check that inspects the returned image. A client with no
+// visual_style configured has nothing to enforce, so it passes trivially.
+function passesStylePrefixCheck(prompt: string, visualStyle: string | null): boolean {
+  const style = String(visualStyle || '').trim()
+  if (!style) return true
+  return prompt.includes(style)
+}
+
+// Persists that image generation should stop for this client+platform after
+// a style-check failure or a Stability error, and mutates the in-memory
+// `client` object so later calls in the SAME fillClientGap run (which loops
+// per-platform and can call generatePostImage more than once per client) see
+// the disable immediately without needing a re-fetch. Scoped to one platform
+// only — e.g. Combat Ready HQ's Facebook stream disabling itself must never
+// touch its Instagram stream.
+async function disableImageGenForPlatform(admin: Admin, client: Record<string, any>, platform: string, reason: string): Promise<void> {
+  const current: string[] = Array.isArray(client.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : []
+  if (current.includes(platform)) return
+  const next = [...current, platform]
+  const { error } = await admin.from('mkt_clients').update({ image_gen_disabled_platforms: next }).eq('id', client.id)
+  if (error) {
+    console.error(`[image] ${client.name}: failed to persist image_gen_disabled_platforms — ${error.message}`)
+    return
+  }
+  client.image_gen_disabled_platforms = next
+  console.error(`[image] ${client.name}: image generation disabled for platform "${platform}" — ${reason}`)
+}
+
 interface StabilityArtifact { base64: string; finishReason: string }
 
 async function callStabilityAI(prompt: string, apiKey: string): Promise<Uint8Array> {
@@ -72,14 +105,33 @@ export async function generatePostImage(
   client: Record<string, any>,
   contentQueueId: string,
   postBody: string,
+  platform: string,
 ): Promise<void> {
+  const disabledPlatforms: string[] = Array.isArray(client.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : []
+  if (disabledPlatforms.includes(platform)) {
+    console.log(`[image] ${client.name}: image generation disabled for platform "${platform}" — skipping ${contentQueueId}`)
+    return
+  }
+
   const apiKey = Deno.env.get('STABILITY_AI_API_KEY')
   if (!apiKey) {
     console.error(`[image] ${client.name}: STABILITY_AI_API_KEY not set — skipping image for ${contentQueueId}`)
     return
   }
+
+  const prompt = buildImagePrompt(postBody, client.visual_style)
+
+  // Fails closed: an opportunity to enforce the brand's locked visual style
+  // silently dropping is worse than one missing image. Disables this
+  // client+platform going forward rather than retrying — Stability content
+  // moderation rejections for a strict brief (e.g. a tactical/military
+  // aesthetic) tend to repeat every time, not be one-off flukes.
+  if (!passesStylePrefixCheck(prompt, client.visual_style)) {
+    await disableImageGenForPlatform(admin, client, platform, 'generated prompt did not include the client\'s configured visual_style')
+    return
+  }
+
   try {
-    const prompt = buildImagePrompt(postBody, client.visual_style)
     const bytes = await callStabilityAI(prompt, apiKey)
 
     const folder = client.slug || 'unknown-brand'
@@ -99,8 +151,10 @@ export async function generatePostImage(
 
     console.log(`[image] ${client.name}: image generated for ${contentQueueId}`)
   } catch (e) {
-    console.error(`[image] ${client.name}: image generation failed for ${contentQueueId} — ${String((e as Error)?.message ?? e)}`)
+    const msg = String((e as Error)?.message ?? e)
+    console.error(`[image] ${client.name}: image generation failed for ${contentQueueId} — ${msg}`)
     // image_url stays whatever it already was (null on a fresh insert) — the
     // post itself is unaffected; the approval queue UI flags the missing image.
+    await disableImageGenForPlatform(admin, client, platform, `Stability error — ${msg}`.slice(0, 300))
   }
 }

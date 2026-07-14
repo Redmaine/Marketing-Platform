@@ -1,0 +1,24 @@
+-- =============================================================================
+-- 45_remove_redundant_saturday_cron.sql
+--
+-- Duplicate-post investigation (see approve-blog's nextFreeSlot fix in the
+-- same change) turned up a second, unnecessary trigger of the full
+-- midnight-cron pipeline: 'saturday-blog-generation' (added in migration 31)
+-- calls the SAME midnight-cron endpoint as the daily 'midnight-content-
+-- generation' job, just 90 minutes before it (22:30 UTC Saturday vs 00:00 UTC
+-- Sunday) — and midnight-cron runs BOTH the weekly-blog step AND the full
+-- fillClientGap post-generation pass for every client, not just the blog.
+-- Migration 31's own comment already says "the daily 00:00 midnight-cron
+-- remains a backstop" — i.e. the Saturday job's only real purpose (getting
+-- Sunday's blog ready ~90 minutes earlier) was never worth re-running the
+-- entire post-fill pipeline a second time for every client every week.
+--
+-- hasAutoPostOnDate does correctly prevent this from usually producing a
+-- literal duplicate, but it's still a second full run doing pointless
+-- work and widening the window for a race — removing the extra trigger
+-- source outright rather than relying on the guard to keep catching it.
+--
+-- Apply live: select cron.unschedule('saturday-blog-generation');
+-- =============================================================================
+
+select cron.unschedule('saturday-blog-generation');

@@ -2,6 +2,17 @@
 // Fired when a post is approved. Schedules it to Metricool at the client's next slot.
 // Invoke: supabase.functions.invoke('schedule-to-metricool', { body: { content_queue_id } })
 //
+// CRHQ / multi-platform check: mkt_content_queue.platform is one value per
+// row (schema: text, not an array), and this function correctly builds
+// `providers` from that one row's platform. CRHQ was "only posting to
+// Facebook" not because this call was wrong, but because fillClientGap
+// (_shared/fill.ts) only ever generated a row for platforms[0] — Instagram
+// never got a row to schedule in the first place. That's now fixed upstream
+// in fill.ts, which loops every connected platform (facebook AND instagram
+// for CRHQ), so both now flow through this same single-platform-per-call
+// path unchanged — exactly how every other (currently single-platform)
+// brand is already handled. No change needed here.
+//
 // Deploy:  supabase functions deploy schedule-to-metricool
 // Secrets (Supabase vault): METRICOOL_API_KEY
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'

@@ -1,9 +1,19 @@
 // Supabase Edge Function: approve-blog  (Deno)
 // Approves a draft blog post AND, in the same call, generates 3 social posts
 // from it via a single structured Anthropic call — one per connected
-// platform (round-robin), scheduled for Mon/Wed/Fri of the week after the
-// blog's publish_date. Those posts land in the normal mkt_content_queue
-// approval flow (status: draft).
+// platform (round-robin), targeting Mon/Wed/Fri of the week after the blog's
+// publish_date. Those posts land in the normal mkt_content_queue approval
+// flow (status: draft).
+//
+// Duplicate-post fix: this used to write straight to the Mon/Wed/Fri slot
+// with no check, so it silently collided with whatever midnight-cron's
+// fillClientGap had already queued for that brand+platform+day (fillClientGap
+// pre-fills ~4 weeks nightly, so those slots are almost always already
+// occupied by the time a blog gets approved) — two posts, same brand, same
+// day. Each of the 3 posts now walks forward from its target day via
+// hasAutoPostOnDate (the same guard fillClientGap uses) to the next actually
+// free day for that platform, so it can never land on top of an existing
+// auto-post.
 //
 // Invoke (agency, authenticated): supabase.functions.invoke('approve-blog',
 //   { body: { blog_id } })
@@ -16,6 +26,36 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
 import { buildSystemPrompt } from '../_shared/prompts.ts'
 import { callAnthropicStructured, addDays } from '../_shared/generate.ts'
+import { hasAutoPostOnDate } from '../_shared/fill.ts'
+
+const MAX_SLOT_SEARCH_DAYS = 21
+
+// Walks forward day-by-day from `startDay` until it finds a day that (a)
+// isn't already reserved by an earlier post in this same batch (`reserved`)
+// and (b) has no existing auto-post for this client+platform per
+// hasAutoPostOnDate. Mirrors fillClientGap's own day-walking guard so a blog
+// repurposed post can never land on a slot the cron already filled.
+async function nextFreeSlot(
+  admin: ReturnType<typeof createClient>,
+  clientId: string,
+  platform: string,
+  startDay: Date,
+  reserved: Set<string>,
+): Promise<Date> {
+  let day = new Date(startDay)
+  for (let i = 0; i < MAX_SLOT_SEARCH_DAYS; i++) {
+    const key = `${platform}|${day.toISOString().slice(0, 10)}`
+    if (!reserved.has(key) && !(await hasAutoPostOnDate(admin, clientId, platform, day))) {
+      reserved.add(key)
+      return day
+    }
+    day = addDays(day, 1)
+  }
+  // Exhausted the search window (extremely unlikely) — fall back to the
+  // original target rather than looping forever; worst case is a rare
+  // collision instead of an infinite search.
+  return startDay
+}
 
 const POSTS_SCHEMA = {
   type: 'object',
@@ -116,21 +156,26 @@ serve(async (req) => {
       return json({ ok: true, blog_approved: true, repurposed: false, error: String((e as Error)?.message ?? e) })
     }
 
-    // Mon/Wed/Fri of the week after the blog's publish_date (always a Sunday).
+    // Target Mon/Wed/Fri of the week after the blog's publish_date (always a
+    // Sunday) — nextFreeSlot below then walks each one forward to the first
+    // day that isn't already occupied by an existing auto-post.
     const base = blog.publish_date ? new Date(`${blog.publish_date}T00:00:00`) : new Date()
     const monday = addDays(base, 1)
     const targets = [monday, addDays(monday, 2), addDays(monday, 4)] // Mon, Wed, Fri
 
     const [hh, mm] = String(client.post_time ?? '09:00').split(':')
-    const rows = posts.map((body, i) => {
+    const reservedSlots = new Set<string>()
+    const rows = []
+    for (let i = 0; i < posts.length; i++) {
       const platform = connected[i % connected.length]
-      const slot = new Date(targets[i]); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
-      return {
+      const day = await nextFreeSlot(admin, client.id, platform, targets[i], reservedSlots)
+      const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+      rows.push({
         client_id: client.id, platform, content_type: 'post',
-        pillar: `Blog: ${blog.title}`, body, status: 'draft', generated_by: 'ai',
+        pillar: `Blog: ${blog.title}`, body: posts[i], status: 'draft', generated_by: 'ai',
         scheduled_for: slot.toISOString(),
-      }
-    })
+      })
+    }
 
     const { error: insErr } = await admin.from('mkt_content_queue').insert(rows)
     if (insErr) return json({ ok: true, blog_approved: true, repurposed: false, website_post_id: websitePostId, website_post_error: websitePostError, error: insErr.message })
