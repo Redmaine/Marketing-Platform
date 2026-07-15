@@ -141,7 +141,11 @@ serve(async (req) => {
       providers: [{ network: networkKey }],
       autoPublish: true,
     }
-    if (item.image_url) requestBody.media = [item.image_url]
+    // Facebook posts go out as text only until further notice — images are
+    // still generated for every platform (fill.ts / _shared/image.ts), just
+    // never attached to the Metricool call when the target is Facebook.
+    // Instagram (and any other connected platform) is unaffected.
+    if (item.image_url && item.platform !== 'facebook') requestBody.media = [item.image_url]
 
     // Issue 8: if metricool_post_id already exists, PATCH the existing post
     // rather than creating a duplicate.

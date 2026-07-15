@@ -4,6 +4,40 @@ import { buildSystemPrompt, buildUserMessage } from './prompts.ts'
 
 export const MODEL = 'claude-haiku-4-5-20251001'
 
+// Hard backstop against markdown reaching a live post. FORMAT_RULES already
+// instructs the model not to use markdown, and review.ts's
+// contentRuleViolation detects **bold** and retries once — but a post that
+// still contains it after retries currently reaches mkt_content_queue.body
+// unchanged (flagged needs_attention, but the raw markdown is still what's
+// there to approve and send). This strips it unconditionally right before
+// every insert, regardless of review outcome, so `**text**` / `# heading` /
+// bullets / links never publish with visible syntax.
+export function stripMarkdown(text: string): string {
+  let out = String(text || '')
+  // Fenced code blocks — drop the ``` markers, keep the content.
+  out = out.replace(/```[a-zA-Z0-9]*\n?([\s\S]*?)```/g, '$1')
+  // Headers: "# Heading" / "## Heading" -> "Heading"
+  out = out.replace(/^[ \t]{0,3}#{1,6}\s+/gm, '')
+  // Bold+italic (***text***), bold (**text** / __text__)
+  out = out.replace(/\*\*\*([^*]+?)\*\*\*/g, '$1')
+  out = out.replace(/\*\*([^*]+?)\*\*/g, '$1')
+  out = out.replace(/__([^_]+?)__/g, '$1')
+  // Italic (*text* / _text_) — only when it wraps a real word, not a lone
+  // asterisk/underscore used as e.g. multiplication or an emoji-adjacent mark.
+  out = out.replace(/(^|[^\w])\*([^\s*][^*]*?)\*(?!\w)/g, '$1$2')
+  out = out.replace(/(^|[^\w])_([^\s_][^_]*?)_(?!\w)/g, '$1$2')
+  // Inline code
+  out = out.replace(/`([^`]+)`/g, '$1')
+  // Links: [text](url) -> text (url)
+  out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+  // Bullet / numbered list markers at the start of a line
+  out = out.replace(/^[ \t]*[-*+]\s+/gm, '')
+  out = out.replace(/^[ \t]*\d+[.)]\s+/gm, '')
+  // Collapse the blank lines list-stripping can leave behind, then trim.
+  out = out.replace(/\n{3,}/g, '\n\n').trim()
+  return out
+}
+
 // Transient Anthropic failures — rate limits (429) and server/overload errors
 // (500/502/503/529) — are the real cause of the "some clients generate, others
 // fail silently" symptom: on a busy night one client's call hits a 429 while
@@ -172,8 +206,26 @@ export async function pickDiversePillar(
 
   const recent = await recentPublishedPillars(admin, client.id, 3)
   const avoid = new Set([...recent, ...alsoAvoid])
-  const fresh = pillars.find((p) => !avoid.has(p))
-  return fresh ?? nextPillar(client)
+
+  // Bug fix — this used to be `pillars.find((p) => !avoid.has(p))`, which
+  // scans from the START of the array every time regardless of
+  // last_pillar_used, so pillars near the front got picked far more often
+  // than ones near the back whenever the avoid-set was small (e.g. a brand
+  // with little/no publish history, or more than ~4 pillars so only 3 are
+  // ever excluded). Neuro Decoded's posts were landing on the same first
+  // pillar repeatedly for exactly this reason. Scanning forward from the
+  // pillar AFTER last_pillar_used enforces real rotation — the search still
+  // wraps and still skips anything in the avoid-set, it just starts from a
+  // different point each time instead of always from index 0.
+  const last = client.last_pillar_used
+  const startIdx = last ? (pillars.indexOf(last) + 1 + pillars.length) % pillars.length : 0
+  for (let offset = 0; offset < pillars.length; offset++) {
+    const candidate = pillars[(startIdx + offset) % pillars.length]
+    if (!avoid.has(candidate)) return candidate
+  }
+  // Every pillar is in the avoid-set (e.g. <=3 pillars) — fall back to plain
+  // rotation so a post is still produced.
+  return nextPillar(client)
 }
 
 // ── Weekday helpers (UK time) ─────────────────────────────────────────────

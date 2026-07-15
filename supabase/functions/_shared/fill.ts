@@ -1,7 +1,7 @@
 // Shared "fill this client's content calendar" logic — used by both
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
-import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPlatformConnected } from './generate.ts'
+import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
 
@@ -103,15 +103,48 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   // the client's overall per-run budget across all of them. For every
   // existing single-platform client this loop runs exactly once, identically
   // to before.
-  for (const platform of platforms) {
+  for (let platformIdx = 0; platformIdx < platforms.length; platformIdx++) {
+    const platform = platforms[platformIdx]
     if (generated >= budget) break
     const remainingBudget = budget - generated
+    // Fair-share split, not first-come-first-served: divide whatever budget
+    // is left evenly across the platforms left (including this one), so an
+    // earlier platform with a large gap (e.g. facebook, catching up from
+    // nothing) can't consume the entire shared budget and leave later
+    // platforms (e.g. instagram) with zero on THIS run — they now get their
+    // fair share on the same run a gap exists, not just "eventually" once
+    // the earlier platform's gap happens to shrink. A platform whose own gap
+    // is smaller than its share still only uses what it needs — the
+    // unspent remainder naturally rolls forward via `remainingBudget` on the
+    // next iteration, divided across however many platforms are left.
+    const platformsLeft = platforms.length - platformIdx
+    const platformBudget = Math.min(remainingBudget, Math.ceil(remainingBudget / platformsLeft))
 
+    // Root-cause fix: this used to only count status in ('approved',
+    // 'scheduled'), so a post this same function already generated as
+    // 'draft' (every fresh insert below starts as 'draft' — see row.status)
+    // was invisible to the gap calculation. Any client with an approval
+    // backlog therefore looked like it had a permanent, near-full gap every
+    // single night — the cron re-attempted close to a full budget's worth
+    // of generation for that client indefinitely. Two consequences, both
+    // confirmed live: (1) for a client with 2+ connected platforms sharing
+    // one `budget` across this whole loop (e.g. Combat Ready HQ — facebook
+    // + instagram), the first platform processed could permanently consume
+    // the entire shared budget, leaving nothing for the rest — instagram
+    // never got a single post; (2) the nightly run took far longer than it
+    // needed to across every client, which lines up with midnight-cron's own
+    // run log (mkt_cron_log) going silent for days at a time despite content
+    // clearly still being generated — consistent with runs overrunning
+    // before reaching their own final log write, and a real duplicate was
+    // found (two posts, same client/platform/day, inserted 5 seconds apart
+    // in one run). Counting anything not-rejected here — matching
+    // hasAutoPostOnDate's own definition of "already filled" just below —
+    // fixes the gap at the source instead of adding another guard on top.
     const { count: existingCount } = await admin
       .from('mkt_content_queue')
       .select('id', { count: 'exact', head: true })
       .eq('client_id', client.id).eq('platform', platform).eq('content_type', 'post')
-      .in('status', ['approved', 'scheduled'])
+      .neq('status', 'rejected')
       .gte('scheduled_for', now.toISOString()).lte('scheduled_for', windowEnd.toISOString())
 
     const gap = Math.max(0, targetPostsForClient(client, windowDays) - (existingCount ?? 0))
@@ -127,7 +160,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     let day = addDays(now, 1)
     let daysWalked = 0
 
-    while (generatedForPlatform < gap && generatedForPlatform < remainingBudget && daysWalked < SAFETY_MAX_DAYS_WALKED) {
+    while (generatedForPlatform < gap && generatedForPlatform < platformBudget && daysWalked < SAFETY_MAX_DAYS_WALKED) {
       daysWalked++
       if (day > windowEnd) break
       if (!postingDays.has(dayOfWeekUK(day))) { day = addDays(day, 1); continue }
@@ -148,6 +181,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // shown to Adrian. The generator is shown recent topics (Fix 4) via the
         // client object so it steers away from them — no review-step change.
         const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics }, platform, pillar)
+        // Hard backstop — strip any markdown the model still produced despite
+        // FORMAT_RULES and the review step's retry, so it never reaches a
+        // live post (see stripMarkdown in generate.ts).
+        if (review.body) review.body = stripMarkdown(review.body)
 
         const [hh, mm] = String(client.post_time ?? '09:00').split(':')
         const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)

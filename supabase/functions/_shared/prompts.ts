@@ -125,11 +125,16 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
   const crhqVideos = crhqScrape?.videos ?? []
   const crhqArticles = crhqScrape?.articles ?? []
   if (crhqVideos.length || crhqArticles.length) {
+    // Deliberately excludes view_count and any other performance figure —
+    // this block used to inject "(N views)" straight into the prompt, which
+    // the model then echoed as an engagement/performance claim in the post
+    // itself. Only the channel name, the topic (title), and the URL are
+    // ever referenced from real scraped content.
     const items = [
-      ...crhqVideos.map((v) => `- [Video] "${v.title}" (${v.view_count ?? 0} views, published ${v.published_at ?? 'recently'}) — ${v.url}`),
+      ...crhqVideos.map((v) => `- [Video] "${v.title}" — ${v.url}`),
       ...crhqArticles.map((a) => `- [Article] "${a.title}" — ${a.url}`),
     ]
-    lines.push(`\nHere is Combat Ready HQ's latest content from the last 48 hours:\n${items.join('\n')}\nReference this actual content in the generated post.`)
+    lines.push(`\nHere is Combat Ready HQ's latest content from the last 48 hours:\n${items.join('\n')}\nReference this actual content factually — the channel name (Combat Ready HQ), the topic/title, and the URL only. Do not mention view counts, subscriber counts, engagement, reach, or any other performance figure for this or any other content — real or invented.`)
   }
 
   lines.push(FORMAT_RULES)

@@ -9,7 +9,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
-import { isPlatformConnected, recentPublishedSummaries } from '../_shared/generate.ts'
+import { isPlatformConnected, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
 
 serve(async (req) => {
@@ -50,6 +50,9 @@ serve(async (req) => {
       console.error(`[generate-content] No copy produced for "${client.name}": ${review.reason}`)
       return json({ error: review.reason || 'No copy came back — try again.' }, 502)
     }
+    // Hard backstop — strip any markdown the model still produced despite
+    // FORMAT_RULES and the review step's retry (see stripMarkdown in generate.ts).
+    review.body = stripMarkdown(review.body)
 
     const { data: item, error: iErr } = await admin.from('mkt_content_queue').insert({
       client_id, platform, content_type: 'post', pillar, body: review.body,

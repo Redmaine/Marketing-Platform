@@ -25,7 +25,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
 import { buildSystemPrompt } from '../_shared/prompts.ts'
-import { callAnthropicStructured, addDays } from '../_shared/generate.ts'
+import { callAnthropicStructured, addDays, stripMarkdown } from '../_shared/generate.ts'
 import { hasAutoPostOnDate } from '../_shared/fill.ts'
 
 const MAX_SLOT_SEARCH_DAYS = 21
@@ -165,6 +165,18 @@ serve(async (req) => {
 
     const [hh, mm] = String(client.post_time ?? '09:00').split(':')
     const reservedSlots = new Set<string>()
+    // Bug fix — these rows used to get pillar: "Blog: <title>", a synthetic
+    // label that isn't one of the client's real content_pillars. It showed
+    // up in ContentQueue as a "Blog" post instead of a real pillar (these are
+    // social posts, content_type 'post', not blog content), and once sent it
+    // polluted published_posts.content_pillar with a value pickDiversePillar
+    // could never match against. Cycle through the client's real pillars
+    // instead so each repurposed post carries a genuine, rotation-compatible
+    // pillar — falling back to a neutral label only if the client has none
+    // configured at all.
+    const clientPillars: string[] = Array.isArray(client.content_pillars) && client.content_pillars.length
+      ? client.content_pillars
+      : ['General']
     const rows = []
     for (let i = 0; i < posts.length; i++) {
       const platform = connected[i % connected.length]
@@ -172,7 +184,7 @@ serve(async (req) => {
       const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
       rows.push({
         client_id: client.id, platform, content_type: 'post',
-        pillar: `Blog: ${blog.title}`, body: posts[i], status: 'draft', generated_by: 'ai',
+        pillar: clientPillars[i % clientPillars.length], body: stripMarkdown(posts[i]), status: 'draft', generated_by: 'ai',
         scheduled_for: slot.toISOString(),
       })
     }
