@@ -13,22 +13,76 @@
 // (the column's default), which the approval queue UI reads as
 // "Image missing — add manually".
 
+import { callAnthropic } from './generate.ts'
+import { Image } from 'https://deno.land/x/imagescript@1.2.15/mod.ts'
+
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
 const STABILITY_ENGINE_ID = 'stable-diffusion-xl-1024-v1-0'
 const IMAGE_SIZE = 1024
 
-// Post copy + brand visual style, both folded into one prompt. Truncated to a
-// short summary rather than the full post — Stability's prompt field is
-// meant for a scene description, not a wall of marketing copy — and a
-// clean/no-text steer is added since every visual_style entry already reads
-// as a clean background/illustration brief, never a request for on-image copy.
-function buildImagePrompt(postBody: string, visualStyle: string | null): string {
-  const summary = String(postBody || '').replace(/\s+/g, ' ').trim().slice(0, 220)
+// Stability's SDXL v1 API only accepts a fixed set of width/height pairs (all
+// multiples of 64) — 1080 is not one of them and would be rejected outright,
+// so generation always happens at the model's native square size (1024) and
+// gets resized afterwards for platforms with their own exact requirement.
+const INSTAGRAM_SIZE = 1080
+
+// A no-text instruction was already present here ("no text, no words, no
+// letters, no logos") but didn't match the exact phrasing every image call
+// must now use, regardless of brand — Stability cannot render readable text
+// at all, so this always applies, not just when a client's own visual_style
+// happens to mention it.
+const NO_TEXT_INSTRUCTION = 'no text, no words, no letters, no typography, no labels'
+
+// Turns the raw post copy into a short, concrete visual scene description —
+// what an image generator should actually draw, not the marketing copy
+// itself. Previously the prompt was built by blindly truncating postBody to
+// 220 characters and handing that straight to Stability: a hook, a stat, a
+// call-to-action read as ad copy, not a scene, and produced correspondingly
+// generic/literal images. This asks Claude (already used elsewhere in this
+// pipeline — see generate.ts) for one or two sentences describing a single
+// concrete visual concept instead. Falls back to the old truncation on any
+// failure — a slightly worse prompt must never be the reason an image (or
+// the post it belongs to) doesn't go out; see the file-level comment.
+async function summariseToVisualConcept(postBody: string): Promise<string> {
+  const body = String(postBody || '').replace(/\s+/g, ' ').trim()
+  if (!body) return ''
+  const system = 'You turn a social media post into a short, concrete visual scene description for an AI image generator. Describe ONE clear subject, setting, composition and mood that captures what the post is about. Never describe any text, quotes, numbers or words that should appear in the image — the image itself must never contain readable text. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+  try {
+    const concept = await callAnthropic(system, `Post:\n${body.slice(0, 1000)}`, 150)
+    return concept.replace(/\s+/g, ' ').trim() || body.slice(0, 220)
+  } catch (e) {
+    console.error(`[image] visual-concept summary failed, falling back to truncated post body — ${String((e as Error)?.message ?? e)}`)
+    return body.slice(0, 220)
+  }
+}
+
+// Post copy (summarised into a visual concept, not passed through raw) +
+// brand visual style, both folded into one prompt, with the no-text
+// instruction always appended last regardless of brand.
+async function buildImagePrompt(postBody: string, visualStyle: string | null): Promise<string> {
+  const concept = await summariseToVisualConcept(postBody)
   const style = String(visualStyle || '').trim()
-  const parts = [summary, style, 'no text, no words, no letters, no logos'].filter(Boolean)
+  const parts = [concept, style, NO_TEXT_INSTRUCTION].filter(Boolean)
   return parts.join('. ')
+}
+
+// Instagram requires exact 1080x1080 square images. Stability only generates
+// at its own supported square size (1024), so this resizes that output up to
+// 1080x1080 before upload — every other platform is returned unchanged.
+// Best-effort: a resize failure logs and falls back to the original 1024x1024
+// image (still square, still valid) rather than losing the image entirely.
+async function resizeForPlatform(bytes: Uint8Array, platform: string): Promise<Uint8Array> {
+  if (platform !== 'instagram') return bytes
+  try {
+    const img = await Image.decode(bytes)
+    img.resize(INSTAGRAM_SIZE, INSTAGRAM_SIZE)
+    return await img.encode()
+  } catch (e) {
+    console.error(`[image] resize to ${INSTAGRAM_SIZE}x${INSTAGRAM_SIZE} failed, using original ${IMAGE_SIZE}x${IMAGE_SIZE} — ${String((e as Error)?.message ?? e)}`)
+    return bytes
+  }
 }
 
 // Deterministic style-prefix check (not an AI/vision check) — does the prompt
@@ -119,7 +173,7 @@ export async function generatePostImage(
     return
   }
 
-  const prompt = buildImagePrompt(postBody, client.visual_style)
+  const prompt = await buildImagePrompt(postBody, client.visual_style)
 
   // Fails closed: an opportunity to enforce the brand's locked visual style
   // silently dropping is worse than one missing image. Disables this
@@ -132,7 +186,8 @@ export async function generatePostImage(
   }
 
   try {
-    const bytes = await callStabilityAI(prompt, apiKey)
+    const rawBytes = await callStabilityAI(prompt, apiKey)
+    const bytes = await resizeForPlatform(rawBytes, platform)
 
     const folder = client.slug || 'unknown-brand'
     const path = `${folder}/${contentQueueId}.png`
