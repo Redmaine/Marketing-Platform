@@ -161,6 +161,20 @@ export async function generatePostImage(
   postBody: string,
   platform: string,
 ): Promise<void> {
+  // Per-client platform ALLOW-list (mkt_clients.image_gen_platforms, migration
+  // 51). When set, images are generated ONLY for those platforms — every other
+  // platform returns here before any work happens: no Anthropic summarisation,
+  // no Stability call, no upload, no image_url. Empty/unset means "no
+  // restriction", so clients without an allow-list are completely unaffected.
+  // CRHQ is configured Instagram-only. Checked before the deny-list below
+  // because it's deliberate configuration, whereas the deny-list is the
+  // automatic post-failure kill-switch.
+  const allowedPlatforms: string[] = Array.isArray(client.image_gen_platforms) ? client.image_gen_platforms : []
+  if (allowedPlatforms.length && !allowedPlatforms.some((p) => String(p).toLowerCase() === String(platform).toLowerCase())) {
+    console.log(`[image] ${client.name}: platform "${platform}" not in image_gen_platforms — skipping image for ${contentQueueId}`)
+    return
+  }
+
   const disabledPlatforms: string[] = Array.isArray(client.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : []
   if (disabledPlatforms.includes(platform)) {
     console.log(`[image] ${client.name}: image generation disabled for platform "${platform}" — skipping ${contentQueueId}`)
