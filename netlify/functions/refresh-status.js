@@ -34,10 +34,16 @@ export async function handler(event) {
     return json(405, { success: false, error: 'Method not allowed' })
   }
 
+  // Name the missing variable in the response. The original generic
+  // "Server not configured" was ambiguous between the two env vars below and
+  // made this endpoint's first live failure hard to diagnose without digging
+  // into function logs. Nothing sensitive is disclosed — this only reveals
+  // that a variable is unset, and while it is unset the endpoint returns 500
+  // to everyone regardless.
   const expected = process.env.INTERNAL_SECRET
   if (!expected) {
     console.error('[refresh-status] INTERNAL_SECRET is not set')
-    return json(500, { success: false, error: 'Server not configured' })
+    return json(500, { success: false, error: 'Server not configured: INTERNAL_SECRET is not set on this Netlify site' })
   }
 
   // Secret via query param (as specified). A header is also accepted so
@@ -57,7 +63,7 @@ export async function handler(event) {
   const serviceKey = process.env.SUPABASE_SERVICE_KEY
   if (!serviceKey) {
     console.error('[refresh-status] SUPABASE_SERVICE_KEY is not set')
-    return json(500, { success: false, error: 'Server not configured' })
+    return json(500, { success: false, error: 'Server not configured: SUPABASE_SERVICE_KEY is not set on this Netlify site' })
   }
 
   const controller = new AbortController()

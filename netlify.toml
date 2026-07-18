@@ -1,6 +1,13 @@
 # Agency view deploy — ops.yourcompanyai.co.uk
 # Set the custom domain in Netlify → Domain management.
-# Env vars (Netlify → Site settings → Environment): VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+#
+# Env vars (Netlify → Site settings → Environment):
+#   VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY   — frontend (build time)
+#   INTERNAL_SECRET, SUPABASE_SERVICE_KEY       — required by the
+#     /api/refresh-status function. These were NOT previously set on this
+#     site (it had no functions until refresh-status was added), which is
+#     why that endpoint's first live call returned
+#     "Server not configured". Set both before using it.
 [build]
   publish = "dist"
   command = "npm run build"
