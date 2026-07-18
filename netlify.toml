@@ -8,6 +8,21 @@
 [build.environment]
   NODE_VERSION = "20"
 
+# First Netlify Function in this repo — this block is required for
+# netlify/functions/* to be bundled and deployed at all.
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# On-demand regeneration of the daily status JSON (Quill calls this).
+# MUST come before the /* SPA catch-all below, or the catch-all swallows it
+# and returns index.html instead of JSON.
+[[redirects]]
+  from = "/api/refresh-status"
+  to = "/.netlify/functions/refresh-status"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/api/daily-status"
   to = "https://fvyvtdwsomxfkpxwygpk.supabase.co/storage/v1/object/public/ops-exports/daily-status.json"
