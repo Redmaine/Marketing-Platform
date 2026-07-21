@@ -35,6 +35,13 @@ const INSTAGRAM_SIZE = 1080
 // happens to mention it.
 const NO_TEXT_INSTRUCTION = 'no text, no words, no letters, no typography, no labels'
 
+// TODO: Manual photography upload for CRHQ Instagram
+// Craig supplies real photography that takes priority over
+// AI-generated images. Needs: upload UI, 4:5 crop, storage path,
+// and override flag on mkt_content_queue. Not yet implemented.
+// Until then every CRHQ Instagram post gets an AI-generated image from
+// the brand's visual_style brief below.
+
 // Turns the raw post copy into a short, concrete visual scene description —
 // what an image generator should actually draw, not the marketing copy
 // itself. Previously the prompt was built by blindly truncating postBody to

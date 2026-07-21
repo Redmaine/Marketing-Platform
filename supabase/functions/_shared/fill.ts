@@ -27,10 +27,58 @@ function clientPostingDays(client: Record<string, any>): Set<number> {
   return nums.length ? new Set(nums) : new Set([1, 2, 3, 4, 5])
 }
 
-// How many posts this client should have queued across the window, based on
-// their own posting days — not a flat count assumed for everyone.
-function targetPostsForClient(client: Record<string, any>, windowDays: number): number {
-  return clientPostingDays(client).size * (windowDays / 7)
+// How many posts should be queued across the window for a given set of
+// posting days. Takes the resolved day set rather than reading the client,
+// because days are now resolved PER PLATFORM (see platformSchedule below) —
+// facebook and instagram can post on different days and therefore have
+// different targets.
+function targetPostsForDays(days: Set<number>, windowDays: number): number {
+  return days.size * (windowDays / 7)
+}
+
+// Per-platform schedule from mkt_content_schedule, or null when this client
+// has no active rows for this platform.
+//
+// Backwards compatibility: returning null is what preserves the old
+// behaviour exactly — the caller then falls back to client.post_days /
+// client.post_time as before. A client with no schedule rows for a platform
+// is therefore completely unaffected by this change.
+//
+// timeByDay is keyed per day because the schema allows a different time_uk
+// per row, so a platform can legitimately post at different times on
+// different days. Any day missing a usable time falls back to
+// client.post_time at the point of use.
+interface PlatformSchedule {
+  days: Set<number>
+  timeByDay: Map<number, string>
+}
+
+async function platformSchedule(admin: Admin, client: Record<string, any>, platform: string): Promise<PlatformSchedule | null> {
+  const { data } = await admin
+    .from('mkt_content_schedule')
+    .select('day_of_week, time_uk')
+    .eq('client_id', client.id)
+    .eq('platform', platform)
+    .eq('active', true)
+
+  const rows = data ?? []
+  if (!rows.length) return null
+
+  const days = new Set<number>()
+  const timeByDay = new Map<number, string>()
+  for (const r of rows) {
+    const d = Number(r.day_of_week)
+    if (!Number.isInteger(d) || d < 0 || d > 6) continue
+    days.add(d)
+    const t = String(r.time_uk || '').trim()
+    // First usable time wins for a day that somehow has more than one row.
+    if (t && !timeByDay.has(d)) timeByDay.set(d, t)
+  }
+
+  // Rows existed but none carried a valid day — treat as "no schedule" rather
+  // than generating nothing at all for this platform.
+  if (!days.size) return null
+  return { days, timeByDay }
 }
 
 // The platform(s) this client is scheduled to post on, filtered to only those
@@ -74,12 +122,21 @@ export interface FillResult {
 
 // Walks forward day-by-day from tomorrow, filling the gap between this
 // client's current approved/scheduled post count (in the next 28 days) and
-// their own posting-frequency target (targetPostsForClient — derived from
-// client.post_days, not a flat count assumed for every client), never
-// generating more than `budget` posts. Only generates on the days of the
-// week this client actually posts on (clientPostingDays). Rotates pillars
-// via last_pillar_used; hard-blocks disconnected platforms (clientPlatforms
+// their posting-frequency target (targetPostsForDays — derived from the days
+// resolved for THAT platform), never generating more than `budget` posts.
+// Only generates on that platform's posting days. Rotates pillars via
+// last_pillar_used; hard-blocks disconnected platforms (clientPlatforms
 // already filters to connected only).
+//
+// Posting days/times are resolved PER PLATFORM: mkt_content_schedule rows for
+// this client+platform when they exist, otherwise client.post_days /
+// client.post_time exactly as before (see platformSchedule).
+//
+// TODO: CRHQ 4-week engagement review
+// Every 4 weeks, review engagement data and adjust post times,
+// frequency and format based on actual performance.
+// This is not set and forget — CRHQ is the testing ground
+// that makes Quill sharper for every client.
 export async function fillClientGap(admin: Admin, client: Record<string, any>, budget: number, windowDays: number = TARGET_WINDOW_DAYS): Promise<FillResult> {
   const errors: string[] = []
   if (budget <= 0) return { generated: 0, errors }
@@ -88,7 +145,9 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   if (platforms.length === 0) {
     return { generated: 0, errors: [`${client.name}: no connected platform to post to`] }
   }
-  const postingDays = clientPostingDays(client)
+  // NOTE: posting days are no longer resolved once for the whole client —
+  // they're resolved per platform inside the loop below, so facebook and
+  // instagram can run on different days. See platformSchedule.
 
   const now = new Date()
   const windowEnd = addDays(now, windowDays)
@@ -120,6 +179,16 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     const platformsLeft = platforms.length - platformIdx
     const platformBudget = Math.min(remainingBudget, Math.ceil(remainingBudget / platformsLeft))
 
+    // Per-platform schedule (mkt_content_schedule) when this client+platform
+    // has active rows; otherwise the client-wide post_days/post_time exactly
+    // as before. This is what lets CRHQ run facebook Tue/Thu/Sat 18:00 and
+    // instagram Mon/Tue/Thu/Fri 07:30 off one client record.
+    const schedule = await platformSchedule(admin, client, platform)
+    const postingDays = schedule ? schedule.days : clientPostingDays(client)
+    if (schedule) {
+      console.log(`[fill] ${client.name}/${platform}: using per-platform schedule — days [${[...schedule.days].sort().join(',')}]`)
+    }
+
     // Root-cause fix: this used to only count status in ('approved',
     // 'scheduled'), so a post this same function already generated as
     // 'draft' (every fresh insert below starts as 'draft' — see row.status)
@@ -147,7 +216,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
       .neq('status', 'rejected')
       .gte('scheduled_for', now.toISOString()).lte('scheduled_for', windowEnd.toISOString())
 
-    const gap = Math.max(0, targetPostsForClient(client, windowDays) - (existingCount ?? 0))
+    // Target is derived from THIS platform's resolved posting days, so a
+    // platform posting 3 days a week targets 3/week and one posting 4 days
+    // targets 4/week — rather than both inheriting one client-wide number.
+    const gap = Math.max(0, targetPostsForDays(postingDays, windowDays) - (existingCount ?? 0))
     if (gap === 0) continue
 
     // Fix 4 — pillars used earlier in this same fill run, so consecutive posts
@@ -186,7 +258,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // live post (see stripMarkdown in generate.ts).
         if (review.body) review.body = stripMarkdown(review.body)
 
-        const [hh, mm] = String(client.post_time ?? '09:00').split(':')
+        // Slot time: the per-platform schedule's time for THIS day when set,
+        // otherwise the client-wide post_time exactly as before.
+        const slotTime = schedule?.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
+        const [hh, mm] = slotTime.split(':')
         const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
 
         const row = review.ok
