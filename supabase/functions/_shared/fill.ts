@@ -48,12 +48,14 @@ function targetPostsForDays(days: Set<number>, windowDays: number): number {
 // per row, so a platform can legitimately post at different times on
 // different days. Any day missing a usable time falls back to
 // client.post_time at the point of use.
-interface PlatformSchedule {
+export interface PlatformSchedule {
   days: Set<number>
   timeByDay: Map<number, string>
 }
 
-async function platformSchedule(admin: Admin, client: Record<string, any>, platform: string): Promise<PlatformSchedule | null> {
+// Exported so crhq-nightly-content can find CRHQ's next available per-platform
+// slot without duplicating this query/parsing logic.
+export async function platformSchedule(admin: Admin, client: Record<string, any>, platform: string): Promise<PlatformSchedule | null> {
   const { data } = await admin
     .from('mkt_content_schedule')
     .select('day_of_week, time_uk')

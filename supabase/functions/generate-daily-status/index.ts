@@ -68,7 +68,7 @@ serve(async () => {
     const weekEnd = new Date(`${nextMondayStr}T00:00:00Z`)
     const last24hStart = new Date(now.getTime() - 24 * 3600_000)
 
-    const [clientsRes, scheduledWeekRes, pendingRes, rejectedWeekRes, errorsRes] = await Promise.all([
+    const [clientsRes, scheduledWeekRes, pendingRes, rejectedWeekRes, errorsRes, crhqScrapeRes] = await Promise.all([
       admin.from('mkt_clients').select('id, name, short_name').eq('active', true),
       // "Genuinely on the calendar" (approved/scheduled/published) within
       // this week — filtered to today in-memory for scheduled_today, and
@@ -96,6 +96,15 @@ serve(async () => {
         .select('function_name, error_message, created_at')
         .gte('created_at', last24hStart.toISOString())
         .order('created_at', { ascending: false }),
+      // Most recent CRHQ scrape — written by crhq-nightly-content's 22:00 run
+      // (see _shared/crhqScrape.ts) — read here to tell Quill whether last
+      // night found real YouTube/news content or fell back to the pillar
+      // rotation, without needing its own separate endpoint.
+      admin.from('crhq_scrape_cache')
+        .select('scraped_at, videos, articles')
+        .order('scraped_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ])
 
     const clients = clientsRes.data || []
@@ -103,6 +112,18 @@ serve(async () => {
     const pending = pendingRes.data || []
     const rejectedWeek = rejectedWeekRes.data || []
     const errors = errorsRes.data || []
+
+    const crhqScrape = crhqScrapeRes.data
+    const crhqScrapeVideos = Array.isArray(crhqScrape?.videos) ? crhqScrape.videos : []
+    const crhqScrapeArticles = Array.isArray(crhqScrape?.articles) ? crhqScrape.articles : []
+    const crhq_last_scrape = crhqScrape
+      ? {
+          scraped_at: crhqScrape.scraped_at,
+          source: (crhqScrapeVideos.length || crhqScrapeArticles.length) ? 'youtube_scrape' : 'pillar_fallback',
+          videos_found: crhqScrapeVideos.length,
+          articles_found: crhqScrapeArticles.length,
+        }
+      : null
 
     const scheduledToday = scheduledWeek.filter((r) => {
       if (!r.scheduled_for) return false
@@ -145,6 +166,7 @@ serve(async () => {
         timestamp: e.created_at,
       })),
       brand_counts,
+      crhq_last_scrape,
     }
 
     const { error: uploadErr } = await admin.storage.from(BUCKET).upload(FILE, new Blob([JSON.stringify(status)], { type: 'application/json' }), {

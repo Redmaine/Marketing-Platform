@@ -1,0 +1,215 @@
+// Shared CRHQ scrape logic — YouTube uploads + combatreadyhq.co.uk/news
+// articles from the last 48 hours. Extracted from scrape-crhq-content so both
+// that function (kept for manual/on-demand re-scraping) and
+// crhq-nightly-content (which needs a fresh scrape as the first step of its
+// own nightly run, not a separately-timed cron's cached output) share one
+// implementation rather than drifting apart.
+//
+// Both the YouTube call and the news-page scrape are best-effort and fully
+// independent — either can fail or return nothing without affecting the
+// other. An empty or failed scrape is not an error: callers fall back to
+// pillar content, per spec.
+const CHANNEL_HANDLE = '@combatreadyhq'
+const NEWS_URL = 'https://combatreadyhq.co.uk/news'
+const LOOKBACK_HOURS = 48
+
+export interface ScrapedVideo {
+  title: string
+  view_count: number
+  published_at: string
+  url: string
+}
+
+export interface ScrapedArticle {
+  title: string
+  url: string
+  published_at: string | null
+}
+
+export interface CrhqScrapeResult {
+  videos: ScrapedVideo[]
+  articles: ScrapedArticle[]
+  errors: string[]
+}
+
+// ── YouTube ──────────────────────────────────────────────────────────────
+// Resolves the channel via the forHandle parameter (no OAuth, API key only)
+// and returns its uploads-playlist id in the same call, so listing recent
+// videos is one cheap playlistItems.list call rather than the much more
+// expensive search.list endpoint.
+async function resolveChannel(apiKey: string): Promise<{ channelId: string; uploadsPlaylistId: string } | null> {
+  const url = `https://www.googleapis.com/youtube/v3/channels?part=contentDetails&forHandle=${encodeURIComponent(CHANNEL_HANDLE)}&key=${apiKey}`
+  const r = await fetch(url)
+  if (!r.ok) throw new Error(`channels.list failed: ${r.status} ${(await r.text()).slice(0, 300)}`)
+  const j = await r.json()
+  const item = j?.items?.[0]
+  const uploadsPlaylistId = item?.contentDetails?.relatedPlaylists?.uploads
+  if (!item?.id || !uploadsPlaylistId) return null
+  return { channelId: item.id, uploadsPlaylistId }
+}
+
+async function fetchRecentVideos(apiKey: string): Promise<ScrapedVideo[]> {
+  const channel = await resolveChannel(apiKey)
+  if (!channel) return []
+
+  const plUrl = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${channel.uploadsPlaylistId}&maxResults=25&key=${apiKey}`
+  const pr = await fetch(plUrl)
+  if (!pr.ok) throw new Error(`playlistItems.list failed: ${pr.status} ${(await pr.text()).slice(0, 300)}`)
+  const pj = await pr.json()
+  const items: Array<Record<string, any>> = pj?.items ?? []
+
+  const cutoff = Date.now() - LOOKBACK_HOURS * 3600_000
+  const recent = items.filter((it) => {
+    const t = new Date(it?.snippet?.publishedAt ?? 0).getTime()
+    return Number.isFinite(t) && t >= cutoff
+  })
+  if (recent.length === 0) return []
+
+  // Batch view counts in one call rather than one per video.
+  const videoIds = recent.map((it) => it?.snippet?.resourceId?.videoId).filter(Boolean)
+  const viewsById = new Map<string, number>()
+  if (videoIds.length) {
+    const statsUrl = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds.join(',')}&key=${apiKey}`
+    const vr = await fetch(statsUrl)
+    if (vr.ok) {
+      const vj = await vr.json()
+      for (const v of vj?.items ?? []) viewsById.set(v.id, Number(v?.statistics?.viewCount) || 0)
+    }
+  }
+
+  return recent
+    .filter((it) => it?.snippet?.resourceId?.videoId)
+    .map((it) => {
+      const id = it.snippet.resourceId.videoId
+      return {
+        title: it.snippet?.title ?? '',
+        view_count: viewsById.get(id) ?? 0,
+        published_at: it.snippet?.publishedAt ?? '',
+        url: `https://youtube.com/watch?v=${id}`,
+      }
+    })
+}
+
+// ── News page ────────────────────────────────────────────────────────────
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+    .trim()
+}
+
+// "30 Jun 2026" -> UTC midnight of that day. The news page only gives a date,
+// no time of day, so recency is judged at day granularity (see
+// isWithinLookback below) rather than a false-precision exact-ms diff.
+function parseUkDate(text: string): Date | null {
+  const m = text.match(/^(\d{1,2}) ([A-Za-z]{3}) (\d{4})$/)
+  if (!m) return null
+  const months: Record<string, number> = {
+    Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11,
+  }
+  const mon = months[m[2]]
+  if (mon === undefined) return null
+  return new Date(Date.UTC(Number(m[3]), mon, Number(m[1])))
+}
+
+function isWithinLookback(iso: string | null): boolean {
+  if (!iso) return false
+  const published = new Date(iso).getTime()
+  if (!Number.isFinite(published)) return false
+  // Date-only precision means the true publish time could be anywhere in that
+  // UTC day, so "today or yesterday" (up to ~48h, plus up to a day of slack
+  // either side of the boundary) is the honest equivalent of "last 48 hours"
+  // for data this coarse — not an exact 48*3600000ms cutoff.
+  const oneDayMs = 86400_000
+  const now = Date.now()
+  return now - published <= 2 * oneDayMs && published <= now + oneDayMs
+}
+
+// Best-effort regex scrape of the Next.js-rendered /news listing page. The
+// article grid ships as an inline React Server Component payload
+// (self.__next_f.push(...)) rather than plain <a href> markup, so this reads
+// that payload's escaped JSON-like text directly instead of trying to parse
+// real HTML (no DOM parser is available in the Deno edge runtime). A handful
+// of cards stream their title in a later, separately-referenced chunk this
+// can't resolve; those are silently skipped rather than mismatched to the
+// wrong article. That's fine — a partial or empty result here is a supported,
+// silent fallback, not a failure.
+function parseNewsArticles(html: string): ScrapedArticle[] {
+  const hrefRe = /\\"href\\":\\"(\/news\/[a-z0-9-]+)\\"/g
+  const dateRe = /\\"text-xs text-subtle\\",\\"children\\":\\"(\d{1,2} [A-Za-z]{3} \d{4})\\"/g
+  const titleRe = /\\"h3\\",null,\{\\"className\\":\\"font-display[^"]*?\\",\\"children\\":\\"(.*?)\\"\}/g
+
+  const hrefs: Array<{ pos: number; href: string }> = []
+  for (const m of html.matchAll(hrefRe)) hrefs.push({ pos: m.index ?? 0, href: m[1] })
+  const dates: Array<{ pos: number; date: string }> = []
+  for (const m of html.matchAll(dateRe)) dates.push({ pos: m.index ?? 0, date: m[1] })
+  const titles: Array<{ pos: number; title: string }> = []
+  for (const m of html.matchAll(titleRe)) titles.push({ pos: m.index ?? 0, title: m[1] })
+
+  // The date span for a given card sits inside the same href-wrapped object,
+  // shortly after the href assignment — the nearest href BEFORE the date is
+  // reliably that card's own link.
+  function nearestPrecedingHref(pos: number, maxDist = 2000): string | null {
+    let best: { pos: number; href: string } | null = null
+    for (const h of hrefs) {
+      if (h.pos < pos && pos - h.pos <= maxDist && (!best || h.pos > best.pos)) best = h
+    }
+    return best?.href ?? null
+  }
+
+  const seen = new Set<string>()
+  const out: ScrapedArticle[] = []
+  for (const d of dates) {
+    // The h3 title immediately follows its date span within the same card.
+    const title = titles.find((t) => t.pos > d.pos && t.pos - d.pos < 300)?.title
+    const href = nearestPrecedingHref(d.pos)
+    if (!title || !href || seen.has(href)) continue
+    seen.add(href)
+    const published = parseUkDate(d.date)
+    out.push({
+      title: decodeEntities(title),
+      url: new URL(href, NEWS_URL).toString(),
+      published_at: published ? published.toISOString() : null,
+    })
+  }
+  return out
+}
+
+async function fetchRecentArticles(): Promise<ScrapedArticle[]> {
+  const res = await fetch(NEWS_URL, { headers: { 'User-Agent': 'Mozilla/5.0 (YCA-Scrape/1.0)' } })
+  if (!res.ok) throw new Error(`news fetch failed: ${res.status}`)
+  const html = await res.text()
+  return parseNewsArticles(html).filter((a) => isWithinLookback(a.published_at))
+}
+
+// Runs both scrapes, each independently best-effort. Never throws — callers
+// get whatever succeeded plus a list of what didn't, exactly like the
+// original scrape-crhq-content handler did inline.
+export async function scrapeCrhqContent(): Promise<CrhqScrapeResult> {
+  const errors: string[] = []
+  let videos: ScrapedVideo[] = []
+  let articles: ScrapedArticle[] = []
+
+  const apiKey = Deno.env.get('YOUTUBE_API_KEY')
+  if (apiKey) {
+    try {
+      videos = await fetchRecentVideos(apiKey)
+    } catch (e) {
+      const msg = `youtube: ${String((e as Error)?.message ?? e)}`
+      errors.push(msg)
+      console.error(`[crhqScrape] ${msg}`)
+    }
+  } else {
+    console.warn('[crhqScrape] YOUTUBE_API_KEY not set — skipping video scrape')
+  }
+
+  try {
+    articles = await fetchRecentArticles()
+  } catch (e) {
+    const msg = `news: ${String((e as Error)?.message ?? e)}`
+    errors.push(msg)
+    console.error(`[crhqScrape] ${msg}`)
+  }
+
+  return { videos, articles, errors }
+}

@@ -89,12 +89,18 @@ const CRHQ_FACEBOOK = `PLATFORM — FACEBOOK (long form):
 - End with a call to action driving to the Combat Ready HQ YouTube channel or combatreadyhq.co.uk.
 - The discount code YOUTUBE10 may be included ONLY where it genuinely fits the subject, and at most in one post out of every three. If any of the recent posts listed above already mention YOUTUBE10, do not use it in this post. When in doubt, leave it out — a forced code is worse than no code.`
 
-const CRHQ_INSTAGRAM = `PLATFORM — INSTAGRAM (short form):
-- 20 to 40 words maximum. Two to four short lines. This is a hard limit.
-- The first line is a hook: a strong, specific opening statement that stops the scroll.
-- One clear point per post. No analysis, no long form, no second argument — that lives on Facebook.
-- Reference "link in bio" or combatreadyhq.co.uk once.
-- Do not describe the image. An image is generated separately.`
+const CRHQ_INSTAGRAM = `PLATFORM — INSTAGRAM: exactly 3 lines. No exceptions — not 2, not 4.
+
+Line 1 — Hook: one sentence that stops the scroll.
+Line 2 — One supporting point or provocation.
+Line 3 — CTA: "Link in bio" or "combatreadyhq.co.uk".
+
+Example (match this shape exactly — do not copy its wording, only its structure and length):
+"The UK has committed billions to defence. The question is whether the money will arrive before the threat does.
+Most people won't read the procurement reports. Craig does.
+Full breakdown at combatreadyhq.co.uk"
+
+Maximum 40 words total across all three lines. No analysis, no long form, no second argument — that lives on Facebook. Do not describe the image. An image is generated separately.`
 
 // Rotated across both platforms. The caller still chooses the pillar for any
 // given post (pickDiversePillar reads client.content_pillars); this states the
