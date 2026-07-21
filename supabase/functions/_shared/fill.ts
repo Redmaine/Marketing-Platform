@@ -4,6 +4,7 @@
 import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
+import { latestOptimisationNotes } from './optimisation.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -120,6 +121,10 @@ export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform
 export interface FillResult {
   generated: number
   errors: string[]
+  // Non-error status messages — currently just "Auto-approved post for X"
+  // (see auto_approve below). Kept separate from `errors` so a routine
+  // auto-approval doesn't read as a failure in mkt_cron_log.
+  notes: string[]
 }
 
 // Walks forward day-by-day from tomorrow, filling the gap between this
@@ -141,12 +146,21 @@ export interface FillResult {
 // that makes Quill sharper for every client.
 export async function fillClientGap(admin: Admin, client: Record<string, any>, budget: number, windowDays: number = TARGET_WINDOW_DAYS): Promise<FillResult> {
   const errors: string[] = []
-  if (budget <= 0) return { generated: 0, errors }
+  const notes: string[] = []
+  if (budget <= 0) return { generated: 0, errors, notes }
 
   const platforms = await clientPlatforms(admin, client)
   if (platforms.length === 0) {
-    return { generated: 0, errors: [`${client.name}: no connected platform to post to`] }
+    return { generated: 0, errors: [`${client.name}: no connected platform to post to`], notes }
   }
+
+  // Content optimisation loop — the latest month's Claude-generated notes
+  // for this brand (monthly-performance-pull), folded into the system
+  // prompt by buildSystemPrompt (prompts.ts) via client._optimisation_notes.
+  // Fetched once per client, not per platform — the notes don't vary by
+  // platform. null (no row yet, e.g. a brand's first month) means this is a
+  // no-op: buildSystemPrompt simply omits the line.
+  const optimisationNotes = await latestOptimisationNotes(admin, client.id)
   // NOTE: posting days are no longer resolved once for the whole client —
   // they're resolved per platform inside the loop below, so facebook and
   // instagram can run on different days. See platformSchedule.
@@ -254,7 +268,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // placeholder (still fills the slot so we don't loop it) with the reason
         // shown to Adrian. The generator is shown recent topics (Fix 4) via the
         // client object so it steers away from them — no review-step change.
-        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics }, platform, pillar)
+        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes }, platform, pillar)
         // Hard backstop — strip any markdown the model still produced despite
         // FORMAT_RULES and the review step's retry, so it never reaches a
         // live post (see stripMarkdown in generate.ts).
@@ -266,10 +280,17 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         const [hh, mm] = slotTime.split(':')
         const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
 
+        // Auto-approve — set by Adrian per brand (mkt_clients.auto_approve),
+        // never by any automated signal. Only applies to a post that actually
+        // passed review: a needs_attention post has a real problem flagged by
+        // the reviewer and must still reach Adrian regardless of this flag —
+        // auto-approving broken content would defeat the point of the review
+        // step entirely.
+        const autoApprove = review.ok && client.auto_approve === true
         const row = review.ok
           ? {
               client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
-              status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+              status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
               review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
             }
           : {
@@ -282,6 +303,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
         if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
         if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
+        if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
         // Image generation is best-effort and never blocks or fails the post —
         // generatePostImage swallows its own errors and leaves image_url null
@@ -302,5 +324,5 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     }
   }
 
-  return { generated, errors }
+  return { generated, errors, notes }
 }

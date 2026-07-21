@@ -37,6 +37,7 @@ import { platformSchedule, hasAutoPostOnDate } from '../_shared/fill.ts'
 import { dayOfWeekUK, addDays, pickDiversePillar, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
 import { generatePostImage } from '../_shared/image.ts'
+import { latestOptimisationNotes } from '../_shared/optimisation.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -122,6 +123,11 @@ serve(async () => {
 
     const recentTopics = await recentPublishedSummaries(admin, client.id, 6)
     const usedThisRun: string[] = []
+    // Content optimisation loop — same lookup fill.ts uses for every other
+    // client, applied here too since it's a client-level setting on
+    // mkt_clients that shouldn't only apply to brands going through
+    // fillClientGap.
+    const optimisationNotes = await latestOptimisationNotes(admin, client.id)
 
     for (const platform of PLATFORMS) {
       // Step 2 (limit check) — never let CRHQ accumulate a backlog.
@@ -147,17 +153,21 @@ serve(async () => {
       // unrelated pillar alongside it.
       const pillar = foundContent ? 'CRHQ latest content' : await pickDiversePillar(admin, client, usedThisRun)
       const clientForGeneration = foundContent
-        ? { ...client, _recent_topics: recentTopics, _crhq_scrape: { videos, articles } }
-        : { ...client, _recent_topics: recentTopics }
+        ? { ...client, _recent_topics: recentTopics, _crhq_scrape: { videos, articles }, _optimisation_notes: optimisationNotes }
+        : { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes }
 
       try {
         const review = await generateReviewedPost(admin, clientForGeneration, platform, pillar)
         if (review.body) review.body = stripMarkdown(review.body)
 
+        // Auto-approve — see _shared/fill.ts's identical guard for the
+        // reasoning: only applies to a post that passed review, never to a
+        // needs_attention placeholder.
+        const autoApprove = review.ok && client.auto_approve === true
         const row = review.ok
           ? {
               client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
-              status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+              status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
               review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
               content_source,
             }
@@ -172,6 +182,7 @@ serve(async () => {
         const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
         if (insertError) { errors.push(`${platform}: insert failed — ${insertError.message}`); continue }
         if (!review.ok) errors.push(`${platform}: needs attention — ${review.reason}`)
+        if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
         // Best-effort, Instagram-only (image_gen_platforms allow-list already
         // gates this — see _shared/image.ts) — never blocks or fails the post.

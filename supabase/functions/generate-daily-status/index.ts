@@ -68,7 +68,12 @@ serve(async () => {
     const weekEnd = new Date(`${nextMondayStr}T00:00:00Z`)
     const last24hStart = new Date(now.getTime() - 24 * 3600_000)
 
-    const [clientsRes, scheduledWeekRes, pendingRes, rejectedWeekRes, errorsRes, crhqScrapeRes] = await Promise.all([
+    // "Last month" relative to now, in the same YYYY-MM form
+    // monthly-performance-pull writes month_year in.
+    const lastMonthDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
+    const lastMonthYear = `${lastMonthDate.getUTCFullYear()}-${String(lastMonthDate.getUTCMonth() + 1).padStart(2, '0')}`
+
+    const [clientsRes, scheduledWeekRes, pendingRes, rejectedWeekRes, errorsRes, crhqScrapeRes, monthlyReportsRes] = await Promise.all([
       admin.from('mkt_clients').select('id, name, short_name').eq('active', true),
       // "Genuinely on the calendar" (approved/scheduled/published) within
       // this week — filtered to today in-memory for scheduled_today, and
@@ -105,6 +110,12 @@ serve(async () => {
         .order('scraped_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
+      // Last month's per-brand average engagement — written by
+      // monthly-performance-pull on the 1st of this month, for Quill to see
+      // alongside the rest of the daily snapshot.
+      admin.from('mkt_monthly_reports')
+        .select('client_id, avg_engagement_rate, follower_change')
+        .eq('month_year', lastMonthYear),
     ])
 
     const clients = clientsRes.data || []
@@ -132,11 +143,17 @@ serve(async () => {
     })
     const rejectedLast24h = rejectedWeek.filter((r) => r.rejected_at && new Date(r.rejected_at) >= last24hStart)
 
+    const monthlyReportByClientId = new Map<string, { avg_engagement_rate: number | null; follower_change: number | null }>(
+      (monthlyReportsRes.data || []).map((r: Record<string, any>) => [r.client_id, { avg_engagement_rate: r.avg_engagement_rate ?? null, follower_change: r.follower_change ?? null }])
+    )
+
     const brand_counts = clients.map((c) => ({
       brand: nameOf(c),
       scheduled_this_week: scheduledWeek.filter((r) => (r as { client?: { short_name?: string; name?: string } }).client && nameOf((r as { client?: { short_name?: string; name?: string } }).client) === nameOf(c)).length,
       pending_approval: pending.filter((r) => (r as { client?: { short_name?: string; name?: string } }).client && nameOf((r as { client?: { short_name?: string; name?: string } }).client) === nameOf(c)).length,
       rejected_this_week: rejectedWeek.filter((r) => (r as { client?: { short_name?: string; name?: string } }).client && nameOf((r as { client?: { short_name?: string; name?: string } }).client) === nameOf(c)).length,
+      avg_engagement_rate_last_month: monthlyReportByClientId.get(c.id)?.avg_engagement_rate ?? null,
+      follower_change_last_month: monthlyReportByClientId.get(c.id)?.follower_change ?? null,
     }))
 
     const status = {

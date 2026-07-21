@@ -150,6 +150,15 @@ export function buildSystemPrompt(client: Record<string, any>): string {
     parts.push(CRHQ_GLOBAL)
     parts.push(CRHQ_PILLARS)
   }
+  // Content optimisation loop — set by the caller (fill.ts / crhq-nightly-
+  // content) via _shared/optimisation.ts, from the latest mkt_client_
+  // optimisation row written by monthly-performance-pull. Absent for a
+  // client's first month (no data yet) or if the caller didn't attach it —
+  // this block is then simply skipped, per spec.
+  const optimisationNotes = typeof client._optimisation_notes === 'string' ? client._optimisation_notes.trim() : ''
+  if (optimisationNotes) {
+    parts.push(`Previous month performance notes for this brand: ${optimisationNotes}`)
+  }
   parts.push(FACTUAL_ACCURACY_CONSTRAINT)
   parts.push(FORMAT_RULES)
   return parts.join('\n\n')

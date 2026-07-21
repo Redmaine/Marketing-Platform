@@ -35,6 +35,7 @@ const PER_CLIENT_POST_BUDGET = 20
 serve(async () => {
   const started = Date.now()
   const errors: string[] = []
+  const notes: string[] = []
   let clientsProcessed = 0
   let postsGenerated = 0
   let blogsGenerated = 0
@@ -67,11 +68,15 @@ serve(async () => {
       // comment above. A per-client try/catch means one client throwing
       // (e.g. Anthropic API error) can't abort the run for everyone after it.
       try {
-        const { generated, errors: fillErrors } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET)
+        const { generated, errors: fillErrors, notes: fillNotes } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET)
         postsGenerated += generated
         if (fillErrors.length) {
           errors.push(...fillErrors)
           for (const fe of fillErrors) console.error(`[midnight-cron] ${fe}`)
+        }
+        if (fillNotes.length) {
+          notes.push(...fillNotes)
+          for (const fn of fillNotes) console.log(`[midnight-cron] ${fn}`)
         }
         console.log(`[midnight-cron] ${client.name}: ${generated} post(s) generated`)
       } catch (e) {
@@ -91,6 +96,7 @@ serve(async () => {
     clients_processed: clientsProcessed,
     posts_generated: postsGenerated,
     errors: errors.length ? errors : null,
+    notes: notes.length ? notes : null,
     duration_ms: Date.now() - started,
   })
   if (logError) console.error(`[midnight-cron] failed to write mkt_cron_log: ${logError.message}`)
@@ -106,9 +112,9 @@ serve(async () => {
     if (efeError) console.error(`[midnight-cron] failed to write edge_function_errors: ${efeError.message}`)
   }
 
-  console.log(`[midnight-cron] run complete — ${clientsProcessed} client(s), ${postsGenerated} post(s), ${blogsGenerated} blog(s), ${errors.length} error(s)`)
+  console.log(`[midnight-cron] run complete — ${clientsProcessed} client(s), ${postsGenerated} post(s), ${blogsGenerated} blog(s), ${notes.length} note(s), ${errors.length} error(s)`)
 
-  return new Response(JSON.stringify({ ok: true, clientsProcessed, postsGenerated, blogsGenerated, errors }), {
+  return new Response(JSON.stringify({ ok: true, clientsProcessed, postsGenerated, blogsGenerated, notes, errors }), {
     headers: { 'Content-Type': 'application/json' },
   })
 })
