@@ -221,10 +221,11 @@ serve(async (req) => {
         return json({ error: msg, status: 'publish_failed' }, 502)
       }
 
-      const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
+      const liveUrl = `${ghBrand.siteUrl}/blog/${slug}`
+      const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Committed to GitHub, but could not update status: ${updErr.message}` }, 500)
 
-      return json({ ok: true, method: 'github', liveUrl: `${ghBrand.siteUrl}/blog/${slug}`, published_at: now })
+      return json({ ok: true, method: 'github', liveUrl, published_at: now })
     }
 
     // ── Branch 2: Steady (its own, separate Supabase project) ─────────────────
@@ -253,15 +254,17 @@ serve(async (req) => {
         return json({ error: msg, status: 'publish_failed' }, 502)
       }
 
-      const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
+      const liveUrl = `${STEADY_SITE_URL}/blog/${slug}`
+      const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Published to Steady, but could not update status here: ${updErr.message}` }, 500)
 
-      return json({ ok: true, method: 'steady', liveUrl: `${STEADY_SITE_URL}/blog/${slug}`, published_at: now })
+      return json({ ok: true, method: 'steady', liveUrl, published_at: now })
     }
 
-    // ── Branch 3: everyone else (YCA, PS, OUAY, Quill, Riverside, …) ──────────
-    // No deploy target exists yet — mark published and hand back a
-    // standalone HTML file for Adrian to paste/upload manually.
+    // ── Branch 3: everyone else (YCA, PS, Quill, Riverside, …) ────────────────
+    // No deploy target exists yet — mark published (live_url left NULL, since
+    // nothing was actually pushed anywhere) and hand back a standalone HTML
+    // file for Adrian to paste/upload manually.
     const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
     if (updErr) return json({ error: updErr.message }, 500)
 
