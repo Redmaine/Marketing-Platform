@@ -30,22 +30,18 @@ export function Blog() {
 
   const rows = brandFilter === 'all' ? posts : posts.filter((p) => p.client?.slug === brandFilter)
 
-  // Approve and publish in one tap — no separate Publish step. If the publish
-  // half fails, the post is reverted to draft so it doesn't sit stuck in
-  // "approved" limbo looking done when it isn't.
-  async function approveAndPublish(blog) {
-    setBusyDraftId(blog.id); setNotice('')
-    const { data: appData, error: appErr } = await supabase.functions.invoke('approve-blog', { body: { blog_id: blog.id } })
-    if (appErr || !appData?.ok) {
-      setBusyDraftId(null)
-      setNotice(appData?.error || appErr?.message || "Couldn't approve that blog — try again.")
-      return
-    }
+  // The publish half, shared by first-time approve-and-publish and by the
+  // retry path for a 'publish_failed'/'approved' row. Returns nothing; sets a
+  // notice and reloads. publish-approved-blog now marks the row
+  // 'publish_failed' (and logs the reason) when a real publish attempt fails,
+  // so that status is left in place — a genuine, visible, retryable state.
+  // Only a row still stuck in 'approved' (a failure before the function could
+  // mark it) is rescued back to draft so nothing sits in approved limbo.
+  async function runPublish(blog) {
     const { data: pubData, error: pubErr } = await supabase.functions.invoke('publish-approved-blog', { body: { blog_id: blog.id, client_id: blog.client_id } })
-    setBusyDraftId(null)
     if (pubErr || !pubData?.ok) {
-      await supabase.from('mkt_blog_posts').update({ status: 'draft' }).eq('id', blog.id)
-      setNotice(`Approved, but publishing failed — reverted to draft so nothing's stuck. ${pubData?.error || pubErr?.message || 'Unknown error'}`)
+      await supabase.from('mkt_blog_posts').update({ status: 'draft' }).eq('id', blog.id).eq('status', 'approved')
+      setNotice(`Publishing failed. ${pubData?.error || pubErr?.message || 'Unknown error'}`)
       load()
       return
     }
@@ -55,11 +51,33 @@ export function Blog() {
       a.href = blobUrl; a.download = pubData.filename || 'post.html'
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(blobUrl)
-      setNotice(`Approved and marked published — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing yet, so the HTML downloaded for you to upload manually.`)
+      setNotice(`Marked published — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing yet, so the HTML downloaded for you to upload manually.`)
     } else {
-      setNotice(`Approved and published — live at ${pubData.liveUrl}`)
+      setNotice(`Published — live at ${pubData.liveUrl}`)
     }
     load()
+  }
+
+  // Approve and publish in one tap — no separate Publish step.
+  async function approveAndPublish(blog) {
+    setBusyDraftId(blog.id); setNotice('')
+    const { data: appData, error: appErr } = await supabase.functions.invoke('approve-blog', { body: { blog_id: blog.id } })
+    if (appErr || !appData?.ok) {
+      setBusyDraftId(null)
+      setNotice(appData?.error || appErr?.message || "Couldn't approve that blog — try again.")
+      return
+    }
+    await runPublish(blog)
+    setBusyDraftId(null)
+  }
+
+  // Retry a blog that already approved (social posts already generated) but
+  // failed to publish — re-runs only the publish half, never approve-blog, so
+  // retrying can't regenerate a second batch of social posts.
+  async function retryPublish(blog) {
+    setBusyDraftId(blog.id); setNotice('')
+    await runPublish(blog)
+    setBusyDraftId(null)
   }
 
   if (loading) return <div className="page"><span className="spinner" /></div>
@@ -91,10 +109,10 @@ export function Blog() {
                   </div>
                 </div>
                 <span className="pill" style={{
-                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'approved' ? '#D1FAE5' : 'var(--chalk)',
-                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'approved' ? '#065F46' : 'var(--steel)',
+                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'published' ? '#D1FAE5' : blog.status === 'publish_failed' ? '#FEE2E2' : 'var(--chalk)',
+                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'published' ? '#065F46' : blog.status === 'publish_failed' ? '#991B1B' : 'var(--steel)',
                   flexShrink: 0,
-                }}>{blog.status}</span>
+                }}>{blog.status === 'publish_failed' ? 'publish failed' : blog.status}</span>
               </div>
               <h3 style={{ fontSize: 17, marginBottom: 6 }}>{blog.title}</h3>
               <p style={{ fontSize: 12, color: 'var(--mist)', marginBottom: 10 }}>{blog.meta_description}</p>
@@ -106,8 +124,19 @@ export function Blog() {
                 <button className="btn btn-primary btn-sm" disabled={busyDraftId === blog.id} onClick={() => approveAndPublish(blog)}>
                   {busyDraftId === blog.id ? 'Approving & publishing…' : 'Approve & publish'}
                 </button>
-              ) : (
+              ) : blog.status === 'published' ? (
                 <span className="pill" style={{ background: '#D1FAE5', color: '#065F46' }}>✓ Published</span>
+              ) : (
+                // 'publish_failed' or a rare stuck 'approved' — already
+                // approved (socials generated), so retry only the publish half.
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" disabled={busyDraftId === blog.id} onClick={() => retryPublish(blog)}>
+                    {busyDraftId === blog.id ? 'Publishing…' : 'Retry publish'}
+                  </button>
+                  {blog.status === 'publish_failed' && (
+                    <span style={{ fontSize: 12, color: '#991B1B' }}>Last publish failed — check the error log.</span>
+                  )}
+                </div>
               )}
             </div>
           ))}

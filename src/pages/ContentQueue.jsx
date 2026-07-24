@@ -5,6 +5,18 @@ import { useAuth } from '../context/AuthContext'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 
+// A social post that references a blog (either explicitly linked via blog_id
+// by approve-blog, or detected by these phrases in the copy) is
+// "blog-dependent": it can't be approved until the blog it points to is live,
+// or it would go out advertising a post that 404s.
+const BLOG_KEYWORDS = ['blog', 'latest post', 'we wrote', 'read more']
+const BLOG_WAIT_MESSAGE = 'Waiting for blog to publish before this post can be approved.'
+function referencesBlog(item) {
+  if (item.review_status === 'blog_dependent') return true
+  const body = (item.body || '').toLowerCase()
+  return BLOG_KEYWORDS.some((k) => body.includes(k))
+}
+
 // ISO timestamp -> value for <input type="datetime-local"> in local time.
 function toLocalInput(iso) {
   if (!iso) return ''
@@ -20,6 +32,7 @@ export function ContentQueue() {
   const statusFilter = searchParams.get('status') // 'draft' or 'failed' when coming from dashboard
   const [items, setItems] = useState([])
   const [clients, setClients] = useState([])
+  const [blogs, setBlogs] = useState([]) // mkt_blog_posts (id, client_id, status) — for blog-dependent gating
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null)
   const [draft, setDraft] = useState('')
@@ -49,10 +62,13 @@ export function ContentQueue() {
       supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
     ])
     const g = await supabase.from('mkt_graphic_copy').select('*, client:mkt_clients(short_name,name)').order('week_of', { ascending: false })
+    // Blog statuses drive the blog-dependent gate below. Small table; fetch all.
+    const b = await supabase.from('mkt_blog_posts').select('id, client_id, status, created_at').order('created_at', { ascending: false })
     setItems(q.data || [])
     setClients(c.data || [])
     setPublished(p.data || [])
     setGraphics(g.data || [])
+    setBlogs(b.data || [])
     if (c.data?.[0] && !gen.client_id) setGen((g) => ({ ...g, client_id: c.data[0].id }))
     setLoading(false)
   }
@@ -67,7 +83,51 @@ export function ContentQueue() {
   // tab (below), not a spot in the default "Posts" list.
   const visibleItems = items.filter((i) => i.status !== 'rejected')
 
+  // Find the blog a post depends on: the explicitly linked one (blog_id) if
+  // present, otherwise the client's most recent not-yet-published blog (the
+  // one a keyword-detected teaser is presumably waiting on). Uses loaded state
+  // for rendering; approve() re-checks against the DB before acting.
+  function relatedBlog(item) {
+    if (item.blog_id) return blogs.find((b) => b.id === item.blog_id) || null
+    return blogs.filter((b) => b.client_id === item.client_id && b.status !== 'published')[0] || null
+  }
+  // Render-time state: is this post blog-dependent, and is it currently blocked
+  // (dependent + the blog isn't published yet)?
+  function blogBlockState(item) {
+    if (!referencesBlog(item)) return { dependent: false, blocked: false }
+    const blog = relatedBlog(item)
+    return { dependent: true, blocked: !!blog && blog.status !== 'published' }
+  }
+  // Authoritative gate used at approval time. Returns the wait message if the
+  // post must not be approved yet, else null. Also durably marks a
+  // keyword-detected post's review_status as blog_dependent so the queue
+  // reflects the true state on the next load.
+  async function blogGate(item) {
+    if (!referencesBlog(item)) return null
+    let blog = null
+    if (item.blog_id) {
+      const { data } = await supabase.from('mkt_blog_posts').select('id, status').eq('id', item.blog_id).maybeSingle()
+      blog = data || null
+    }
+    if (!blog) {
+      const { data } = await supabase.from('mkt_blog_posts').select('id, status')
+        .eq('client_id', item.client_id).neq('status', 'published')
+        .order('created_at', { ascending: false }).limit(1)
+      blog = data?.[0] || null
+    }
+    // No blog, or the blog is live → nothing to wait for.
+    if (!blog || blog.status === 'published') return null
+    if (item.review_status !== 'blog_dependent') {
+      await supabase.from('mkt_content_queue').update({ review_status: 'blog_dependent' }).eq('id', item.id)
+      setItems((p) => p.map((i) => i.id === item.id ? { ...i, review_status: 'blog_dependent' } : i))
+    }
+    return BLOG_WAIT_MESSAGE
+  }
+
   async function approve(item) {
+    // Blog-dependent posts can't go out until their blog is live.
+    const gate = await blogGate(item)
+    if (gate) { setNotice(gate); return }
     // Item 8c: honour a per-post send-time override from the queue's time
     // picker; fall back to the post's existing scheduled_for (client default).
     const override = scheduleAt[item.id]
@@ -167,7 +227,12 @@ export function ContentQueue() {
     if (ids.length === 0) return
     setBulkBusy(true); setBulkProgress({ done: 0, total: ids.length }); setNotice('')
     let failures = 0
+    let blocked = 0
     for (const id of ids) {
+      const item = items.find((i) => i.id === id)
+      // Skip blog-dependent posts whose blog isn't live yet — same gate as
+      // single approve, so a bulk approve can't slip one through.
+      if (item && await blogGate(item)) { blocked++; setBulkProgress((p) => ({ ...p, done: p.done + 1 })); continue }
       const { error } = await supabase.from('mkt_content_queue')
         .update({ status: 'approved', approved_at: new Date().toISOString(), approved_by: user?.email })
         .eq('id', id)
@@ -181,7 +246,10 @@ export function ContentQueue() {
     }
     setBulkBusy(false)
     setSelected(new Set())
-    if (failures > 0) setNotice(`${failures} post${failures === 1 ? '' : 's'} failed to schedule to Metricool — see "Failed to schedule" on the dashboard.`)
+    const notes = []
+    if (failures > 0) notes.push(`${failures} post${failures === 1 ? '' : 's'} failed to schedule to Metricool — see "Failed to schedule" on the dashboard.`)
+    if (blocked > 0) notes.push(`${blocked} blog-dependent post${blocked === 1 ? '' : 's'} skipped — ${BLOG_WAIT_MESSAGE.toLowerCase()}`)
+    if (notes.length) setNotice(notes.join(' '))
     // Best-effort ops-dashboard regen — once for the whole batch, not once
     // per item (see approve() above for why this is fire-and-forget).
     supabase.functions.invoke('generate-daily-status').catch((e) => console.error('[generate-daily-status] regen failed:', e))
@@ -283,7 +351,7 @@ export function ContentQueue() {
             </div>
 
             <div style={{ marginTop: 12 }}>
-              {pending.map((item) => (
+              {pending.map((item) => { const blk = blogBlockState(item); return (
                 <div key={item.id} className="card" style={{ marginBottom: 12, display: 'flex', gap: 10 }}>
                   <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} style={{ marginTop: 4 }} />
                   <div style={{ flex: 1 }}>
@@ -311,6 +379,12 @@ export function ContentQueue() {
                         {item.review_status === 'needs_attention' && (
                           <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B' }}>Needs attention</span>
                         )}
+                        {blk.dependent && (
+                          <span className="pill" title={blk.blocked ? BLOG_WAIT_MESSAGE : 'References a blog — its post is published.'}
+                            style={{ background: blk.blocked ? '#E0E7FF' : '#DCFCE7', color: blk.blocked ? '#3730A3' : '#166534' }}>
+                            {blk.blocked ? '⏳ Waiting for blog' : '✓ Blog live'}
+                          </span>
+                        )}
                         {/* Task 2 — any pending post with no review timestamp never
                             went through _shared/review.ts. Flag it distinctly (amber
                             with a border) rather than letting it read as a normal
@@ -335,6 +409,12 @@ export function ContentQueue() {
                       </p>
                     )}
 
+                    {blk.blocked && (
+                      <p style={{ fontSize: 12, color: '#3730A3', background: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                        {BLOG_WAIT_MESSAGE}
+                      </p>
+                    )}
+
                     {editing === item.id ? (
                       <>
                         <textarea className="input" rows={4} value={draft} onChange={(e) => setDraft(e.target.value)}
@@ -355,8 +435,9 @@ export function ContentQueue() {
                             onChange={(e) => setScheduleAt((s) => ({ ...s, [item.id]: e.target.value }))} />
                         </div>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                          <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => approve(item)}>
-                            Approve &amp; schedule
+                          <button className="btn btn-primary btn-sm" style={{ flex: 1 }} disabled={blk.blocked}
+                            title={blk.blocked ? BLOG_WAIT_MESSAGE : undefined} onClick={() => approve(item)}>
+                            {blk.blocked ? 'Waiting for blog' : 'Approve & schedule'}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(item.id); setDraft(item.body) }}>
                             Edit
@@ -369,7 +450,7 @@ export function ContentQueue() {
                     )}
                   </div>
                 </div>
-              ))}
+              ) })}
             </div>
           </>
         )}

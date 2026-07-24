@@ -51,9 +51,19 @@ type GithubBrand = { repo: string; branch: string; siteUrl: string }
 // client.slug -> GitHub-committed brands. Steady is handled separately
 // (its own Supabase project, not GitHub). Everything else falls through to
 // the download-HTML path.
+// Repo names confirmed against the Redmaine GitHub account (the same account
+// that owns hormonely/neuro-decoded) — not guessed. yca-platform is the
+// yourcompanyai.co.uk Vite site; onceuponayou-v2 is OUAY's current Netlify
+// source (the older onceuponayou-website repo is retired). Both read
+// src/blog/*.md at build time, so a push here triggers a Netlify redeploy.
+// PS (problemsolution.co.uk) and Quill (byquill.co.uk) are intentionally
+// absent: no GitHub repo could be confirmed for either, so they fall through
+// to the manual-HTML branch rather than being wired to a guessed repo.
 const GITHUB_BRANDS: Record<string, GithubBrand> = {
   hormonely: { repo: 'Redmaine/hormonely', branch: 'main', siteUrl: 'https://hormonely.co.uk' },
   'neuro-decoded': { repo: 'Redmaine/neuro-decoded', branch: 'main', siteUrl: 'https://neurodecoded.co.uk' },
+  yca: { repo: 'Redmaine/yca-platform', branch: 'main', siteUrl: 'https://yourcompanyai.co.uk' },
+  ouay: { repo: 'Redmaine/onceuponayou-v2', branch: 'main', siteUrl: 'https://onceuponayou.co.uk' },
 }
 const STEADY_SLUG = 'steady'
 const STEADY_SITE_URL = 'https://steadyme.co.uk'
@@ -74,7 +84,7 @@ function esc(s: string): string {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
-function buildMarkdown(post: Record<string, any>, slug: string): string {
+function buildMarkdown(post: Record<string, any>, slug: string, brand: string): string {
   const date = (post.publish_date || new Date().toISOString().slice(0, 10))
   const excerpt = post.meta_description || stripHtml(post.content_html).slice(0, 200)
   const lines = [
@@ -83,11 +93,33 @@ function buildMarkdown(post: Record<string, any>, slug: string): string {
     `date: "${date}"`,
     `slug: "${frontmatterEscape(slug)}"`,
     `excerpt: "${frontmatterEscape(excerpt)}"`,
+    `brand: "${frontmatterEscape(brand)}"`,
     '---',
     '',
     post.content_html || '',
   ]
   return lines.join('\n')
+}
+
+// On a publish failure, mark the blog row publish_failed (visibly distinct
+// from an un-approved draft) and log the reason to edge_function_errors so it
+// shows up in the daily status digest. Both writes are best-effort — a failure
+// to record the failure must not mask the original error.
+async function markFailed(
+  admin: ReturnType<typeof createClient>,
+  blogId: string,
+  message: string,
+): Promise<void> {
+  try {
+    await admin.from('mkt_blog_posts').update({ status: 'publish_failed' }).eq('id', blogId)
+  } catch (e) {
+    console.error('[publish-approved-blog] could not set publish_failed:', String((e as Error)?.message ?? e))
+  }
+  try {
+    await admin.from('edge_function_errors').insert({ function_name: 'publish-approved-blog', error_message: message })
+  } catch (e) {
+    console.error('[publish-approved-blog] could not write edge_function_errors:', String((e as Error)?.message ?? e))
+  }
 }
 
 function buildStandaloneHtml(post: Record<string, any>): string {
@@ -109,6 +141,12 @@ ${post.content_html || ''}
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
+  // Captured so the top-level catch can mark the row publish_failed even when
+  // the throw happens deep inside a publish branch. Undefined until we've
+  // parsed a valid blog_id, so early client errors (bad auth, missing id)
+  // never touch a blog row.
+  let blogId: string | undefined
+  let adminForCatch: ReturnType<typeof createClient> | undefined
   try {
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
     const userClient = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY')!, {
@@ -119,8 +157,10 @@ serve(async (req) => {
 
     const { blog_id } = await req.json()
     if (!blog_id) return json({ error: 'blog_id is required' }, 400)
+    blogId = blog_id
 
     const admin = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+    adminForCatch = admin
 
     const { data: blog, error: blogErr } = await admin.from('mkt_blog_posts').select('*').eq('id', blog_id).maybeSingle()
     if (blogErr || !blog) return json({ error: 'Blog post not found' }, 404)
@@ -136,10 +176,13 @@ serve(async (req) => {
     const ghBrand = client.slug ? GITHUB_BRANDS[client.slug] : undefined
     if (ghBrand) {
       const githubToken = Deno.env.get('GITHUB_TOKEN')
-      if (!githubToken) return json({ error: 'GITHUB_TOKEN not configured in Supabase vault' }, 500)
+      if (!githubToken) {
+        await markFailed(admin, blog_id, 'GITHUB_TOKEN not configured in Supabase vault')
+        return json({ error: 'GITHUB_TOKEN not configured in Supabase vault', status: 'publish_failed' }, 500)
+      }
 
       const path = `src/blog/${slug}.md`
-      const content = buildMarkdown(blog, slug)
+      const content = buildMarkdown(blog, slug, client.name || client.short_name || client.slug || '')
       const ghHeaders = {
         Authorization: `Bearer ${githubToken}`,
         Accept: 'application/vnd.github+json',
@@ -153,7 +196,9 @@ serve(async (req) => {
         sha = (await getRes.json()).sha
       } else if (getRes.status !== 404) {
         const raw = await getRes.text()
-        return json({ error: `GitHub lookup failed (${getRes.status}): ${raw.slice(0, 300)}` }, 502)
+        const msg = `GitHub lookup failed (${getRes.status}) for ${ghBrand.repo}/${path}: ${raw.slice(0, 300)}`
+        await markFailed(admin, blog_id, msg)
+        return json({ error: msg, status: 'publish_failed' }, 502)
       }
 
       const putRes = await fetch(contentsUrl, {
@@ -168,7 +213,9 @@ serve(async (req) => {
       })
       if (!putRes.ok) {
         const raw = await putRes.text()
-        return json({ error: `GitHub commit failed (${putRes.status}): ${raw.slice(0, 300)}` }, 502)
+        const msg = `GitHub commit failed (${putRes.status}) for ${ghBrand.repo}/${path}: ${raw.slice(0, 300)}`
+        await markFailed(admin, blog_id, msg)
+        return json({ error: msg, status: 'publish_failed' }, 502)
       }
 
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
@@ -197,7 +244,11 @@ serve(async (req) => {
         published_at: now,
         updated_at: now,
       }, { onConflict: 'slug' })
-      if (insErr) return json({ error: `Steady insert failed: ${insErr.message}` }, 502)
+      if (insErr) {
+        const msg = `Steady insert failed: ${insErr.message}`
+        await markFailed(admin, blog_id, msg)
+        return json({ error: msg, status: 'publish_failed' }, 502)
+      }
 
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
       if (updErr) return json({ error: `Published to Steady, but could not update status here: ${updErr.message}` }, 500)
@@ -219,7 +270,11 @@ serve(async (req) => {
       htmlContent: buildStandaloneHtml(blog),
     })
   } catch (e) {
-    console.error('[publish-approved-blog] Unhandled error:', String((e as Error)?.message ?? e))
-    return json({ error: String((e as Error)?.message ?? e) }, 500)
+    const message = String((e as Error)?.message ?? e)
+    console.error('[publish-approved-blog] Unhandled error:', message)
+    // If we got far enough to identify the blog, record the failure so the row
+    // doesn't sit stuck in 'approved' after an unexpected publish crash.
+    if (blogId && adminForCatch) await markFailed(adminForCatch, blogId, message)
+    return json({ error: message, status: 'publish_failed' }, 500)
   }
 })

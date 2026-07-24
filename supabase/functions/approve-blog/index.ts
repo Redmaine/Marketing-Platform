@@ -186,6 +186,12 @@ serve(async (req) => {
         client_id: client.id, platform, content_type: 'post',
         pillar: clientPillars[i % clientPillars.length], body: stripMarkdown(posts[i]), status: 'draft', generated_by: 'ai',
         scheduled_for: slot.toISOString(),
+        // These posts exist purely to tease this blog and drive readers to it,
+        // so they're blog-dependent: linked to the source blog and not
+        // approvable until it's published. blog_id lets the approval flow
+        // check the exact blog's status rather than guessing from the copy.
+        blog_id: blog.id,
+        review_status: 'blog_dependent',
       })
     }
 
