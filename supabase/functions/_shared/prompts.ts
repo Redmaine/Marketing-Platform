@@ -159,6 +159,16 @@ export function buildSystemPrompt(client: Record<string, any>): string {
   if (optimisationNotes) {
     parts.push(`Previous month performance notes for this brand: ${optimisationNotes}`)
   }
+  // Content-quality feedback loop — set by the caller (fill.ts / crhq-nightly-
+  // content) via _shared/rejectionFeedback.ts, summarising the substantive
+  // reasons this brand's posts were rejected over the last 30 days. Folded in
+  // so the model actively avoids repeating the same mistakes. Absent (a clean
+  // 30 days, or the caller didn't attach it) means this block is simply
+  // skipped, same graceful no-op as the optimisation notes above.
+  const rejectionFeedback = typeof client._rejection_feedback === 'string' ? client._rejection_feedback.trim() : ''
+  if (rejectionFeedback) {
+    parts.push(`This brand has had posts rejected recently for the following reasons. Do NOT repeat these mistakes — treat each as a rule to follow: ${rejectionFeedback}`)
+  }
   parts.push(FACTUAL_ACCURACY_CONSTRAINT)
   parts.push(FORMAT_RULES)
   return parts.join('\n\n')

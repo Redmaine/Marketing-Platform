@@ -5,6 +5,7 @@ import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPl
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
 import { latestOptimisationNotes } from './optimisation.ts'
+import { recentRejectionFeedback } from './rejectionFeedback.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -161,6 +162,13 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   // platform. null (no row yet, e.g. a brand's first month) means this is a
   // no-op: buildSystemPrompt simply omits the line.
   const optimisationNotes = await latestOptimisationNotes(admin, client.id)
+  // Content-quality feedback loop — the substantive reasons this brand's posts
+  // were rejected over the last 30 days, folded into the system prompt by
+  // buildSystemPrompt (prompts.ts) via client._rejection_feedback so the model
+  // stops repeating them. Fetched once per client (not per platform — the
+  // reasons don't vary by platform). null (no substantive rejections) is a
+  // no-op, exactly like optimisationNotes above.
+  const rejectionFeedback = await recentRejectionFeedback(admin, client.id)
   // NOTE: posting days are no longer resolved once for the whole client —
   // they're resolved per platform inside the loop below, so facebook and
   // instagram can run on different days. See platformSchedule.
@@ -268,7 +276,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // placeholder (still fills the slot so we don't loop it) with the reason
         // shown to Adrian. The generator is shown recent topics (Fix 4) via the
         // client object so it steers away from them — no review-step change.
-        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes }, platform, pillar)
+        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes, _rejection_feedback: rejectionFeedback }, platform, pillar)
         // Hard backstop — strip any markdown the model still produced despite
         // FORMAT_RULES and the review step's retry, so it never reaches a
         // live post (see stripMarkdown in generate.ts).

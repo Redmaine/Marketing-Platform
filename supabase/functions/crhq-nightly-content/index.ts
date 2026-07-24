@@ -34,10 +34,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { scrapeCrhqContent } from '../_shared/crhqScrape.ts'
 import { platformSchedule, hasAutoPostOnDate } from '../_shared/fill.ts'
-import { dayOfWeekUK, addDays, pickDiversePillar, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
+import { dayOfWeekUK, addDays, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
 import { generatePostImage } from '../_shared/image.ts'
 import { latestOptimisationNotes } from '../_shared/optimisation.ts'
+import { recentRejectionFeedback } from '../_shared/rejectionFeedback.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -96,7 +97,11 @@ serve(async () => {
   const notes: string[] = []
   let postsGenerated = 0
 
-  const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+  // Typed as Admin (any) — matching the helper signatures above and every
+  // other function in this codebase (see fill.ts). Without this the strictly
+  // typed client rejects the two-branch `row` union at .insert() below on a
+  // review_reason variance that is harmless at runtime.
+  const admin: Admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
   try {
     const { data: client, error: clientError } = await admin
@@ -113,95 +118,99 @@ serve(async () => {
     if (cacheError) errors.push(`cache insert: ${cacheError.message}`)
 
     const foundContent = videos.length > 0 || articles.length > 0
-    const content_source = foundContent ? 'youtube_scrape' : 'pillar_fallback'
+    // Skip-fix (product decision): CRHQ's entire value is reacting to what
+    // Craig actually posted, so it must never invent content off a generic
+    // pillar. When the scrape turns up nothing fresh in the window, skip
+    // generation for the night rather than falling back to pillar rotation.
+    // The scrape cache row was still written above (Step 1), so
+    // generate-daily-status can still report the quiet night to Quill.
     if (!foundContent) {
-      notes.push('No new CRHQ YouTube content detected — used pillar fallback')
-      console.log('[crhq-nightly-content] no new content in last 48h — falling back to pillar rotation')
+      notes.push('No new CRHQ content in the last 48h — skipping generation (no pillar fallback)')
+      console.log('[crhq-nightly-content] no new content in last 48h — skipping generation this run')
     } else {
       console.log(`[crhq-nightly-content] found ${videos.length} video(s), ${articles.length} article(s) — generating from scrape`)
-    }
 
-    const recentTopics = await recentPublishedSummaries(admin, client.id, 6)
-    const usedThisRun: string[] = []
-    // Content optimisation loop — same lookup fill.ts uses for every other
-    // client, applied here too since it's a client-level setting on
-    // mkt_clients that shouldn't only apply to brands going through
-    // fillClientGap.
-    const optimisationNotes = await latestOptimisationNotes(admin, client.id)
+      const content_source = 'youtube_scrape'
+      const recentTopics = await recentPublishedSummaries(admin, client.id, 6)
+      // Content optimisation loop — same lookup fill.ts uses for every other
+      // client, applied here too since it's a client-level setting on
+      // mkt_clients that shouldn't only apply to brands going through
+      // fillClientGap.
+      const optimisationNotes = await latestOptimisationNotes(admin, client.id)
+      // Content-quality feedback loop — last 30 days of substantive rejection
+      // reasons for CRHQ, folded into the prompt (see rejectionFeedback.ts /
+      // prompts.ts) so the model stops repeating them.
+      const rejectionFeedback = await recentRejectionFeedback(admin, client.id)
 
-    for (const platform of PLATFORMS) {
-      // Step 2 (limit check) — never let CRHQ accumulate a backlog.
-      const queued = await countQueued(admin, client.id, platform)
-      if (queued >= MAX_QUEUED_PER_PLATFORM) {
-        notes.push(`CRHQ queue sufficient — skipping generation (${platform}: ${queued} already queued)`)
-        console.log(`[crhq-nightly-content] ${platform}: ${queued} already queued (>= ${MAX_QUEUED_PER_PLATFORM}) — skipping`)
-        continue
-      }
-
-      // Find the slot before spending an LLM call on a post that has nowhere
-      // to go (e.g. a misconfigured/missing schedule).
-      const slot = await nextAvailableSlot(admin, client, platform)
-      if (!slot) {
-        errors.push(`${platform}: no available slot found in the next ${SAFETY_MAX_DAYS_WALKED} days — check mkt_content_schedule`)
-        continue
-      }
-
-      // Step 2 (generate) — pillar drives the prompt's "content pillar"
-      // framing; for a scrape-driven post that's the scraped content itself,
-      // not one of the rotation topics, so a fixed descriptive label is
-      // honest about what actually drove the post rather than forcing an
-      // unrelated pillar alongside it.
-      const pillar = foundContent ? 'CRHQ latest content' : await pickDiversePillar(admin, client, usedThisRun)
-      const clientForGeneration = foundContent
-        ? { ...client, _recent_topics: recentTopics, _crhq_scrape: { videos, articles }, _optimisation_notes: optimisationNotes }
-        : { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes }
-
-      try {
-        const review = await generateReviewedPost(admin, clientForGeneration, platform, pillar)
-        if (review.body) review.body = stripMarkdown(review.body)
-
-        // Auto-approve — see _shared/fill.ts's identical guard for the
-        // reasoning: only applies to a post that passed review, never to a
-        // needs_attention placeholder.
-        const autoApprove = review.ok && client.auto_approve === true
-        const row = review.ok
-          ? {
-              client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
-              status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
-              review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
-              content_source,
-            }
-          : {
-              client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
-              status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
-              review_status: 'needs_attention', reviewed_at: review.reviewedAt,
-              review_reason: review.reason, generation_attempts: review.attempts,
-              content_source,
-            }
-
-        const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
-        if (insertError) { errors.push(`${platform}: insert failed — ${insertError.message}`); continue }
-        if (!review.ok) errors.push(`${platform}: needs attention — ${review.reason}`)
-        if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
-
-        // Best-effort, Instagram-only (image_gen_platforms allow-list already
-        // gates this — see _shared/image.ts) — never blocks or fails the post.
-        if (review.body) await generatePostImage(admin, client, inserted.id, review.body, platform)
-
-        // Pillar rotation only advances for genuine pillar-fallback posts —
-        // the synthetic "CRHQ latest content" label used for scrape-driven
-        // posts is not a member of client.content_pillars, so writing it to
-        // last_pillar_used would just reset the real rotation to its start
-        // next time a fallback post is generated.
-        if (!foundContent) {
-          usedThisRun.push(pillar)
-          await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
+      for (const platform of PLATFORMS) {
+        // Step 2 (limit check) — never let CRHQ accumulate a backlog.
+        const queued = await countQueued(admin, client.id, platform)
+        if (queued >= MAX_QUEUED_PER_PLATFORM) {
+          notes.push(`CRHQ queue sufficient — skipping generation (${platform}: ${queued} already queued)`)
+          console.log(`[crhq-nightly-content] ${platform}: ${queued} already queued (>= ${MAX_QUEUED_PER_PLATFORM}) — skipping`)
+          continue
         }
-        if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
-        postsGenerated++
-        console.log(`[crhq-nightly-content] ${platform}: queued for ${slot.toISOString()} (${content_source})`)
-      } catch (e) {
-        errors.push(`${platform}: ${String((e as Error)?.message ?? e)}`)
+
+        // Find the slot before spending an LLM call on a post that has nowhere
+        // to go (e.g. a misconfigured/missing schedule).
+        const slot = await nextAvailableSlot(admin, client, platform)
+        if (!slot) {
+          errors.push(`${platform}: no available slot found in the next ${SAFETY_MAX_DAYS_WALKED} days — check mkt_content_schedule`)
+          continue
+        }
+
+        // Step 2 (generate) — every post here is scrape-driven (the run is
+        // skipped entirely above when nothing fresh was found). "CRHQ latest
+        // content" is a fixed descriptive label, honest about what drove the
+        // post, rather than forcing an unrelated rotation pillar alongside the
+        // scraped material.
+        const pillar = 'CRHQ latest content'
+        const clientForGeneration = {
+          ...client,
+          _recent_topics: recentTopics,
+          _crhq_scrape: { videos, articles },
+          _optimisation_notes: optimisationNotes,
+          _rejection_feedback: rejectionFeedback,
+        }
+
+        try {
+          const review = await generateReviewedPost(admin, clientForGeneration, platform, pillar)
+          if (review.body) review.body = stripMarkdown(review.body)
+
+          // Auto-approve — see _shared/fill.ts's identical guard for the
+          // reasoning: only applies to a post that passed review, never to a
+          // needs_attention placeholder.
+          const autoApprove = review.ok && client.auto_approve === true
+          const row = review.ok
+            ? {
+                client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
+                status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+                review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
+                content_source,
+              }
+            : {
+                client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
+                status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+                review_status: 'needs_attention', reviewed_at: review.reviewedAt,
+                review_reason: review.reason, generation_attempts: review.attempts,
+                content_source,
+              }
+
+          const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
+          if (insertError) { errors.push(`${platform}: insert failed — ${insertError.message}`); continue }
+          if (!review.ok) errors.push(`${platform}: needs attention — ${review.reason}`)
+          if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
+
+          // Best-effort, Instagram-only (image_gen_platforms allow-list already
+          // gates this — see _shared/image.ts) — never blocks or fails the post.
+          if (review.body) await generatePostImage(admin, client, inserted.id, review.body, platform)
+
+          if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
+          postsGenerated++
+          console.log(`[crhq-nightly-content] ${platform}: queued for ${slot.toISOString()} (${content_source})`)
+        } catch (e) {
+          errors.push(`${platform}: ${String((e as Error)?.message ?? e)}`)
+        }
       }
     }
   } catch (e) {
