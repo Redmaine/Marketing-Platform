@@ -52,17 +52,20 @@ type GithubBrand = { repo: string; branch: string; siteUrl: string }
 // (its own Supabase project, not GitHub). Everything else falls through to
 // the download-HTML path.
 // Repo names confirmed against the Redmaine GitHub account (the same account
-// that owns hormonely/neuro-decoded) — not guessed. yca-platform is the
-// yourcompanyai.co.uk Vite site; onceuponayou-v2 is OUAY's current Netlify
-// source (the older onceuponayou-website repo is retired). Both read
-// src/blog/*.md at build time, so a push here triggers a Netlify redeploy.
-// PS (problemsolution.co.uk) and Quill (byquill.co.uk) are intentionally
-// absent: no GitHub repo could be confirmed for either, so they fall through
-// to the manual-HTML branch rather than being wired to a guessed repo.
+// that owns hormonely/neuro-decoded) — not guessed. onceuponayou-v2 is OUAY's
+// current Netlify source (the older onceuponayou-website repo is retired); it
+// reads src/blog/*.md at build time, so a push here triggers a Netlify
+// redeploy.
+//
+// Deliberately NOT wired (each falls through to the manual-HTML branch):
+//   • YCA (yourcompanyai.co.uk) — a Netlify Drop site with no Git repo. The
+//     Redmaine/yca-platform repo is the *authenticated SaaS app*, not the
+//     public marketing/blog site, so it is not a valid push target.
+//   • PS (problemsolution.co.uk) and Quill (byquill.co.uk) — also Netlify Drop
+//     sites with no Git repo to confirm.
 const GITHUB_BRANDS: Record<string, GithubBrand> = {
   hormonely: { repo: 'Redmaine/hormonely', branch: 'main', siteUrl: 'https://hormonely.co.uk' },
   'neuro-decoded': { repo: 'Redmaine/neuro-decoded', branch: 'main', siteUrl: 'https://neurodecoded.co.uk' },
-  yca: { repo: 'Redmaine/yca-platform', branch: 'main', siteUrl: 'https://yourcompanyai.co.uk' },
   ouay: { repo: 'Redmaine/onceuponayou-v2', branch: 'main', siteUrl: 'https://onceuponayou.co.uk' },
 }
 const STEADY_SLUG = 'steady'
