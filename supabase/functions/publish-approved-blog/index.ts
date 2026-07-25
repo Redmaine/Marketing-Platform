@@ -9,7 +9,7 @@
 //
 // Deploy:  supabase functions deploy publish-approved-blog
 // Secrets (Supabase vault — set via `supabase secrets set`):
-//   GITHUB_TOKEN                     — commits to Hormonely/Neuro Decoded
+//   GITHUB_TOKEN                     — commits to every GITHUB_BRANDS repo
 //   STEADY_SUPABASE_URL              — Steady's OWN project, NOT this one
 //   STEADY_SUPABASE_SERVICE_ROLE_KEY — see below, not yet set
 //
@@ -39,6 +39,20 @@
 // which appears to be the same mismatch and was not corrected here per "do
 // not change... any other part of the ops platform".
 //
+// TWO PUBLISH FORMATS — the React/Vite sites (Hormonely, Neuro Decoded, OUAY)
+// build their blog from `src/blog/*.md` at build time, so they get a markdown
+// file with YAML frontmatter. The three static HTML sites (YCA, PS, Quill)
+// have no build step, so a markdown file would never be rendered; they get a
+// finished `blog/<slug>.html` page instead.
+//
+// Rather than embed three sites' worth of markup in this function, each HTML
+// site keeps its own `blog/_template.html` (full page, {{TOKEN}} placeholders)
+// and a `blog/index.html` listing carrying a `CARD:TEMPLATE` block plus a
+// `POSTS:START` marker. This function fetches the template, substitutes, and
+// commits the post; then, best-effort, inserts a card into the listing. Each
+// site therefore owns its own styling — restyling a blog needs a commit in
+// that site's repo, not a redeploy of this function.
+//
 // NETLIFY — no explicit deploy-trigger call here (unlike publish-blog-post).
 // Per the task brief, both sites auto-deploy on push via their existing git
 // integration, so a GitHub commit alone is sufficient.
@@ -46,27 +60,60 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
 
-type GithubBrand = { repo: string; branch: string; siteUrl: string }
+type GithubBrand = {
+  repo: string
+  branch: string
+  siteUrl: string
+  // 'markdown' -> src/blog/<slug>.md consumed by the site's build step.
+  // 'html'     -> a finished blog/<slug>.html page, rendered from the site's
+  //               own blog/_template.html (see templatePath/listingPath).
+  format: 'markdown' | 'html'
+  postPath: string          // '{slug}' is substituted
+  templatePath?: string     // html only — page template in the site's repo
+  listingPath?: string      // html only — listing page to insert a card into
+}
 
 // client.slug -> GitHub-committed brands. Steady is handled separately
 // (its own Supabase project, not GitHub). Everything else falls through to
 // the download-HTML path.
-// Repo names confirmed against the Redmaine GitHub account (the same account
-// that owns hormonely/neuro-decoded) — not guessed. onceuponayou-v2 is OUAY's
-// current Netlify source (the older onceuponayou-website repo is retired); it
-// reads src/blog/*.md at build time, so a push here triggers a Netlify
-// redeploy.
 //
-// Deliberately NOT wired (each falls through to the manual-HTML branch):
-//   • YCA (yourcompanyai.co.uk) — a Netlify Drop site with no Git repo. The
-//     Redmaine/yca-platform repo is the *authenticated SaaS app*, not the
-//     public marketing/blog site, so it is not a valid push target.
-//   • PS (problemsolution.co.uk) and Quill (byquill.co.uk) — also Netlify Drop
-//     sites with no Git repo to confirm.
+// Repo names confirmed against the Redmaine GitHub account — not guessed.
+// onceuponayou-v2 is OUAY's current Netlify source (the older
+// onceuponayou-website repo is retired).
+//
+// yca-website / ps-website / quill-website are the three static marketing
+// sites. Note yca-website is the public marketing site — deliberately NOT
+// Redmaine/yca-platform, which is the authenticated SaaS app and would be the
+// wrong target. All three were previously Netlify Drop deploys with no repo;
+// each is now deployed from the repo named here.
 const GITHUB_BRANDS: Record<string, GithubBrand> = {
-  hormonely: { repo: 'Redmaine/hormonely', branch: 'main', siteUrl: 'https://hormonely.co.uk' },
-  'neuro-decoded': { repo: 'Redmaine/neuro-decoded', branch: 'main', siteUrl: 'https://neurodecoded.co.uk' },
-  ouay: { repo: 'Redmaine/onceuponayou-v2', branch: 'main', siteUrl: 'https://onceuponayou.co.uk' },
+  hormonely: {
+    repo: 'Redmaine/hormonely', branch: 'main', siteUrl: 'https://hormonely.co.uk',
+    format: 'markdown', postPath: 'src/blog/{slug}.md',
+  },
+  'neuro-decoded': {
+    repo: 'Redmaine/neuro-decoded', branch: 'main', siteUrl: 'https://neurodecoded.co.uk',
+    format: 'markdown', postPath: 'src/blog/{slug}.md',
+  },
+  ouay: {
+    repo: 'Redmaine/onceuponayou-v2', branch: 'main', siteUrl: 'https://onceuponayou.co.uk',
+    format: 'markdown', postPath: 'src/blog/{slug}.md',
+  },
+  yca: {
+    repo: 'Redmaine/yca-website', branch: 'main', siteUrl: 'https://yourcompanyai.co.uk',
+    format: 'html', postPath: 'blog/{slug}.html',
+    templatePath: 'blog/_template.html', listingPath: 'blog/index.html',
+  },
+  ps: {
+    repo: 'Redmaine/ps-website', branch: 'main', siteUrl: 'https://problemsolution.co.uk',
+    format: 'html', postPath: 'blog/{slug}.html',
+    templatePath: 'blog/_template.html', listingPath: 'blog/index.html',
+  },
+  quill: {
+    repo: 'Redmaine/quill-website', branch: 'main', siteUrl: 'https://byquill.co.uk',
+    format: 'html', postPath: 'blog/{slug}.html',
+    templatePath: 'blog/_template.html', listingPath: 'blog/index.html',
+  },
 }
 const STEADY_SLUG = 'steady'
 const STEADY_SITE_URL = 'https://steadyme.co.uk'
@@ -85,6 +132,58 @@ function stripHtml(html: string): string {
 }
 function esc(s: string): string {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+// Attribute-safe escape. Template tokens land in both text nodes (<h1>, <title>)
+// and attribute values (meta description), so everything substituted into a
+// template is escaped this way — safe in both contexts. The one exception is
+// {{BODY}}, which is the post's stored content_html and is inserted as-is by
+// design.
+function escAttr(s: string): string {
+  return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+// GitHub's contents API returns base64 with embedded newlines. atob gives
+// bytes, not UTF-8 text, so decode through TextDecoder — otherwise every
+// non-ASCII character in a template (— · £ →) is corrupted on the round trip.
+function fromBase64(b64: string): string {
+  const bin = atob(String(b64 ?? '').replace(/\s/g, ''))
+  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))
+}
+
+// "2026-07-25" -> "25 July 2026". Falls back to today when publish_date is
+// null, and to the raw string if it isn't a date we can parse.
+function formatDate(dateStr: string | null | undefined): string {
+  const raw = dateStr || new Date().toISOString().slice(0, 10)
+  const d = new Date(`${raw}T00:00:00Z`)
+  if (isNaN(d.getTime())) return String(raw)
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(d)
+}
+
+function renderTemplate(template: string, tokens: Record<string, string>): string {
+  let out = template
+  for (const [key, value] of Object.entries(tokens)) {
+    out = out.replaceAll(`{{${key}}}`, value)
+  }
+  return out
+}
+
+const CARD_TEMPLATE_RE = /<!--\s*CARD:TEMPLATE([\s\S]*?)CARD:TEMPLATE\s*-->/
+const POSTS_START = '<!-- POSTS:START -->'
+
+// Inserts a card for the new post at the top of the listing page, using the
+// CARD:TEMPLATE block the listing itself carries. Returns null when there is
+// nothing to do (markers missing, or this slug is already listed — which is
+// what makes republishing the same post idempotent rather than duplicating).
+function insertCard(listing: string, tokens: Record<string, string>, slug: string): string | null {
+  const match = CARD_TEMPLATE_RE.exec(listing)
+  if (!match || !listing.includes(POSTS_START)) return null
+  if (listing.includes(`/blog/${slug}"`)) return null
+
+  const card = renderTemplate(match[1].trim(), tokens)
+  return listing
+    // Drop the "no posts yet" placeholder now that there is one.
+    .replace(/\s*<p class="empty">[\s\S]*?<\/p>/, '')
+    .replace(POSTS_START, `${POSTS_START}\n${card}`)
 }
 
 function buildMarkdown(post: Record<string, any>, slug: string, brand: string): string {
@@ -175,7 +274,10 @@ serve(async (req) => {
     const slug = blog.slug || slugify(blog.title)
     const now = new Date().toISOString()
 
-    // ── Branch 1: GitHub-committed brands (Hormonely, Neuro Decoded) ──────────
+    // ── Branch 1: GitHub-committed brands ─────────────────────────────────────
+    // Markdown sites (Hormonely, Neuro Decoded, OUAY) and static HTML sites
+    // (YCA, PS, Quill) — see the GITHUB_BRANDS table and the TWO PUBLISH
+    // FORMATS note at the top.
     const ghBrand = client.slug ? GITHUB_BRANDS[client.slug] : undefined
     if (ghBrand) {
       const githubToken = Deno.env.get('GITHUB_TOKEN')
@@ -184,39 +286,88 @@ serve(async (req) => {
         return json({ error: 'GITHUB_TOKEN not configured in Supabase vault', status: 'publish_failed' }, 500)
       }
 
-      const path = `src/blog/${slug}.md`
-      const content = buildMarkdown(blog, slug, client.name || client.short_name || client.slug || '')
       const ghHeaders = {
         Authorization: `Bearer ${githubToken}`,
         Accept: 'application/vnd.github+json',
         'Content-Type': 'application/json',
       }
-      const contentsUrl = `https://api.github.com/repos/${ghBrand.repo}/contents/${path}`
+      const contentsUrl = (p: string) => `https://api.github.com/repos/${ghBrand.repo}/contents/${p}`
 
-      let sha: string | undefined
-      const getRes = await fetch(`${contentsUrl}?ref=${ghBrand.branch}`, { headers: ghHeaders })
-      if (getRes.ok) {
-        sha = (await getRes.json()).sha
-      } else if (getRes.status !== 404) {
-        const raw = await getRes.text()
-        const msg = `GitHub lookup failed (${getRes.status}) for ${ghBrand.repo}/${path}: ${raw.slice(0, 300)}`
-        await markFailed(admin, blog_id, msg)
-        return json({ error: msg, status: 'publish_failed' }, 502)
+      // Returns null on 404 (file absent), throws on any other failure so a
+      // real API problem is never mistaken for "file not there yet".
+      const ghGet = async (p: string): Promise<{ text: string; sha: string } | null> => {
+        const res = await fetch(`${contentsUrl(p)}?ref=${ghBrand.branch}`, { headers: ghHeaders })
+        if (res.status === 404) return null
+        if (!res.ok) throw new Error(`GitHub lookup failed (${res.status}) for ${ghBrand.repo}/${p}: ${(await res.text()).slice(0, 300)}`)
+        const body = await res.json()
+        return { text: fromBase64(body.content), sha: body.sha }
+      }
+      const ghPut = async (p: string, content: string, message: string, sha?: string): Promise<void> => {
+        const res = await fetch(contentsUrl(p), {
+          method: 'PUT',
+          headers: ghHeaders,
+          body: JSON.stringify({ message, content: toBase64(content), branch: ghBrand.branch, ...(sha ? { sha } : {}) }),
+        })
+        if (!res.ok) throw new Error(`GitHub commit failed (${res.status}) for ${ghBrand.repo}/${p}: ${(await res.text()).slice(0, 300)}`)
       }
 
-      const putRes = await fetch(contentsUrl, {
-        method: 'PUT',
-        headers: ghHeaders,
-        body: JSON.stringify({
-          message: `${sha ? 'Update' : 'Add'} blog post: ${blog.title}`,
-          content: toBase64(content),
-          branch: ghBrand.branch,
-          ...(sha ? { sha } : {}),
-        }),
-      })
-      if (!putRes.ok) {
-        const raw = await putRes.text()
-        const msg = `GitHub commit failed (${putRes.status}) for ${ghBrand.repo}/${path}: ${raw.slice(0, 300)}`
+      const brandName = client.name || client.short_name || client.slug || ''
+      const excerpt = blog.meta_description || stripHtml(blog.content_html).slice(0, 200)
+      const postPath = ghBrand.postPath.replace('{slug}', slug)
+
+      // Only the listing update below is best-effort; everything here is
+      // required, so a failure marks the row publish_failed as before.
+      let listingUpdated = false
+      try {
+        let content: string
+        if (ghBrand.format === 'markdown') {
+          content = buildMarkdown(blog, slug, brandName)
+        } else {
+          const tplPath = ghBrand.templatePath!
+          const tpl = await ghGet(tplPath)
+          if (!tpl) throw new Error(`Blog template ${ghBrand.repo}/${tplPath} not found — cannot render an HTML post without it.`)
+          content = renderTemplate(tpl.text, {
+            TITLE: escAttr(blog.title),
+            DESCRIPTION: escAttr(excerpt),
+            DATE: escAttr(formatDate(blog.publish_date)),
+            SLUG: escAttr(slug),
+            BRAND: escAttr(brandName),
+            BODY: blog.content_html || '', // stored HTML, inserted as-is by design
+          })
+        }
+
+        const existing = await ghGet(postPath)
+        await ghPut(postPath, content, `${existing ? 'Update' : 'Add'} blog post: ${blog.title}`, existing?.sha)
+
+        // Listing card — best-effort. The post itself is already committed and
+        // live at this point, so a listing failure must not fail the publish;
+        // it is logged and surfaced in the response instead.
+        if (ghBrand.format === 'html' && ghBrand.listingPath) {
+          try {
+            const listing = await ghGet(ghBrand.listingPath)
+            if (listing) {
+              const updated = insertCard(listing.text, {
+                TITLE: escAttr(blog.title),
+                EXCERPT: escAttr(excerpt),
+                DATE: escAttr(formatDate(blog.publish_date)),
+                SLUG: escAttr(slug),
+                BRAND: escAttr(brandName),
+              }, slug)
+              if (updated) {
+                await ghPut(ghBrand.listingPath, updated, `Add "${blog.title}" to blog index`, listing.sha)
+                listingUpdated = true
+              }
+            }
+          } catch (e) {
+            const msg = `Post published, but updating ${ghBrand.repo}/${ghBrand.listingPath} failed: ${String((e as Error)?.message ?? e)}`
+            console.error(`[publish-approved-blog] ${msg}`)
+            try {
+              await admin.from('edge_function_errors').insert({ function_name: 'publish-approved-blog', error_message: msg })
+            } catch { /* logging the log failure helps nobody */ }
+          }
+        }
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e)
         await markFailed(admin, blog_id, msg)
         return json({ error: msg, status: 'publish_failed' }, 502)
       }
@@ -225,7 +376,7 @@ serve(async (req) => {
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Committed to GitHub, but could not update status: ${updErr.message}` }, 500)
 
-      return json({ ok: true, method: 'github', liveUrl, published_at: now })
+      return json({ ok: true, method: 'github', format: ghBrand.format, liveUrl, listing_updated: listingUpdated, published_at: now })
     }
 
     // ── Branch 2: Steady (its own, separate Supabase project) ─────────────────
@@ -261,7 +412,7 @@ serve(async (req) => {
       return json({ ok: true, method: 'steady', liveUrl, published_at: now })
     }
 
-    // ── Branch 3: everyone else (YCA, PS, Quill, Riverside, …) ────────────────
+    // ── Branch 3: everyone else (Riverside, CRHQ, …) ──────────────────────────
     // No deploy target exists yet — mark published (live_url left NULL, since
     // nothing was actually pushed anywhere) and hand back a standalone HTML
     // file for Adrian to paste/upload manually.
