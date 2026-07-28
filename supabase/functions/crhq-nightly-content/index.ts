@@ -29,7 +29,11 @@
 //   scrape-crhq-content 22:00 job — this function now owns that scrape).
 // Secrets (Supabase vault): ANTHROPIC_API_KEY, YOUTUBE_API_KEY (optional —
 //   scrape just skips the video half without it), STABILITY_AI_API_KEY
-//   (optional — Instagram image generation).
+//   (optional — image generation).
+//
+// Images: Instagram gets one on every post. Facebook alternates — one post
+//   with an image, the next without (see facebookWantsImage). Both use the
+//   same Stability pipeline and the same mkt_clients.visual_style.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { scrapeCrhqContent } from '../_shared/crhqScrape.ts'
@@ -57,6 +61,37 @@ const MAX_QUEUED_PER_PLATFORM = 3
 const QUEUED_STATUSES = ['draft', 'pending', 'approved', 'scheduled']
 
 const SAFETY_MAX_DAYS_WALKED = 21
+
+// Facebook images alternate: one post with an image, the next without, and so
+// on. Instagram is unaffected — every Instagram post still gets one.
+//
+// This run generates at most ONE Facebook post, so the alternation state can't
+// live in memory — it has to be derived from what's already queued. Rather
+// than counting posts (parity breaks the moment one is rejected or deleted),
+// this looks at the most recently scheduled Facebook post and does the
+// opposite of it, which self-corrects after any gap.
+//
+// MUST be called before the new row is inserted. The new post is scheduled
+// further into the future than every existing one, so after insertion it would
+// be its own "most recent" row — with a null image_url — and the answer would
+// be true every single time.
+async function facebookWantsImage(admin: Admin, clientId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('mkt_content_queue')
+    .select('image_url')
+    .eq('client_id', clientId).eq('platform', 'facebook').eq('content_type', 'post')
+    .order('scheduled_for', { ascending: false })
+    .limit(1)
+  if (error) {
+    // Fail closed — a lookup failure must not turn into an image on every
+    // Facebook post. Text-only is the safe side of this decision.
+    console.error(`[crhq-nightly-content] facebook image alternation lookup failed (${error.message}) — defaulting to no image`)
+    return false
+  }
+  const previous = data?.[0]
+  if (!previous) return true // no Facebook history yet — start the cycle with an image
+  return !previous.image_url
+}
 
 async function countQueued(admin: Admin, clientId: string, platform: string): Promise<number> {
   const { count } = await admin
@@ -159,6 +194,10 @@ serve(async () => {
           continue
         }
 
+        // Decided before the insert, deliberately — see facebookWantsImage.
+        // Instagram always gets an image; Facebook gets one on alternate posts.
+        const wantsImage = platform === 'facebook' ? await facebookWantsImage(admin, client.id) : true
+
         // Step 2 (generate) — every post here is scrape-driven (the run is
         // skipped entirely above when nothing fresh was found). "CRHQ latest
         // content" is a fixed descriptive label, honest about what drove the
@@ -201,9 +240,17 @@ serve(async () => {
           if (!review.ok) errors.push(`${platform}: needs attention — ${review.reason}`)
           if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
-          // Best-effort, Instagram-only (image_gen_platforms allow-list already
-          // gates this — see _shared/image.ts) — never blocks or fails the post.
-          if (review.body) await generatePostImage(admin, client, inserted.id, review.body, platform)
+          // Best-effort — never blocks or fails the post. Instagram every
+          // time; Facebook on alternate posts (wantsImage, decided above).
+          // Both platforms run the same Stability pipeline off the same
+          // client.visual_style; the image_gen_platforms allow-list still gates
+          // the rest (see _shared/image.ts, and migration 61 which adds
+          // 'facebook' to CRHQ's allow-list to let this through at all).
+          if (review.body && wantsImage) {
+            await generatePostImage(admin, client, inserted.id, review.body, platform)
+          } else if (review.body && platform === 'facebook') {
+            console.log(`[crhq-nightly-content] facebook: skipping image for ${inserted.id} — alternating (previous post had one)`)
+          }
 
           if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
           postsGenerated++
