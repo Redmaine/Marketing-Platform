@@ -74,7 +74,12 @@ export function ContentQueue() {
   }
   useEffect(() => { load() }, [])
 
-  const pending = items.filter((i) => i.status === 'draft')
+  // The approval queue only ever surfaces posts that passed automated review
+  // (or predate the review step, review_status null). needs_attention and
+  // blog_dependent posts still exist in the DB and are counted/logged
+  // elsewhere (mkt_cron_log, edge_function_errors, generate-daily-status) —
+  // they are just never rendered here for a human to act on directly.
+  const pending = items.filter((i) => i.status === 'draft' && (i.review_status === 'passed' || !i.review_status))
   const now = new Date()
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
   const rejected = items.filter((i) => i.status === 'rejected')
