@@ -191,6 +191,34 @@ export async function recentPublishedSummaries(admin: AdminClient, clientId: str
     `[${r.content_pillar || 'n/a'}] ${String(r.post_copy || '').replace(/\s+/g, ' ').trim().slice(0, 140)}`)
 }
 
+// Repeat prevention — the full body of this brand's last `n` APPROVED posts,
+// most recently approved first.
+//
+// Deliberately reads mkt_content_queue (status 'approved', ordered by
+// approved_at) rather than the published_posts table recentPublishedSummaries
+// uses. published_posts only receives a row once a post has actually gone out
+// via Metricool, so a post approved last night — the one most likely to be
+// repeated tonight — is invisible to it. Approval is the point at which
+// content is committed, so that is the right signal for "do not write this
+// again".
+//
+// Full bodies, not truncated summaries: the caller shows these to the model as
+// the things it must not re-tread, and an opening line clipped at 140
+// characters is exactly the part most likely to be unknowingly reused.
+export async function recentApprovedBodies(admin: AdminClient, clientId: string, n = 60): Promise<string[]> {
+  const { data } = await admin
+    .from('mkt_content_queue')
+    .select('body, approved_at')
+    .eq('client_id', clientId)
+    .eq('status', 'approved')
+    .not('body', 'is', null)
+    .order('approved_at', { ascending: false })
+    .limit(n)
+  return (data ?? [])
+    .map((r: Record<string, any>) => String(r.body || '').trim())
+    .filter((b: string) => b.length > 0)
+}
+
 // Picks a pillar that differs from the brand's last three published posts (and
 // from `alsoAvoid`, used to prevent repeats within a single fill run). Falls
 // back to the plain rotation if every pillar is in the avoid set (i.e. the

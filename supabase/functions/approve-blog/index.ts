@@ -93,7 +93,11 @@ serve(async (req) => {
     const { data: client, error: cErr } = await admin.from('mkt_clients').select('*').eq('id', blog.client_id).single()
     if (cErr || !client) return json({ error: 'Client not found' }, 404)
 
-    const { error: approveErr } = await admin.from('mkt_blog_posts').update({ status: 'approved' }).eq('id', blog_id)
+    // approved_at added in migration 66 — stamped here, otherwise the column
+    // exists but stays null for everything approved from now on.
+    const { error: approveErr } = await admin.from('mkt_blog_posts')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .eq('id', blog_id)
     if (approveErr) return json({ error: approveErr.message }, 500)
 
     // Item 6 — on approval, the blog needs to actually get published. This

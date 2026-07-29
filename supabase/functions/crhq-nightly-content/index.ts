@@ -236,7 +236,17 @@ serve(async () => {
               }
 
           const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
-          if (insertError) { errors.push(`${platform}: insert failed — ${insertError.message}`); continue }
+          if (insertError) {
+            // 23505 = one-auto-post-per-slot (migration 65). Another path
+            // claimed this slot after nextAvailableSlot picked it — expected
+            // under concurrency, not a failure.
+            if ((insertError as { code?: string }).code === '23505') {
+              notes.push(`${platform}: slot ${slot.toISOString()} already taken — skipped`)
+              continue
+            }
+            errors.push(`${platform}: insert failed — ${insertError.message}`)
+            continue
+          }
           if (!review.ok) errors.push(`${platform}: needs attention — ${review.reason}`)
           if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 

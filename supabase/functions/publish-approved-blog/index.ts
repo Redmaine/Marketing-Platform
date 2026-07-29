@@ -405,7 +405,12 @@ serve(async (req) => {
         return json({ error: msg, status: 'publish_failed' }, 502)
       }
 
-      const liveUrl = `${STEADY_SITE_URL}/blog/${slug}`
+      // Steady's public posts live at /articles, not /blog. Verified against
+      // the live site: /articles renders the published post list, /blog renders
+      // an empty "No articles published yet" page — a stale legacy route. A
+      // live_url built on /blog therefore pointed every published Steady post
+      // at a page that would never show it.
+      const liveUrl = `${STEADY_SITE_URL}/articles/${slug}`
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Published to Steady, but could not update status here: ${updErr.message}` }, 500)
 

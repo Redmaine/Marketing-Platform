@@ -29,6 +29,45 @@ export function brandDisclaimerInstruction(client: Record<string, any>): string 
   return ''
 }
 
+// Repeat prevention — wraps the last 60 approved posts for a brand, verbatim
+// instruction as specified. Emitted ONLY when the caller attached
+// client._repeat_prevention_posts (fill.ts does, for the midnight-cron path).
+//
+// crhq-nightly-content deliberately does not attach it: CRHQ reacts to a fresh
+// 48-hour scrape and is driven by its own function, and its own tight queue cap
+// (MAX_QUEUED_PER_PLATFORM) already bounds repetition. Gating on the caller
+// rather than testing the brand here is what keeps "do not change CRHQ" true
+// without another isCrhq() branch.
+export function repeatPreventionBlock(posts: string[]): string {
+  if (!posts.length) return ''
+  return `REPEAT PREVENTION — NON-NEGOTIABLE: The following posts have been published for this brand in the last 60 days. Do not repeat any topic, angle, hook, or opening line used in any of them. If you find yourself writing something similar to any entry below, stop and choose a completely different angle.
+
+[LAST 60 POSTS]
+${posts.join('\n\n---\n\n')}
+[END LAST 60 POSTS]`
+}
+
+// Applied to every brand, ahead of that brand's own master_prompt. Injected
+// here rather than written into each mkt_clients.master_prompt so the rules
+// stay in one place and cannot drift brand to brand — editing nine rows to
+// change one rule is how they diverge.
+//
+// Some of this overlaps FORMAT_RULES (which stays, and is repeated at the end
+// of the user message where the model reads it last). The duplication is
+// deliberate: these are the rules that get broken most often.
+export const UNIVERSAL_CONTENT_RULES = `UNIVERSAL CONTENT RULES — NON-NEGOTIABLE FOR ALL BRANDS:
+Single space after every full stop. No exceptions.
+No emojis.
+No exclamation marks.
+No bullet points in social posts.
+No AI-generated filler phrases: no 'dive into', 'game-changer', 'unlock', 'leverage', 'seamless', 'elevate', 'journey', 'navigate', 'landscape', 'cutting-edge', 'innovative solution', 'empower'.
+No fabricated facts, invented statistics, or unsourced claims of any kind.
+No repeated content — see REPEAT PREVENTION section above.
+No markdown formatting in any social post — no headers, no bold, no asterisks, no hyphens as list markers.
+No fabricated quotes from real people.
+Prose style throughout — sentences only, no lists.
+Every post must sound like this specific brand and no other brand.`
+
 // MASTER_SYSTEM_PROMPT — verbatim from the original brief. Do not shorten or rewrite.
 // Used as a fallback when a client has no master_prompt of their own set yet.
 export const MASTER_SYSTEM_PROMPT = `You are one of the best copywriters in the UK. You have won awards. Your work has appeared in national campaigns. You write for businesses, not brands — and you write like a person, not a department.
@@ -89,18 +128,28 @@ const CRHQ_FACEBOOK = `PLATFORM — FACEBOOK (long form):
 - End with a call to action driving to the Combat Ready HQ YouTube channel or combatreadyhq.co.uk.
 - The discount code YOUTUBE10 may be included ONLY where it genuinely fits the subject, and at most in one post out of every three. If any of the recent posts listed above already mention YOUTUBE10, do not use it in this post. When in doubt, leave it out — a forced code is worse than no code.`
 
-const CRHQ_INSTAGRAM = `PLATFORM — INSTAGRAM: exactly 3 lines. No exceptions — not 2, not 4.
+// Only ever reached when isCrhq(client) is true, and CRHQ content is generated
+// exclusively by crhq-nightly-content (midnight-cron skips the brand entirely —
+// see its file header). So although this constant lives in the shared prompt
+// module, it is in practice scoped to that one function, as required.
+//
+// Tightened from the previous version: that one also asked for three lines but
+// allowed "Link in bio" as the closer and set only a 40-word total, which left
+// individual lines free to run long and the CTA free to omit the domain.
+const CRHQ_INSTAGRAM = `INSTAGRAM COPY RULE — NON-NEGOTIABLE:
+Every CRHQ Instagram post must be exactly three lines. No more, no fewer.
+Line one: the headline fact or event. One sentence, maximum 12 words.
+Line two: the implication or context. One sentence, maximum 12 words.
+Line three: always ends with combatreadyhq.co.uk
 
-Line 1 — Hook: one sentence that stops the scroll.
-Line 2 — One supporting point or provocation.
-Line 3 — CTA: "Link in bio" or "combatreadyhq.co.uk".
+Example:
+Ukraine drone strike hits Russian oil depot overnight.
+This changes the supply picture heading into winter.
+Full analysis at combatreadyhq.co.uk
 
-Example (match this shape exactly — do not copy its wording, only its structure and length):
-"The UK has committed billions to defence. The question is whether the money will arrive before the threat does.
-Most people won't read the procurement reports. Craig does.
-Full breakdown at combatreadyhq.co.uk"
+If the copy cannot fit in three lines it must be rewritten until it does. This rule overrides all other formatting guidance.
 
-Maximum 40 words total across all three lines. No analysis, no long form, no second argument — that lives on Facebook. Do not describe the image. An image is generated separately.`
+Do not describe the image. An image is generated separately.`
 
 // Rotated across both platforms. The caller still chooses the pillar for any
 // given post (pickDiversePillar reads client.content_pillars); this states the
@@ -143,6 +192,16 @@ export function buildSystemPrompt(client: Record<string, any>): string {
 
   const parts: string[] = [ANTI_FABRICATION]
   if (name.includes('quill')) parts.push(QUILL_CLIENTS)
+
+  // Repeat prevention, then the universal rules, then the brand's own prompt.
+  // This order matters: UNIVERSAL_CONTENT_RULES ends with "see REPEAT
+  // PREVENTION section above", so the posts list has to precede it or that
+  // cross-reference points at nothing.
+  const repeatPosts: string[] = Array.isArray(client._repeat_prevention_posts) ? client._repeat_prevention_posts : []
+  const repeatBlock = repeatPreventionBlock(repeatPosts)
+  if (repeatBlock) parts.push(repeatBlock)
+
+  parts.push(UNIVERSAL_CONTENT_RULES)
   parts.push(base)
   // CRHQ's house rules sit AFTER the brand's own master_prompt so they win on
   // any conflict, and before the factual/format rules which they reinforce.

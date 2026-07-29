@@ -1,7 +1,7 @@
 // Shared "fill this client's content calendar" logic — used by both
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
-import { pickDiversePillar, recentPublishedSummaries, dayOfWeekUK, addDays, isPlatformConnected, stripMarkdown } from './generate.ts'
+import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
 import { latestOptimisationNotes } from './optimisation.ts'
@@ -169,6 +169,16 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   // reasons don't vary by platform). null (no substantive rejections) is a
   // no-op, exactly like optimisationNotes above.
   const rejectionFeedback = await recentRejectionFeedback(admin, client.id)
+  // Repeat prevention — the full body of this brand's last 60 approved posts,
+  // shown to the model as the things it must not re-tread (see
+  // repeatPreventionBlock in prompts.ts). Fetched once per client, before any
+  // generation for that client, and reused for every post in this run.
+  //
+  // Posts generated earlier in THIS run are appended to it as they are
+  // produced, because they are still 'draft' and would otherwise be invisible
+  // to the next post in the same run — the exact window in which a brand is
+  // most likely to repeat itself.
+  const repeatPreventionPosts: string[] = await recentApprovedBodies(admin, client.id, 60)
   // NOTE: posting days are no longer resolved once for the whole client —
   // they're resolved per platform inside the loop below, so facebook and
   // instagram can run on different days. See platformSchedule.
@@ -276,7 +286,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // placeholder (still fills the slot so we don't loop it) with the reason
         // shown to Adrian. The generator is shown recent topics (Fix 4) via the
         // client object so it steers away from them — no review-step change.
-        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes, _rejection_feedback: rejectionFeedback }, platform, pillar)
+        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes, _rejection_feedback: rejectionFeedback, _repeat_prevention_posts: repeatPreventionPosts }, platform, pillar)
         // Hard backstop — strip any markdown the model still produced despite
         // FORMAT_RULES and the review step's retry, so it never reaches a
         // live post (see stripMarkdown in generate.ts).
@@ -309,7 +319,22 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
             }
 
         const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
-        if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); day = addDays(day, 1); continue }
+        if (error) {
+          // 23505 = the one-auto-post-per-slot unique index (migration 65).
+          // Another run — or another generation path — claimed this slot
+          // between our hasAutoPostOnDate check above and this insert. That is
+          // the race the index exists to close, and losing it is the correct
+          // outcome, not a failure: the slot is filled, so move to the next day
+          // and log it as a note rather than an error.
+          if ((error as { code?: string }).code === '23505') {
+            notes.push(`${client.name}: slot ${slot.toISOString()} on ${platform} already taken — skipped`)
+            day = addDays(day, 1)
+            continue
+          }
+          errors.push(`${client.name}: insert failed — ${error.message}`)
+          day = addDays(day, 1)
+          continue
+        }
         if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
         if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
@@ -322,6 +347,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // Keep the just-generated post in view so the next post in this run
         // avoids repeating it too (it isn't in published_posts yet).
         if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
+        // Also feed it into repeat prevention for the rest of this run — it is
+        // still 'draft', so recentApprovedBodies would not see it, and the very
+        // next post generated tonight is the one most at risk of repeating it.
+        if (review.body) repeatPreventionPosts.unshift(review.body)
         await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
         generatedForPlatform++
         generated++

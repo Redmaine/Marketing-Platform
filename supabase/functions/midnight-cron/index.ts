@@ -67,6 +67,96 @@ async function computeApprovalRate30d(admin: Admin, clientId: string): Promise<n
 // client's own posting-frequency target is met.
 const PER_CLIENT_POST_BUDGET = 20
 
+// ── Seasonal posting windows (Once Upon A You) ──────────────────────────────
+// OUAY is a gift product, so its three selling seasons are worth more than the
+// rest of the year combined. Inside a window the brand posts DAILY; outside it
+// keeps its normal cadence.
+//
+// The brand is resolved from the mkt_clients row this run already loaded
+// (slug), not from a name hardcoded in a constant — same approach as the
+// existing CRHQ skip a few lines below. If OUAY's slug ever changes, this
+// stops applying rather than silently applying to the wrong brand.
+//
+// Dates are computed for the year in question rather than hardcoded, because
+// two of the three move every year.
+const SEASONAL_SLUG = 'ouay'
+const ALL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+// UK Mother's Day is the fourth Sunday of Lent, which the brief defines
+// operationally as "the last Sunday before 31 March". Implemented exactly as
+// briefed rather than by computing Lent.
+function lastSundayBefore(year: number, month: number, day: number): Date {
+  const d = new Date(Date.UTC(year, month, day))
+  // Step back to the most recent Sunday strictly before the given date.
+  do { d.setUTCDate(d.getUTCDate() - 1) } while (d.getUTCDay() !== 0)
+  return d
+}
+
+// UK Father's Day — third Sunday of June.
+function thirdSundayOfJune(year: number): Date {
+  const d = new Date(Date.UTC(year, 5, 1))
+  const firstSunday = 1 + ((7 - d.getUTCDay()) % 7)
+  return new Date(Date.UTC(year, 5, firstSunday + 14))
+}
+
+function daysBefore(d: Date, n: number): Date {
+  const x = new Date(d)
+  x.setUTCDate(x.getUTCDate() - n)
+  return x
+}
+
+// thirdSundayOfJune / lastSundayBefore both return midnight AT THE START of
+// the day. Comparing `now <= thatDate` would therefore end the window at
+// 00:00 on the occasion itself — excluding the whole of the biggest selling
+// day of the three. Pushing the bound to the end of that day is what makes
+// "two weeks before Father's Day" actually include Father's Day.
+function endOfDay(d: Date): Date {
+  const x = new Date(d)
+  x.setUTCHours(23, 59, 59, 999)
+  return x
+}
+
+// The seasonal window `now` falls inside, or null. Checks the current year and
+// the previous year's Christmas window, so a run in early January is still
+// evaluated against a window that opened the previous November.
+export function activeSeasonalWindow(now: Date): string | null {
+  const year = now.getUTCFullYear()
+
+  for (const y of [year, year - 1]) {
+    // Christmas — six weeks from approximately 13 November, through 25 Dec.
+    const christmasStart = new Date(Date.UTC(y, 10, 13))
+    const christmasEnd = new Date(Date.UTC(y, 11, 25, 23, 59, 59))
+    if (now >= christmasStart && now <= christmasEnd) return `Christmas ${y}`
+  }
+
+  const mothersDay = lastSundayBefore(year, 2, 31)
+  if (now >= daysBefore(mothersDay, 14) && now <= endOfDay(mothersDay)) return `Mother's Day ${year}`
+
+  const fathersDay = thirdSundayOfJune(year)
+  if (now >= daysBefore(fathersDay, 14) && now <= endOfDay(fathersDay)) return `Father's Day ${year}`
+
+  return null
+}
+
+// Returns a copy of the client with post_days widened to every day when this
+// brand is in a seasonal window, or the client untouched otherwise.
+//
+// Only post_days is overridden — post_time and everything else stay as
+// configured, so the brand keeps its 20:00 slot and simply uses it daily.
+// Note this affects clients whose cadence comes from client.post_days; a
+// platform with its own mkt_content_schedule rows keeps those (see
+// platformSchedule in _shared/fill.ts), which is deliberate — an explicit
+// per-platform schedule is a stronger statement of intent than a default.
+function applySeasonalPosting(client: Record<string, unknown>, now: Date): { client: Record<string, unknown>; note: string | null } {
+  if (String(client.slug ?? '') !== SEASONAL_SLUG) return { client, note: null }
+  const window = activeSeasonalWindow(now)
+  if (!window) return { client, note: null }
+  return {
+    client: { ...client, post_days: ALL_DAYS },
+    note: `${client.name} — ${window} window active, posting daily (post_days widened from [${(client.post_days as string[] | undefined)?.join(', ') ?? 'default'}])`,
+  }
+}
+
 serve(async () => {
   const started = Date.now()
   const errors: string[] = []
@@ -131,6 +221,16 @@ serve(async () => {
 
       clientsProcessed++
 
+      // Seasonal cadence — a gift brand in its selling season posts daily.
+      // Applied to the in-memory copy used for generation only; mkt_clients is
+      // never written to, so the brand's configured post_days is still what it
+      // reverts to the moment the window closes. Nothing to undo.
+      const { client: generationClient, note: seasonalNote } = applySeasonalPosting(client, now)
+      if (seasonalNote) {
+        notes.push(seasonalNote)
+        console.log(`[midnight-cron] ${seasonalNote}`)
+      }
+
       // Weekly blog — current week only. Cron runs daily, so this is a no-op
       // every day except the first day it's missing for that client.
       try {
@@ -146,7 +246,7 @@ serve(async () => {
       // comment above. A per-client try/catch means one client throwing
       // (e.g. Anthropic API error) can't abort the run for everyone after it.
       try {
-        const { generated, errors: fillErrors, notes: fillNotes } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET)
+        const { generated, errors: fillErrors, notes: fillNotes } = await fillClientGap(admin, generationClient, PER_CLIENT_POST_BUDGET)
         postsGenerated += generated
         if (fillErrors.length) {
           errors.push(...fillErrors)
