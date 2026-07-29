@@ -25,6 +25,21 @@ export function Dashboard() {
   const [failedToSchedule, setFailedToSchedule] = useState(0)
   const [genClient, setGenClient] = useState(null)
   const [showToday, setShowToday] = useState(false)
+  const [copyState, setCopyState] = useState('idle') // idle | copied | failed
+
+  async function copyStatus() {
+    try {
+      const res = await fetch('/api/daily-status')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const text = await res.text()
+      await navigator.clipboard.writeText(text)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    } finally {
+      setTimeout(() => setCopyState('idle'), 2000)
+    }
+  }
 
   async function load() {
     setLoading(true)
@@ -85,8 +100,15 @@ export function Dashboard() {
 
   return (
     <div className="page">
-      <h1 style={{ fontSize: 28 }}>{greetingWord()}.</h1>
-      <p className="page-sub" style={{ marginBottom: 22 }}>{todayLabel()}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 28 }}>{greetingWord()}.</h1>
+          <p className="page-sub" style={{ marginBottom: 22 }}>{todayLabel()}</p>
+        </div>
+        <button className="btn btn-dark btn-sm" onClick={copyStatus} style={{ flexShrink: 0 }}>
+          {copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Failed' : 'Copy Status'}
+        </button>
+      </div>
 
       <div className="grid grid-3" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} onClick={() => setShowToday(true)} />
