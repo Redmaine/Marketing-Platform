@@ -14,7 +14,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { buildSystemPrompt } from '../_shared/prompts.ts'
-import { callAnthropicStructured } from '../_shared/generate.ts'
+import { callAnthropicStructured, stripMarkdown } from '../_shared/generate.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -153,10 +153,16 @@ serve(async () => {
 
           if (!result?.warrants_post || !result?.post_body) continue
 
+          // Same hard backstop every other insert path applies (fill.ts,
+          // crhq-nightly-content) — this was the one path into
+          // mkt_content_queue that skipped it, so a news-triggered post could
+          // ship with raw markdown untouched.
+          const body = stripMarkdown(result.post_body)
+
           const { error } = await admin.from('mkt_content_queue').insert({
             client_id: client.id, platform, content_type: 'post',
             pillar: `News trigger: ${h.title.slice(0, 120)}`,
-            body: result.post_body, status: 'draft', generated_by: 'ai',
+            body, status: 'draft', generated_by: 'ai',
           })
           if (error) { errors.push(`${client.name}: insert failed — ${error.message}`); continue }
 
