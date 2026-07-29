@@ -11,6 +11,12 @@ export function Blog() {
   const [editing, setEditing] = useState(undefined) // post row (edit) | null (create) | undefined (closed)
   const [notice, setNotice] = useState('')
   const [busyDraftId, setBusyDraftId] = useState(null)
+  // Display-only filters for the AI drafts list — off by default so the
+  // page opens showing just what needs attention. Neither touches what data
+  // is loaded or what any button does; both filter the existing aiDrafts
+  // array at render time.
+  const [showPublished, setShowPublished] = useState(false)
+  const [showRejected, setShowRejected] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -29,6 +35,16 @@ export function Blog() {
   useEffect(() => { load() }, [])
 
   const rows = brandFilter === 'all' ? posts : posts.filter((p) => p.client?.slug === brandFilter)
+
+  // "Needing attention" = anything not yet published and not rejected —
+  // covers draft (awaiting approve & publish) and the rare stuck
+  // 'approved'/'publish_failed' states, not just a literal 'draft' status.
+  const pendingCount = aiDrafts.filter((b) => b.status !== 'published' && b.status !== 'rejected').length
+  const visibleDrafts = aiDrafts.filter((b) => {
+    if (b.status === 'published') return showPublished
+    if (b.status === 'rejected') return showRejected
+    return true
+  })
 
   // The publish half, shared by first-time approve-and-publish and by the
   // retry path for a 'publish_failed'/'approved' row. Returns nothing; sets a
@@ -94,8 +110,25 @@ export function Blog() {
 
       {aiDrafts.length > 0 && (
         <div style={{ marginTop: 20 }}>
-          <h2 style={{ fontSize: 15, marginBottom: 10 }}>AI drafts (Sunday cron)</h2>
-          {aiDrafts.map((blog) => (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
+            <h2 style={{ fontSize: 15, margin: 0 }}>
+              AI drafts (Sunday cron) — {pendingCount} need{pendingCount === 1 ? 's' : ''} attention
+            </h2>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--mist)', fontWeight: 600 }}>
+              <input type="checkbox" checked={showPublished} onChange={(e) => setShowPublished(e.target.checked)} />
+              Show published
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--mist)', fontWeight: 600 }}>
+              <input type="checkbox" checked={showRejected} onChange={(e) => setShowRejected(e.target.checked)} />
+              Show rejected
+            </label>
+          </div>
+          {visibleDrafts.length === 0 && (
+            <p className="empty" style={{ marginBottom: 12 }}>
+              {pendingCount === 0 ? 'Nothing needs attention.' : 'Nothing matches the current filters.'}
+            </p>
+          )}
+          {visibleDrafts.map((blog) => (
             <div key={blog.id} className="card" style={{ marginBottom: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
                 <div>
@@ -109,8 +142,8 @@ export function Blog() {
                   </div>
                 </div>
                 <span className="pill" style={{
-                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'published' ? '#D1FAE5' : blog.status === 'publish_failed' ? '#FEE2E2' : 'var(--chalk)',
-                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'published' ? '#065F46' : blog.status === 'publish_failed' ? '#991B1B' : 'var(--steel)',
+                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'published' ? '#D1FAE5' : blog.status === 'publish_failed' ? '#FEE2E2' : blog.status === 'rejected' ? '#FEE2E2' : 'var(--chalk)',
+                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'published' ? '#065F46' : blog.status === 'publish_failed' ? '#991B1B' : blog.status === 'rejected' ? '#991B1B' : 'var(--steel)',
                   flexShrink: 0,
                 }}>{blog.status === 'publish_failed' ? 'publish failed' : blog.status}</span>
               </div>
