@@ -8,6 +8,13 @@
 #     site (it had no functions until refresh-status was added), which is
 #     why that endpoint's first live call returned
 #     "Server not configured". Set both before using it.
+#   ANTHROPIC_API_KEY, RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY,
+#   INTERNAL_SECRET (shared with refresh-status.js above) — required by
+#     netlify/functions/opportunity-scanner-worker-background.mjs (moved
+#     here from a Supabase edge function that kept timing out at 150s —
+#     see that file's header comment). Confirmed via `netlify env:list`
+#     that NONE of these were set on this site as of that migration —
+#     the function will return "not configured" until they are.
 [build]
   publish = "dist"
   command = "npm run build"
