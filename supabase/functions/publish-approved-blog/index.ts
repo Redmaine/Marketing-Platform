@@ -186,7 +186,18 @@ function insertCard(listing: string, tokens: Record<string, string>, slug: strin
     .replace(POSTS_START, `${POSTS_START}\n${card}`)
 }
 
-function buildMarkdown(post: Record<string, any>, slug: string, brand: string): string {
+// schemaArticleB64/schemaFaqB64: the JSON-LD payloads, base64-encoded.
+// These three sites' own frontmatter parsers are small hand-rolled
+// key:-per-line readers with no support for multi-line or quote-escaped
+// values — raw JSON (colons, quotes, braces) would corrupt on the round
+// trip, and worse, each site's markdown-to-HTML step either HTML-escapes or
+// (being React) auto-escapes any literal <script> tag placed in the post
+// body, so it can never reach the page as a real element that way either.
+// Base64 in frontmatter survives their parser intact; each site's blog
+// loader decodes it and renders a real <script type="application/ld+json">
+// itself (react-helmet-async where already used, e.g. Hormonely, or a
+// small effect that appends the element directly, e.g. Neuro Decoded).
+function buildMarkdown(post: Record<string, any>, slug: string, brand: string, schemaArticleB64: string, schemaFaqB64: string): string {
   const date = (post.publish_date || new Date().toISOString().slice(0, 10))
   const excerpt = post.meta_description || stripHtml(post.content_html).slice(0, 200)
   const lines = [
@@ -196,6 +207,8 @@ function buildMarkdown(post: Record<string, any>, slug: string, brand: string): 
     `slug: "${frontmatterEscape(slug)}"`,
     `excerpt: "${frontmatterEscape(excerpt)}"`,
     `brand: "${frontmatterEscape(brand)}"`,
+    `schema_article: "${schemaArticleB64}"`,
+    ...(schemaFaqB64 ? [`schema_faq: "${schemaFaqB64}"`] : []),
     '---',
     '',
     post.content_html || '',
@@ -224,13 +237,68 @@ async function markFailed(
   }
 }
 
-function buildStandaloneHtml(post: Record<string, any>): string {
+// ── Schema.org JSON-LD (SEO task, Parts 2 & 3) ──────────────────────────────
+// Built once per publish from data this function already has — never typed
+// by hand — so it applies identically across every publish path (GitHub
+// markdown, GitHub HTML, Steady, and the manual-handoff fallback).
+//
+// No per-post author exists (mkt_blog_posts has no author column) and these
+// are AI-generated, brand-voice posts with no named human byline, so the
+// brand itself is both author and publisher — a legitimate, common pattern
+// for corporate/branded blogs, not a fabricated person.
+function buildArticleSchema(title: string, description: string, brandName: string, publishedIso: string): Record<string, unknown> {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: title,
+    datePublished: publishedIso,
+    dateModified: publishedIso,
+    author: { '@type': 'Organization', name: brandName },
+    publisher: { '@type': 'Organization', name: brandName },
+    description,
+  }
+}
+
+// A title reads as a question even without a trailing "?" — both examples in
+// the brief ("How much does a private ADHD assessment cost", "Does HRT cause
+// weight gain") lack one, so a leading question-word is checked as well as
+// the trailing mark.
+const QUESTION_WORDS_RE = /^(how|what|why|when|where|does|do|is|are|can|could|should|will|would)\b/i
+function isQuestionTitle(title: string): boolean {
+  const t = String(title || '').trim()
+  return t.endsWith('?') || QUESTION_WORDS_RE.test(t)
+}
+
+// FAQPage schema for question-titled posts only (Part 3) — the answer is the
+// post's own opening, capped at 200 words per the brief, not a separately
+// hand-written summary.
+function buildFaqSchema(title: string, bodyHtml: string): Record<string, unknown> | null {
+  if (!isQuestionTitle(title)) return null
+  const answer = stripHtml(bodyHtml).split(/\s+/).filter(Boolean).slice(0, 200).join(' ')
+  if (!answer) return null
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: [{
+      '@type': 'Question',
+      name: title,
+      acceptedAnswer: { '@type': 'Answer', text: answer },
+    }],
+  }
+}
+
+function schemaScriptTag(data: Record<string, unknown>): string {
+  return `<script type="application/ld+json">${JSON.stringify(data)}</script>`
+}
+
+function buildStandaloneHtml(post: Record<string, any>, schemaScripts: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <title>${esc(post.title)}</title>
 <meta name="description" content="${esc(post.meta_description || '')}" />
+${schemaScripts}
 </head>
 <body>
 <h1>${esc(post.title)}</h1>
@@ -274,6 +342,16 @@ serve(async (req) => {
     const slug = blog.slug || slugify(blog.title)
     const now = new Date().toISOString()
 
+    // Schema.org JSON-LD (SEO task, Parts 2 & 3) — computed once, shared by
+    // every branch below, so it's identical regardless of publish path.
+    const brandName = client.name || client.short_name || client.slug || ''
+    const description = blog.meta_description || stripHtml(blog.content_html).slice(0, 200)
+    const articleSchema = buildArticleSchema(blog.title, description, brandName, now)
+    const faqSchema = buildFaqSchema(blog.title, blog.content_html || '')
+    const schemaScripts = [articleSchema, faqSchema].filter(Boolean).map((s) => schemaScriptTag(s as Record<string, unknown>)).join('\n')
+    const schemaArticleB64 = toBase64(JSON.stringify(articleSchema))
+    const schemaFaqB64 = faqSchema ? toBase64(JSON.stringify(faqSchema)) : ''
+
     // ── Branch 1: GitHub-committed brands ─────────────────────────────────────
     // Markdown sites (Hormonely, Neuro Decoded, OUAY) and static HTML sites
     // (YCA, PS, Quill) — see the GITHUB_BRANDS table and the TWO PUBLISH
@@ -311,8 +389,6 @@ serve(async (req) => {
         if (!res.ok) throw new Error(`GitHub commit failed (${res.status}) for ${ghBrand.repo}/${p}: ${(await res.text()).slice(0, 300)}`)
       }
 
-      const brandName = client.name || client.short_name || client.slug || ''
-      const excerpt = blog.meta_description || stripHtml(blog.content_html).slice(0, 200)
       const postPath = ghBrand.postPath.replace('{slug}', slug)
 
       // Only the listing update below is best-effort; everything here is
@@ -321,18 +397,24 @@ serve(async (req) => {
       try {
         let content: string
         if (ghBrand.format === 'markdown') {
-          content = buildMarkdown(blog, slug, brandName)
+          // Markdown sites (Hormonely, Neuro Decoded, OUAY) — schema travels
+          // as base64 frontmatter fields, not inline in the body; see
+          // buildMarkdown's own comment for why.
+          content = buildMarkdown(blog, slug, brandName, schemaArticleB64, schemaFaqB64)
         } else {
           const tplPath = ghBrand.templatePath!
           const tpl = await ghGet(tplPath)
           if (!tpl) throw new Error(`Blog template ${ghBrand.repo}/${tplPath} not found — cannot render an HTML post without it.`)
           content = renderTemplate(tpl.text, {
             TITLE: escAttr(blog.title),
-            DESCRIPTION: escAttr(excerpt),
+            DESCRIPTION: escAttr(description),
             DATE: escAttr(formatDate(blog.publish_date)),
             SLUG: escAttr(slug),
             BRAND: escAttr(brandName),
-            BODY: blog.content_html || '', // stored HTML, inserted as-is by design
+            // Static HTML sites (YCA, PS, Quill) — plain string templating,
+            // no markdown/React escaping pass, so the schema scripts survive
+            // as real elements prepended straight into the body.
+            BODY: schemaScripts + (blog.content_html || ''), // stored HTML, inserted as-is by design
           })
         }
 
@@ -348,7 +430,7 @@ serve(async (req) => {
             if (listing) {
               const updated = insertCard(listing.text, {
                 TITLE: escAttr(blog.title),
-                EXCERPT: escAttr(excerpt),
+                EXCERPT: escAttr(description),
                 DATE: escAttr(formatDate(blog.publish_date)),
                 SLUG: escAttr(slug),
                 BRAND: escAttr(brandName),
@@ -389,12 +471,11 @@ serve(async (req) => {
         }, 500)
       }
       const steadyAdmin = createClient(steadyUrl, steadyKey)
-      const excerpt = blog.meta_description || stripHtml(blog.content_html).slice(0, 200)
       const { error: insErr } = await steadyAdmin.from('blog_posts').upsert({
         slug,
         title: blog.title,
-        excerpt,
-        content: blog.content_html || '',
+        excerpt: description,
+        content: schemaScripts + (blog.content_html || ''),
         published: true,
         published_at: now,
         updated_at: now,
@@ -410,6 +491,16 @@ serve(async (req) => {
       // an empty "No articles published yet" page — a stale legacy route. A
       // live_url built on /blog therefore pointed every published Steady post
       // at a page that would never show it.
+      //
+      // SEPARATE PRE-EXISTING BUG found while adding schema markup here (not
+      // fixed — out of scope for this task, flagging for its own fix): the
+      // steady repo's own /articles/:slug route (ArticleDetail.jsx) reads
+      // from local src/blog/*.md files via src/blog/index.js, NOT from this
+      // upsert into Steady's blog_posts table. A post published through this
+      // function is correctly saved to the database but the live page at
+      // liveUrl will 404 ("This article doesn't exist") until that
+      // mismatch is fixed on Steady's side — ArticlesIndex.jsx (the list
+      // page) may or may not share the same issue; not checked.
       const liveUrl = `${STEADY_SITE_URL}/articles/${slug}`
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Published to Steady, but could not update status here: ${updErr.message}` }, 500)
@@ -429,7 +520,7 @@ serve(async (req) => {
       method: 'manual',
       published_at: now,
       filename: `${slug}.html`,
-      htmlContent: buildStandaloneHtml(blog),
+      htmlContent: buildStandaloneHtml(blog, schemaScripts),
     })
   } catch (e) {
     const message = String((e as Error)?.message ?? e)
