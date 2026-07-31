@@ -20,18 +20,31 @@ export const REAL_CLIENTS = [
   'Steady',
 ]
 
+// The businesses Adrian Fielding personally owns/founded — real, not
+// fabricated, so his own LinkedIn brand must be allowed to name them without
+// tripping the fabricated-client check below.
+const ADRIAN_OWNED_BRANDS = ['Quill', 'Your Company AI', 'Hormonely', 'Once Upon A You', 'Neuro Decoded', 'Steady']
+
 // Fix 2 — permitted references for a specific brand. Problem. Solution. is a
 // sub-brand of Your Company AI whose entire pitch IS the YCA platform (YCA is
 // named in its master prompt and key services), so a reference to YCA is the
 // parent product it promotes, not an invented client. The YCA brand itself may
 // obviously reference its own product too. Everything else stays a fabrication.
 export function permittedReferences(client: Record<string, any>): string[] {
+  const slug = String(client.slug || '').toLowerCase()
   const name = String(client.name || '').toLowerCase()
   const list = [...REAL_CLIENTS]
   const isPS = name.includes('problem') && name.includes('solution')
   const isYCA = name.includes('your company') || name.includes('yca')
   if (isPS || isYCA) {
     list.push('Your Company AI (also written YCA) — the parent product this brand exists to promote')
+  }
+  // Adrian's personal LinkedIn — the brief for this brand explicitly requires
+  // referencing his own businesses by name every post, so all of them are
+  // real, permitted references here (not case studies of someone else's
+  // business).
+  if (slug === 'adrian-linkedin' || name.includes('adrian fielding')) {
+    list.push(...ADRIAN_OWNED_BRANDS.map((b) => `${b} — a real business Adrian Fielding personally owns/founded`))
   }
   return list
 }
@@ -122,7 +135,12 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
     client.tone_of_voice ? `Intended tone: ${client.tone_of_voice}` : '',
     '',
     `The ONLY businesses that may be named as a real client, case study, or result are:`,
-    REAL_CLIENTS.map((c) => `- ${c}`).join('\n'),
+    // Fix — this used to hardcode REAL_CLIENTS directly, silently bypassing
+    // permittedReferences() entirely, so its PS/YCA (and now Adrian's own
+    // brand family) additions never actually reached the reviewer. Wiring
+    // it in here is what makes both the existing PS/YCA carve-out and the
+    // new Adrian Fielding — LinkedIn one actually take effect.
+    permittedReferences(client).map((c) => `- ${c}`).join('\n'),
     `Any other named client or specific business result is a fabrication.`,
     '',
     `This brand's posts published in the last 30 days (for repeat-topic checking):`,

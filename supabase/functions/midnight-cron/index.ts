@@ -233,13 +233,22 @@ serve(async () => {
 
       // Weekly blog — current week only. Cron runs daily, so this is a no-op
       // every day except the first day it's missing for that client.
-      try {
-        const title = await ensureWeeklyBlog(admin, client, sundayOfWeek(now))
-        if (title) blogsGenerated++
-      } catch (e) {
-        const msg = `${client.name} (blog): ${String((e as Error)?.message ?? e)}`
-        errors.push(msg)
-        console.error(`[midnight-cron] ${msg}`)
+      //
+      // Adrian Fielding — LinkedIn has no blog/website surface at all (it's a
+      // single personal LinkedIn profile, one post/week) — every other brand
+      // reaching this point owns a real site a blog post can be
+      // published to. Skipped explicitly, same one-off-brand pattern already
+      // used for CRHQ's own content skip above, rather than adding a general
+      // "does this brand blog" column for what is currently a single case.
+      if (client.slug !== 'adrian-linkedin') {
+        try {
+          const title = await ensureWeeklyBlog(admin, client, sundayOfWeek(now))
+          if (title) blogsGenerated++
+        } catch (e) {
+          const msg = `${client.name} (blog): ${String((e as Error)?.message ?? e)}`
+          errors.push(msg)
+          console.error(`[midnight-cron] ${msg}`)
+        }
       }
 
       // Every client gets its own full budget — see PER_CLIENT_POST_BUDGET

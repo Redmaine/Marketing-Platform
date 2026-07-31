@@ -42,7 +42,7 @@ import { fetchPosts, fetchTimeline, fetchFollowers, MetricoolNoConnectionError }
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
-const ANALYTICS_PLATFORMS = ['facebook', 'instagram']
+const ANALYTICS_PLATFORMS = ['facebook', 'instagram', 'linkedin']
 const POST_WINDOW_DAYS = 30
 const TOP_POSTS_PER_BRAND_PLATFORM = 5
 
@@ -92,6 +92,35 @@ function mapInstagramPost(p: Record<string, unknown>) {
   }
 }
 
+// UNVERIFIED — unlike mapFacebookPost/mapInstagramPost (empirically confirmed
+// against the live API per this file's header), no live LinkedIn post has
+// been pulled through /v2/analytics/posts/linkedin yet, so these field names
+// are a best-effort guess from Metricool's documented vocabulary, not a
+// confirmed shape. Defensive fallback chains (?? ) so an unrecognised field
+// name degrades to 0 rather than throwing. Spot-check metricool_post_
+// performance rows with platform='linkedin' after the first real run and
+// correct any field names found wrong.
+function mapLinkedInPost(p: Record<string, unknown>) {
+  const impressions = Number(p.impressions ?? p.impressionsTotal ?? 0)
+  const engagementRate = Number(p.engagement ?? 0)
+  return {
+    post_id: String(p.postId ?? ''),
+    published_at: (p.publishedAt as { dateTime?: string } | undefined)?.dateTime
+      ?? (p.created as { dateTime?: string } | undefined)?.dateTime ?? null,
+    // LinkedIn's analytics don't expose a distinct "reach" figure in
+    // Metricool's documented fields the way Facebook/Instagram do —
+    // impressions is the closest available figure until verified otherwise.
+    reach: impressions,
+    impressions,
+    engagements: Math.round(Number(p.interactions ?? p.engagements ?? 0)),
+    likes: Number(p.likes ?? p.like ?? 0),
+    comments: Number(p.comments ?? 0),
+    shares: Number(p.shares ?? 0),
+    clicks: Math.round(Number(p.clicks ?? p.linkclicks ?? 0)),
+    engagement_rate: engagementRate,
+  }
+}
+
 async function pullBrandPlatform(
   admin: Admin,
   brand: string,
@@ -111,8 +140,9 @@ async function pullBrandPlatform(
     throw e
   }
 
+  const mapper = platform === 'facebook' ? mapFacebookPost : platform === 'linkedin' ? mapLinkedInPost : mapInstagramPost
   const mapped = rawPosts
-    .map((p) => (platform === 'facebook' ? mapFacebookPost(p) : mapInstagramPost(p)))
+    .map(mapper)
     .filter((p) => p.post_id)
 
   if (mapped.length > 0) {
