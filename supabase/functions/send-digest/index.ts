@@ -18,7 +18,13 @@ serve(async () => {
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const today = new Date().toISOString().split('T')[0]
 
-    const [clientsRes, tasksRes, overdueRes, postsRes] = await Promise.all([
+    // Part 5 — competitor intelligence only runs Monday 06:00 (see
+    // weekly-competitor-search), so the section is only relevant on the
+    // Monday occurrence of this daily digest. UK-local, matching every other
+    // day-of-week check in this codebase (dayOfWeekUK in _shared/generate.ts).
+    const isMondayUK = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'Europe/London' }).format(new Date()) === 'Mon'
+
+    const [clientsRes, tasksRes, overdueRes, postsRes, competitorRes] = await Promise.all([
       admin.from('mkt_clients').select('id, name, short_name, brand_primary_color').eq('active', true),
       admin.from('mkt_tasks').select('*, client:mkt_clients(short_name,name)').eq('completed', false).lte('due_date', today),
       admin.from('mkt_tasks').select('*, client:mkt_clients(short_name,name)').eq('completed', false).lt('due_date', today),
@@ -29,11 +35,15 @@ serve(async () => {
         .select('id, platform, body, status, scheduled_for, client:mkt_clients(short_name,name,brand_primary_color)')
         .in('status', ['draft', 'pending'])
         .order('scheduled_for', { ascending: true, nullsFirst: false }),
+      isMondayUK
+        ? admin.from('competitor_intelligence').select('search_query, result_summary').eq('run_date', today).order('created_at', { ascending: true })
+        : Promise.resolve({ data: [] }),
     ])
 
     const tasks = tasksRes.data || []
     const overdue = overdueRes.data || []
     const posts = postsRes.data || []
+    const competitorFindings = competitorRes.data || []
     const overdueIds = new Set(overdue.map((o) => o.id))
     const todayTasks = tasks.filter((t) => !overdueIds.has(t.id))
     const pendingCount = posts.length
@@ -62,6 +72,22 @@ serve(async () => {
         html += `<a href="${OPS_URL}/content?status=draft" style="background:${colour};color:#fff;text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:700">Review</a>`
         html += `</div>`
       }
+    }
+
+    // ── Section: Competitor intelligence (Mondays only) ────────────────────────
+    if (isMondayUK) {
+      html += `<div style="margin-top:16px"><strong>Competitor intelligence</strong>`
+      if (competitorFindings.length) {
+        for (const f of competitorFindings) {
+          html += `<div style="background:#F7F9FA;border-radius:8px;padding:10px 12px;margin-top:8px">`
+          html += `<div style="font-weight:700;font-size:13px">${esc(f.search_query)}</div>`
+          html += `<div style="font-size:13px;color:#2E4057;margin-top:4px">${esc(f.result_summary)}</div>`
+          html += `</div>`
+        }
+      } else {
+        html += `<p style="color:#8FA3B1;font-size:13px;margin-top:6px">Competitor search did not run — check weekly-competitor-search function.</p>`
+      }
+      html += `</div>`
     }
 
     if (overdue.length) {
