@@ -70,9 +70,10 @@ export function ContentQueue() {
   const [rejectingItem, setRejectingItem] = useState(null)
   const [rejectReasonInput, setRejectReasonInput] = useState('')
   const [writingPost, setWritingPost] = useState(false)
-  const [writeForm, setWriteForm] = useState({ client_id: '', platform: 'facebook', body: '', isReactive: false })
+  const [writeForm, setWriteForm] = useState({ client_id: '', platform: '', body: '', scheduled_date: '' })
   const [writeImageFile, setWriteImageFile] = useState(null)
   const [writeBusy, setWriteBusy] = useState(false)
+  const [slotLoading, setSlotLoading] = useState(false)
   const [hiddenExpanded, setHiddenExpanded] = useState(false)
 
   async function load() {
@@ -81,7 +82,9 @@ export function ContentQueue() {
       // Soonest-scheduled first so the most urgent approvals surface at the
       // top; posts with no scheduled_for sort to the bottom (nullsFirst: false).
       supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('scheduled_for', { ascending: true, nullsFirst: false }),
-      supabase.from('mkt_clients').select('id, name, short_name, content_pillars').eq('active', true).order('name'),
+      // connected_platforms drives the "Write a post" platform dropdown — it
+      // is filtered to the platforms the selected brand actually has.
+      supabase.from('mkt_clients').select('id, name, short_name, content_pillars, connected_platforms').eq('active', true).order('name'),
       // Published log — only rows whose send time has actually passed.
       supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
     ])
@@ -332,10 +335,53 @@ export function ContentQueue() {
     setGraphics((prev) => prev.map((x) => x.id === g.id ? { ...x, status } : x))
   }
 
+  // Platforms this brand has actually connected — the dropdown is filtered to
+  // these, and create-manual-post enforces the same rule server-side.
+  function platformsFor(clientId) {
+    const c = clients.find((x) => x.id === clientId)
+    return Array.isArray(c?.connected_platforms) ? c.connected_platforms : []
+  }
+
+  // Asks create-manual-post for the brand/platform's next available posting
+  // slot and pre-populates the date picker with it. Resolved server-side so
+  // the default date comes from exactly the same schedule logic that the
+  // displacement and the cron use — not a second implementation in the UI.
+  async function loadNextSlot(clientId, platform) {
+    if (!clientId || !platform) { setWriteForm((f) => ({ ...f, scheduled_date: '' })); return }
+    setSlotLoading(true)
+    const { data, error } = await supabase.functions.invoke('create-manual-post', {
+      body: { action: 'next_slot', client_id: clientId, platform },
+    })
+    setSlotLoading(false)
+    if (error || data?.error || !data?.next_slot) {
+      // Leave the picker empty rather than guessing a date — the user can
+      // still choose one, and submitting without a date is blocked below.
+      setWriteForm((f) => ({ ...f, scheduled_date: '' }))
+      return
+    }
+    setWriteForm((f) => ({ ...f, scheduled_date: data.next_slot }))
+  }
+
   function openWritePost() {
-    setWriteForm({ client_id: clients[0]?.id || '', platform: 'facebook', body: '', isReactive: false })
+    const firstClient = clients[0]
+    const firstPlatform = (Array.isArray(firstClient?.connected_platforms) ? firstClient.connected_platforms : [])[0] || ''
+    setWriteForm({ client_id: firstClient?.id || '', platform: firstPlatform, body: '', scheduled_date: '' })
     setWriteImageFile(null)
     setWritingPost(true)
+    if (firstClient?.id && firstPlatform) loadNextSlot(firstClient.id, firstPlatform)
+  }
+
+  // Brand change resets the platform to that brand's first connected one (the
+  // previous selection may not exist for the new brand) and re-resolves the
+  // default date for the new pairing.
+  function onWriteBrandChange(clientId) {
+    const nextPlatform = platformsFor(clientId)[0] || ''
+    setWriteForm((f) => ({ ...f, client_id: clientId, platform: nextPlatform }))
+    loadNextSlot(clientId, nextPlatform)
+  }
+  function onWritePlatformChange(platform) {
+    setWriteForm((f) => ({ ...f, platform }))
+    loadNextSlot(writeForm.client_id, platform)
   }
   function fileToBase64(file) {
     return new Promise((resolve, reject) => {
@@ -345,8 +391,17 @@ export function ContentQueue() {
       reader.readAsDataURL(file)
     })
   }
+  // 'YYYY-MM-DD' -> "Tue 5 August" for the confirmation message.
+  function prettyDate(ymd) {
+    const [y, m, d] = String(ymd || '').split('-').map(Number)
+    if (!y || !m || !d) return ymd
+    return new Date(y, m - 1, d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'long' })
+  }
+
   async function submitWritePost() {
-    if (!writeForm.client_id || !writeForm.body.trim()) { setNotice('Pick a brand and write the copy first.'); return }
+    if (!writeForm.client_id || !writeForm.platform) { setNotice('Pick a brand and a platform first.'); return }
+    if (!writeForm.body.trim()) { setNotice('Write the post copy first.'); return }
+    if (!writeForm.scheduled_date) { setNotice('Pick a date to schedule this post for.'); return }
     setWriteBusy(true); setNotice('')
     let image_base64, image_content_type
     if (writeImageFile) {
@@ -362,17 +417,40 @@ export function ContentQueue() {
     const { data, error } = await supabase.functions.invoke('create-manual-post', {
       body: {
         client_id: writeForm.client_id, platform: writeForm.platform, body: writeForm.body,
-        is_reactive: writeForm.isReactive, image_base64, image_content_type,
+        scheduled_date: writeForm.scheduled_date, image_base64, image_content_type,
       },
     })
-    setWriteBusy(false)
-    if (error || data?.error) { setNotice(data?.error || error?.message || 'Could not write that post — try again.'); return }
-    setWritingPost(false)
-    if (data?.displaced) {
-      setNotice(`Post added and scheduled. The next scheduled post for that brand/platform was moved to ${new Date(data.displaced.new_scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}.`)
-    } else {
-      setNotice('Post added and scheduled.')
+    if (error || data?.error) {
+      setWriteBusy(false)
+      setNotice(data?.error || error?.message || 'Could not write that post — try again.')
+      return
     }
+
+    // The post is inserted already approved, but nothing sweeps approved rows
+    // to Metricool — approve() in this same file pushes on approval for
+    // exactly this reason, so a manual post has to do the same or it would
+    // never actually send. The displaced post only needs re-pushing if it was
+    // already live on Metricool, since its send time has now changed.
+    const schedulingErrors = []
+    const { data: schedData, error: schedErr } = await supabase.functions.invoke('schedule-to-metricool', {
+      body: { content_queue_id: data.item.id },
+    })
+    if (schedErr || schedData?.error) schedulingErrors.push(schedData?.error || schedErr?.message || 'unknown error')
+    if (data.displaced?.had_metricool_post) {
+      const { data: dData, error: dErr } = await supabase.functions.invoke('schedule-to-metricool', {
+        body: { content_queue_id: data.displaced.id },
+      })
+      if (dErr || dData?.error) schedulingErrors.push(`moved post: ${dData?.error || dErr?.message || 'unknown error'}`)
+    }
+
+    setWriteBusy(false)
+    setWritingPost(false)
+    const base = data.displaced
+      ? `Post scheduled for ${prettyDate(data.scheduled_date)}. Previous post moved to ${prettyDate(data.displaced.new_date)}.`
+      : `Post scheduled for ${prettyDate(data.scheduled_date)}.`
+    setNotice(schedulingErrors.length
+      ? `${base} Scheduling to Metricool failed: ${schedulingErrors.join('; ')}`
+      : base)
     load()
   }
 
@@ -679,54 +757,71 @@ export function ContentQueue() {
       <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
         onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
       <WritePostModal open={writingPost} clients={clients} form={writeForm} setForm={setWriteForm}
+        platforms={platformsFor(writeForm.client_id)} slotLoading={slotLoading}
+        onBrandChange={onWriteBrandChange} onPlatformChange={onWritePlatformChange}
         imageFile={writeImageFile} setImageFile={setWriteImageFile} busy={writeBusy}
         onCancel={() => setWritingPost(false)} onSubmit={submitWritePost} />
     </div>
   )
 }
 
-// "Write a post" — the content-cadence-control form. A brand, a platform, the
-// copy, an optional image, and a toggle for whether this is a reactive post
-// that should bump the next scheduled post along rather than sit alongside
-// it. All the actual displacement/scheduling logic lives server-side in the
-// create-manual-post edge function — this is just the form.
-function WritePostModal({ open, clients, form, setForm, imageFile, setImageFile, busy, onCancel, onSubmit }) {
+// "Write a post" — manual post creation. Brand, platform (filtered to that
+// brand's connected platforms), copy, scheduled date, optional image.
+//
+// The date defaults to the brand/platform's next available posting slot,
+// resolved server-side by create-manual-post so it comes from exactly the
+// same schedule logic the cron and the displacement use. Picking a date that
+// already holds a cron-generated post displaces that post forward — handled
+// entirely in the edge function; this is just the form.
+function WritePostModal({ open, clients, form, setForm, platforms, slotLoading, onBrandChange, onPlatformChange, imageFile, setImageFile, busy, onCancel, onSubmit }) {
   if (!open) return null
+  const noPlatforms = platforms.length === 0
   return (
     <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onCancel() }}>
       <div className="modal">
         <h2 style={{ fontSize: 18, marginBottom: 14 }}>Write a post</h2>
         <div className="grid grid-2" style={{ marginBottom: 12 }}>
           <div className="field"><label>Brand</label>
-            <select className="input" value={form.client_id} onChange={(e) => setForm((f) => ({ ...f, client_id: e.target.value }))}>
+            <select className="input" value={form.client_id} onChange={(e) => onBrandChange(e.target.value)}>
               {clients.map((c) => <option key={c.id} value={c.id}>{c.short_name || c.name}</option>)}
             </select>
           </div>
           <div className="field"><label>Platform</label>
-            <select className="input" value={form.platform} onChange={(e) => setForm((f) => ({ ...f, platform: e.target.value }))}>
-              <option value="facebook">Facebook</option>
-              <option value="instagram">Instagram</option>
-              <option value="linkedin">LinkedIn</option>
+            <select className="input" value={form.platform} disabled={noPlatforms}
+              onChange={(e) => onPlatformChange(e.target.value)}>
+              {noPlatforms
+                ? <option value="">No connected platforms</option>
+                : platforms.map((p) => (
+                    <option key={p} value={p}>{PLATFORM_META[p]?.label || p.replace('_', ' ')}</option>
+                  ))}
             </select>
           </div>
         </div>
+        {noPlatforms && (
+          <p style={{ fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '8px 10px', marginBottom: 12 }}>
+            This brand has no connected platforms, so a post can't be scheduled for it.
+          </p>
+        )}
         <div className="field" style={{ marginBottom: 12 }}>
           <label>Copy</label>
           <textarea className="input" rows={5} value={form.body} onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))} />
         </div>
         <div className="field" style={{ marginBottom: 12 }}>
+          <label>Scheduled date{slotLoading ? ' — finding next slot…' : ''}</label>
+          <input type="date" className="input" value={form.scheduled_date} disabled={slotLoading}
+            onChange={(e) => setForm((f) => ({ ...f, scheduled_date: e.target.value }))} />
+          <div style={{ fontSize: 11, color: 'var(--mist)', marginTop: 4 }}>
+            Defaults to this brand's next free slot. Choosing a date that already has a scheduled post moves that post to the next free slot.
+          </div>
+        </div>
+        <div className="field" style={{ marginBottom: 16 }}>
           <label>Image (optional)</label>
           <input type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} />
         </div>
-        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, marginBottom: 16 }}>
-          <input type="checkbox" checked={form.isReactive} style={{ marginTop: 2 }}
-            onChange={(e) => setForm((f) => ({ ...f, isReactive: e.target.checked }))} />
-          <span>This is a reactive post — replace next scheduled post</span>
-        </label>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button className="btn btn-ghost" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary" style={{ flex: 1 }} onClick={onSubmit} disabled={busy}>
-            {busy ? 'Adding…' : 'Add post'}
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={onSubmit} disabled={busy || noPlatforms}>
+            {busy ? 'Scheduling…' : 'Schedule post'}
           </button>
         </div>
       </div>

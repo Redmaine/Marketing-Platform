@@ -7,6 +7,7 @@
 //      statistics) — done by Anthropic with a structured tool response.
 // The first failure wins and returns the spec's exact reason string.
 import { callAnthropicStructured, generatePost } from './generate.ts'
+import { BLOG_REFERENCE_KEYWORDS } from './prompts.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -91,6 +92,33 @@ function personalFabricationViolation(client: Record<string, any>, body: string)
   return null
 }
 
+// ── Layer 1: blog-dependent copy with no blog to depend on ──────────────────
+// The caller (fill.ts) resolves whether a blog actually went live for this
+// brand in the last 7 days and attaches the answer as client._blog_context.
+// buildUserMessage already instructs the model accordingly; this is the
+// deterministic guarantee behind that instruction — a post that references a
+// blog when none exists fails review and is regenerated (see
+// generateReviewedPost's retry), rather than being queued and then blocked in
+// the approval queue the way it used to be.
+//
+// Tri-state guard, matching buildUserMessage exactly: _blog_context absent
+// means the caller never opted in, so this check is skipped entirely and
+// non-cron generation paths are completely unaffected.
+function blogReferenceViolation(client: Record<string, any>, body: string): string | null {
+  const blogContext = client._blog_context as { recentBlog?: unknown } | undefined
+  if (!blogContext) return null
+  if (blogContext.recentBlog) return null
+  for (const keyword of BLOG_REFERENCE_KEYWORDS) {
+    // Word-boundary match so "blog" doesn't fire on a longer word, while
+    // multi-word phrases still match across normal spacing.
+    const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+    if (pattern.test(body)) {
+      return `references a blog but none has been published for this brand in the last 7 days — matched "${keyword}"`
+    }
+  }
+  return null
+}
+
 const HORMONELY_DISCLAIMER = 'Always speak to your GP before making changes to your health routine.'
 const STEADY_DISCLAIMER = 'Steady provides lifestyle and wellbeing guidance only. Always follow the advice of your prescriber or GP.'
 
@@ -151,6 +179,9 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
 
   const personalFabrication = personalFabricationViolation(client, body)
   if (personalFabrication) return { pass: false, reason: personalFabrication }
+
+  const blogReference = blogReferenceViolation(client, body)
+  if (blogReference) return { pass: false, reason: blogReference }
 
   // Layer 2 — judgement. Pull recent published copy for the repeat-topic check.
   // Fix 1 — only genuinely-past posts count as "already published". date_sent

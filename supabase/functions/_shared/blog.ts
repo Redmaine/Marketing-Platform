@@ -3,7 +3,7 @@
 // Item 6: 800-1200 words, built around a search-intent keyword, written in
 // prose (no markdown ## headers, no ** bold, no bullet lists), all Item 3
 // content rules apply, and the Hormonely / Steady disclaimers are enforced.
-import { buildSystemPrompt } from './prompts.ts'
+import { buildSystemPrompt, BLOG_QUALITY_RULES } from './prompts.ts'
 import { callAnthropicStructured, dateOnly, weekNumber } from './generate.ts'
 import { contentRuleViolation } from './review.ts'
 
@@ -68,7 +68,12 @@ export async function ensureWeeklyBlog(admin: Admin, client: Record<string, any>
       ? `\nThis is a Steady post — it MUST include exactly: "${STEADY_DISCLAIMER}" and any statistic used must cite its source inline.`
       : ''
 
+  // BLOG_QUALITY_RULES leads the message so every rule is read before the
+  // brief itself — shared across every brand from prompts.ts rather than
+  // duplicated per client row.
   const baseUser = [
+    BLOG_QUALITY_RULES,
+    '',
     `Write a full blog post for the "${pillar}" content pillar.`,
     client.industry ? `Industry: ${client.industry}` : '',
     client.key_services ? `Services: ${client.key_services}` : '',

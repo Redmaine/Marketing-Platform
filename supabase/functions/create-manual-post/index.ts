@@ -1,36 +1,52 @@
 // Supabase Edge Function: create-manual-post  (Deno)
-// Content cadence control — the "Write a post" form on the ops platform's
-// content queue screen calls this to insert a manually-written post.
+// The ops platform's "Write a post" form (Content tab) calls this to create a
+// manually-written social post for any brand and platform.
 //
-// Two modes, driven by `is_reactive`:
-//   - off:  the post is simply queued into the brand's next empty posting
-//           slot (per that platform's mkt_content_schedule) — nothing else
-//           is touched.
-//   - on:   the earliest not-yet-approved post for this brand+platform is
-//           found and rescheduled to the brand's next empty slot; the new
-//           manual post takes over the ORIGINAL slot that post vacated.
-//           "Not yet approved or sent" = status in ('draft', 'pending') —
-//           this schema's two awaiting-approval states (see migration 12's
-//           own comment on the status CHECK constraint).
+// The post is inserted already approved (status 'approved', review_status
+// 'passed', is_manual true) — a human wrote it, so there is nothing for the
+// automated review or the approval queue to add. is_manual is what
+// midnight-cron's hasManualPostOnDate respects (see _shared/fill.ts, which
+// skips a day owned by a manual post and logs "manual post exists") and what
+// send-digest labels "manual".
 //
-// Every inserted row gets is_manual = true (migration 77) and
-// generated_by = 'human' (already a valid value in the original schema's
-// generated_by CHECK, migration 03 — this is simply the first place that
-// ever writes it). is_manual is what midnight-cron's hasAutoPostOnDate now
-// respects (see _shared/fill.ts) and what send-digest labels "manual".
+// DISPLACEMENT: if a cron-generated post already occupies that brand/platform
+// on the chosen date, it is MOVED, never deleted — rescheduled to the next
+// genuinely empty slot in the brand's own posting schedule (a day with no
+// live post of any kind, manual or automatic). The manual post then takes the
+// date the user chose.
 //
-// Invoke (agency, authenticated): supabase.functions.invoke('create-manual-post',
-//   { body: { client_id, platform, body, image_base64?, image_content_type?, is_reactive } })
+// Two modes:
+//   { action: 'next_slot', client_id, platform }
+//       -> { next_slot: 'YYYY-MM-DD' | null }  — used to pre-populate the
+//          form's date picker with the brand's next available slot.
+//   { client_id, platform, body, scheduled_date, image_base64?, image_content_type? }
+//       -> { item, displaced: { id, new_date } | null, scheduled_date }
+//
+// NOTE on scheduling to Metricool: nothing in this project sweeps
+// status='approved' rows and pushes them to Metricool — schedule-to-metricool
+// is only ever invoked by the caller that approved the post (see
+// ContentQueue.jsx's approve()). So the frontend invokes it for the returned
+// item, and for the displaced post when its own send time has moved. Handled
+// there rather than here for the same reason approve() does it there: that is
+// the established, proven path in this codebase, and it keeps the authenticated
+// user's JWT on the call.
 //
 // Deploy:  supabase functions deploy create-manual-post
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
-import { stripMarkdown } from '../_shared/generate.ts'
-import { nextEmptySlot } from '../_shared/fill.ts'
+import { stripMarkdown, dateOnly } from '../_shared/generate.ts'
+import { nextEmptySlot, cronPostOnDate, slotDateTime } from '../_shared/fill.ts'
 
-const VALID_PLATFORMS = ['facebook', 'instagram', 'linkedin', 'google_business', 'blog']
-const AWAITING_APPROVAL_STATUSES = ['draft', 'pending']
+// Parses 'YYYY-MM-DD' as a LOCAL date at midnight. `new Date('YYYY-MM-DD')`
+// would parse as UTC midnight, which in a negative-offset timezone lands on
+// the previous day — the picked date must mean the picked date.
+function parseLocalDate(s: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim())
+  if (!m) return null
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  return Number.isNaN(d.getTime()) ? null : d
+}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -43,59 +59,62 @@ serve(async (req) => {
     const { data: isAdmin } = await userClient.rpc('mkt_is_admin')
     if (isAdmin !== true) return json({ error: 'Not authorised' }, 403)
 
-    const { client_id, platform, body, image_base64, image_content_type, is_reactive } = await req.json()
-    if (!client_id || !platform || !body) return json({ error: 'client_id, platform and body are required' }, 400)
-    if (!VALID_PLATFORMS.includes(platform)) return json({ error: `Unknown platform "${platform}"` }, 400)
+    const { action, client_id, platform, body, scheduled_date, image_base64, image_content_type } = await req.json()
+    if (!client_id || !platform) return json({ error: 'client_id and platform are required' }, 400)
 
     const admin = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: client, error: cErr } = await admin.from('mkt_clients').select('*').eq('id', client_id).single()
     if (cErr || !client) return json({ error: 'Client not found' }, 404)
 
-    const cleanBody = stripMarkdown(String(body))
-
-    let scheduledFor: Date | null = null
-    let displacedId: string | null = null
-    let displacedNewSlot: string | null = null
-
-    if (is_reactive) {
-      // Earliest not-yet-approved post for this brand+platform — the one
-      // this manual post is reacting to and taking the slot of.
-      const { data: displaced, error: dErr } = await admin
-        .from('mkt_content_queue')
-        .select('id, scheduled_for')
-        .eq('client_id', client_id).eq('platform', platform).eq('content_type', 'post')
-        .in('status', AWAITING_APPROVAL_STATUSES)
-        .order('scheduled_for', { ascending: true, nullsFirst: false })
-        .limit(1)
-        .maybeSingle()
-      if (dErr) return json({ error: `Looking up the post to displace failed: ${dErr.message}` }, 500)
-
-      if (displaced) {
-        // Reschedule it to the brand's next empty slot, walking forward from
-        // its OWN current slot (not "now") so it never lands back where it
-        // started and always moves strictly forward in the schedule.
-        const afterDate = displaced.scheduled_for ? new Date(displaced.scheduled_for) : new Date()
-        const newSlot = await nextEmptySlot(admin, client, platform, afterDate)
-        if (!newSlot) {
-          return json({ error: `Could not find an empty slot to move the displaced post to for ${client.name}/${platform} — schedule may be misconfigured.` }, 500)
-        }
-        const { error: moveErr } = await admin.from('mkt_content_queue').update({ scheduled_for: newSlot.toISOString() }).eq('id', displaced.id)
-        if (moveErr) return json({ error: `Rescheduling the displaced post failed: ${moveErr.message}` }, 500)
-
-        // The manual post takes over the slot the displaced post vacated.
-        scheduledFor = displaced.scheduled_for ? new Date(displaced.scheduled_for) : newSlot
-        displacedId = displaced.id
-        displacedNewSlot = newSlot.toISOString()
-      }
-      // No post currently awaiting approval for this brand+platform — falls
-      // through to the "no displacement" path below, same as the toggle
-      // being off, since there is nothing to react to.
+    // The form filters the platform dropdown to the brand's connected
+    // platforms; enforce the same rule here so the API can't be used to queue
+    // a post for a platform the brand has never connected.
+    const connected: string[] = Array.isArray(client.connected_platforms) ? client.connected_platforms : []
+    if (!connected.includes(platform)) {
+      return json({ error: `${client.name} has no "${platform}" connection. Connected platforms: ${connected.join(', ') || 'none'}.` }, 422)
     }
 
-    if (!scheduledFor) {
-      scheduledFor = await nextEmptySlot(admin, client, platform)
-      if (!scheduledFor) {
-        return json({ error: `Could not find an empty posting slot for ${client.name}/${platform} — check mkt_content_schedule.` }, 500)
+    // ── Probe mode: what date should the picker default to? ──────────────────
+    if (action === 'next_slot') {
+      const slot = await nextEmptySlot(admin, client, platform)
+      return json({ next_slot: slot ? dateOnly(slot) : null })
+    }
+
+    if (!body || !String(body).trim()) return json({ error: 'body is required' }, 400)
+    if (!scheduled_date) return json({ error: 'scheduled_date is required' }, 400)
+    const chosenDay = parseLocalDate(scheduled_date)
+    if (!chosenDay) return json({ error: 'scheduled_date must be YYYY-MM-DD' }, 400)
+
+    const cleanBody = stripMarkdown(String(body))
+    // The brand's own posting time for that weekday — so a manual post lands
+    // in the same slot the cron would have used, not an arbitrary midnight.
+    const scheduledFor = await slotDateTime(admin, client, platform, chosenDay)
+
+    // ── Displacement ─────────────────────────────────────────────────────────
+    // Resolved BEFORE inserting the manual post, so the "next genuinely empty
+    // slot" walk (which excludes any day already holding a live post) isn't
+    // looking at the row we are about to add. Walking forward from the chosen
+    // day, exclusive, guarantees the displaced post moves strictly forward and
+    // never lands back on the date it just gave up.
+    let displaced: { id: string; new_date: string; had_metricool_post: boolean } | null = null
+    const existing = await cronPostOnDate(admin, client_id, platform, chosenDay)
+    if (existing) {
+      const newSlot = await nextEmptySlot(admin, client, platform, chosenDay)
+      if (!newSlot) {
+        return json({
+          error: `A post already exists for ${client.name}/${platform} on that date, and no empty slot could be found to move it to — check this brand's posting schedule.`,
+        }, 409)
+      }
+      const { error: moveErr } = await admin.from('mkt_content_queue')
+        .update({ scheduled_for: newSlot.toISOString() })
+        .eq('id', existing.id)
+      if (moveErr) return json({ error: `Could not move the existing post: ${moveErr.message}` }, 500)
+      displaced = {
+        id: existing.id,
+        new_date: dateOnly(newSlot),
+        // Already live on Metricool — its send time changed, so the caller
+        // must re-push it or Metricool would still fire on the old date.
+        had_metricool_post: Boolean(existing.metricool_post_id),
       }
     }
 
@@ -119,19 +138,27 @@ serve(async (req) => {
       }
     }
 
-    // review_status/reviewed_at are left null — a manually-written post never
-    // goes through generateReviewedPost, so marking it "passed" would claim a
-    // review that never happened. Left null, the queue UI shows the same
-    // "read it carefully before approving" flag it already shows for any
-    // unreviewed post — the honest state here.
+    const nowIso = new Date().toISOString()
     const { data: inserted, error: iErr } = await admin.from('mkt_content_queue').insert({
       client_id, platform, content_type: 'post', body: cleanBody,
-      status: 'draft', generated_by: 'human', is_manual: true,
+      status: 'approved', review_status: 'passed', reviewed_at: nowIso,
+      approved_at: nowIso, generated_by: 'human', is_manual: true,
       scheduled_for: scheduledFor.toISOString(), image_url: imageUrl,
     }).select('*, client:mkt_clients(short_name,name)').single()
-    if (iErr) return json({ error: iErr.message }, 500)
+    if (iErr) {
+      // The manual post failed but a displaced post may already have been
+      // moved — say so explicitly rather than leaving a silent inconsistency.
+      const suffix = displaced ? ` NOTE: the existing post was already moved to ${displaced.new_date}.` : ''
+      return json({ error: `${iErr.message}${suffix}` }, 500)
+    }
 
-    return json({ item: inserted, displaced: displacedId ? { id: displacedId, new_scheduled_for: displacedNewSlot } : null })
+    console.log(`[create-manual-post] ${client.name}/${platform}: manual post scheduled for ${dateOnly(scheduledFor)}${displaced ? `, displaced ${displaced.id} to ${displaced.new_date}` : ''}`)
+
+    return json({
+      item: inserted,
+      scheduled_date: dateOnly(scheduledFor),
+      displaced,
+    })
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500)
   }

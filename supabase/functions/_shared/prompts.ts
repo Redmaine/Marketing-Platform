@@ -47,6 +47,25 @@ ${posts.join('\n\n---\n\n')}
 [END LAST 60 POSTS]`
 }
 
+// ── Blog-dependent social post sequencing ───────────────────────────────────
+// The phrases that make a social post depend on a blog existing. Shared by the
+// prompt instruction below and review.ts's deterministic enforcement, so the
+// rule the model is given and the rule it is checked against can never drift.
+export const BLOG_REFERENCE_KEYWORDS = ['blog', 'latest post', 'we wrote', 'read more', 'full article']
+
+// BLOG QUALITY RULES — prepended verbatim to every brand's blog generation
+// prompt (see ensureWeeklyBlog in blog.ts). Lives here with the other shared
+// prompt fragments so it stays in one place across every brand rather than
+// being duplicated per client row.
+export const BLOG_QUALITY_RULES = `BLOG QUALITY RULES — NON-NEGOTIABLE:
+Every blog post must target a specific search term a real person would type into Google.
+Include the target keyword in: the title, the first paragraph, at least two subheadings, and the meta description.
+Minimum 600 words. No padding — every sentence must earn its place.
+No AI tells: no 'In conclusion', no 'In today's world', no 'It's important to note', no 'dive into', no 'game-changer'.
+One clear call to action at the end — specific to the brand's goal (trial signup, contact form, product page).
+Prose only — no bullet points, no numbered lists, no headers that are questions.
+Meta description: 140-160 characters, includes the keyword, reads like a human wrote it.`
+
 // Applied to every brand, ahead of that brand's own master_prompt. Injected
 // here rather than written into each mkt_clients.master_prompt so the rules
 // stay in one place and cannot drift brand to brand — editing nine rows to
@@ -264,6 +283,26 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
   if (recent.length) {
     lines.push(`This brand has recently published the posts below. Choose clearly DIFFERENT subject matter and a different opening — do not paraphrase or re-angle any of these:`)
     recent.forEach((t, i) => lines.push(`${i + 1}. ${t}`))
+  }
+
+  // Blog-dependent sequencing — the caller (fill.ts) resolves ONCE per client,
+  // before any generation, whether a blog actually went live for this brand in
+  // the last 7 days, and attaches the answer as _blog_context. This is what
+  // replaces the old speculative behaviour (generate blog-referencing copy,
+  // then block it in the approval queue when no blog exists): the model is now
+  // told up front which of the two posts it is writing.
+  //
+  // Tri-state, deliberately: _blog_context absent entirely means the caller
+  // never opted in (generate-content and other ad-hoc paths), so neither
+  // instruction is emitted and behaviour is exactly as before.
+  const blogContext = client._blog_context as { recentBlog?: { title: string; url: string | null } | null } | undefined
+  if (blogContext) {
+    const blog = blogContext.recentBlog
+    if (blog) {
+      lines.push(`\nThis brand published a blog post in the last 7 days: "${blog.title}"${blog.url ? ` — ${blog.url}` : ''}. You MAY reference it in this post (for example "our latest post" or "read more"). If you do, refer to it by that exact title${blog.url ? ' and link to that exact URL' : ''} — do not invent a different title, topic or link.`)
+    } else {
+      lines.push(`\nThis brand has NOT published a blog post in the last 7 days. Write a standalone post. Do not reference a blog, an article, "our latest post", "we wrote", "read more", or "the full article", and do not imply that further reading exists anywhere. There is nothing to link to, so any such reference would point readers at a page that does not exist.`)
+    }
   }
 
   // Combat Ready HQ only: midnight-cron attaches a fresh scrape of CRHQ's own

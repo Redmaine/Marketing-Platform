@@ -7,7 +7,16 @@
 -- already occupies it — see _shared/fill.ts's hasAutoPostOnDate) and by
 -- send-digest (labels a post "manual" vs "scheduled").
 --
--- FILE ONLY — do not apply via CLI (explicit instruction for this task).
+-- Originally written as a file-only migration (the task that added it said not
+-- to apply it via the CLI). That instruction was superseded by a later task
+-- that explicitly asked for the column to be added, so this is now applied.
+--
+-- NOT NULL is a deliberate strengthening of the requested
+-- `boolean DEFAULT false`: it removes the null/false tri-state, so filters
+-- like `is_manual = false` behave the way every caller expects. Postgres
+-- backfills existing rows with the default, so it is safe on a populated
+-- table and functionally identical for every query written against the
+-- looser spec.
 -- =============================================================================
 
 alter table public.mkt_content_queue

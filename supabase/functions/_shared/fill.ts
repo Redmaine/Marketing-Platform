@@ -1,7 +1,7 @@
 // Shared "fill this client's content calendar" logic — used by both
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
-import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, isPlatformConnected, stripMarkdown } from './generate.ts'
+import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, dateOnly, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
 import { latestOptimisationNotes } from './optimisation.ts'
@@ -99,28 +99,48 @@ export async function clientPlatforms(admin: Admin, client: Record<string, any>)
   return candidates.filter((p: string) => isPlatformConnected(client, p))
 }
 
-// Whether an AUTO-generated post — OR a manually-written one (is_manual) —
-// already occupies this brand's slot on this day. Fix 2 / Fix 4: the cron
-// generates a maximum of one post per brand per day and must skip a brand
-// for a day that already has an auto-generated post.
-//
-// Content cadence control: a manual post (is_manual = true, written via the
-// ops platform's "Write a post" form — see create-manual-post) now DOES
-// block the cron for that day too, so the cron generates for the next
-// available empty slot instead of colliding with it. This is a deliberate
-// change from the previous behaviour (manual posts were invisible to this
-// check) — a manual post is a real commitment to that slot and must not be
-// double-booked by the same night's generation run.
-export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
+// Start/end of a calendar day, as the ISO bounds every per-day query below
+// uses. One helper so the three checks can never drift apart on boundaries.
+function dayBounds(day: Date): { startIso: string; endIso: string } {
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999)
+  return { startIso: dayStart.toISOString(), endIso: dayEnd.toISOString() }
+}
+
+// Whether an AUTO-generated post already exists for this brand on this day.
+// Fix 2 / Fix 4: the cron generates a maximum of one post per brand per day
+// and must skip a brand for a day that already has an auto-generated post.
+//
+// Manual posts are deliberately NOT counted here — they get their own check
+// (hasManualPostOnDate below) so the cron can log the skip with the specific
+// reason "manual post exists" rather than an ambiguous shared one. Both
+// checks skip the day; only the logged reason differs.
+export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
+  const { startIso, endIso } = dayBounds(day)
   const { count } = await admin
     .from('mkt_content_queue')
     .select('id', { count: 'exact', head: true })
     .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
-    .or('generated_by.in.(ai,cron),is_manual.eq.true')
+    .in('generated_by', ['ai', 'cron'])
     .neq('status', 'rejected')
-    .gte('scheduled_for', dayStart.toISOString()).lte('scheduled_for', dayEnd.toISOString())
+    .gte('scheduled_for', startIso).lte('scheduled_for', endIso)
+  return (count ?? 0) > 0
+}
+
+// Whether a MANUALLY-written post (is_manual = true, written via the ops
+// platform's "Write a post" form — see create-manual-post) already occupies
+// this brand's slot on this day. A manual post is a real commitment to that
+// slot, so the cron must skip the day entirely and generate into the next
+// empty one rather than double-booking it.
+export async function hasManualPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
+  const { startIso, endIso } = dayBounds(day)
+  const { count } = await admin
+    .from('mkt_content_queue')
+    .select('id', { count: 'exact', head: true })
+    .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
+    .eq('is_manual', true)
+    .neq('status', 'rejected')
+    .gte('scheduled_for', startIso).lte('scheduled_for', endIso)
   return (count ?? 0) > 0
 }
 
@@ -129,15 +149,46 @@ export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform
 // empty slot to place a new/displaced post into, as opposed to
 // hasAutoPostOnDate's narrower "would the cron skip this day" question.
 export async function hasAnyPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
-  const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
-  const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999)
+  const { startIso, endIso } = dayBounds(day)
   const { count } = await admin
     .from('mkt_content_queue')
     .select('id', { count: 'exact', head: true })
     .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
     .neq('status', 'rejected')
-    .gte('scheduled_for', dayStart.toISOString()).lte('scheduled_for', dayEnd.toISOString())
+    .gte('scheduled_for', startIso).lte('scheduled_for', endIso)
   return (count ?? 0) > 0
+}
+
+// The live (non-rejected) CRON-GENERATED post occupying this brand's slot on
+// this day, or null. "Cron-generated" = anything not written by hand, i.e.
+// not is_manual — so an older row predating the is_manual column still
+// counts, which is what makes displacement work against the existing queue.
+// Used by create-manual-post to find the post a manual post displaces.
+export async function cronPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<Record<string, any> | null> {
+  const { startIso, endIso } = dayBounds(day)
+  const { data } = await admin
+    .from('mkt_content_queue')
+    .select('id, scheduled_for, status, metricool_post_id')
+    .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
+    .eq('is_manual', false)
+    .neq('status', 'rejected')
+    .gte('scheduled_for', startIso).lte('scheduled_for', endIso)
+    .order('scheduled_for', { ascending: true })
+    .limit(1)
+  return data?.[0] ?? null
+}
+
+// The time-of-day this brand posts on `day` for this platform, applied to
+// `day` and returned as a full timestamp. Resolution order matches
+// fillClientGap exactly: the platform's own mkt_content_schedule time for
+// that weekday, else the client-wide post_time, else 09:00.
+export async function slotDateTime(admin: Admin, client: Record<string, any>, platform: string, day: Date): Promise<Date> {
+  const schedule = await platformSchedule(admin, client, platform)
+  const slotTime = schedule?.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
+  const [hh, mm] = slotTime.split(':')
+  const slot = new Date(day)
+  slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+  return slot
 }
 
 // The next empty posting slot for this brand+platform, walking forward from
@@ -156,15 +207,48 @@ export async function nextEmptySlot(admin: Admin, client: Record<string, any>, p
   let daysWalked = 0
   while (daysWalked < SAFETY_MAX_DAYS_WALKED) {
     daysWalked++
+    // "Genuinely empty" — hasAnyPostOnDate, not hasAutoPostOnDate, so a day
+    // already holding a manual post is never handed out as free either.
     if (postingDays.has(dayOfWeekUK(day)) && !(await hasAnyPostOnDate(admin, client.id, platform, day))) {
-      const slotTime = schedule?.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
-      const [hh, mm] = slotTime.split(':')
-      const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
-      return slot
+      return await slotDateTime(admin, client, platform, day)
     }
     day = addDays(day, 1)
   }
   return null
+}
+
+// ── Blog-dependent social post sequencing ───────────────────────────────────
+// The brand's most recently PUBLISHED blog, if one went live in the last
+// `days` days. This is what decides whether a social post is allowed to
+// reference "our latest blog" at all: a post that points at a blog which
+// doesn't exist advertises a 404, which is why blog-referencing copy used to
+// be generated speculatively and then blocked in the approval queue. Now the
+// answer is known BEFORE generation and fed into the prompt.
+//
+// Requires status 'published' specifically (not 'approved') and a non-null
+// published_at — an approved-but-not-yet-live blog is exactly the case that
+// must NOT be referenced yet. live_url may legitimately be null for a brand
+// with no deploy target (see publish-approved-blog's branch 3), in which
+// case the title is still usable and the prompt simply has no URL to cite.
+export interface RecentBlog {
+  title: string
+  url: string | null
+}
+
+export async function recentPublishedBlog(admin: Admin, clientId: string, days = 7): Promise<RecentBlog | null> {
+  const since = new Date(Date.now() - days * 86400000).toISOString()
+  const { data } = await admin
+    .from('mkt_blog_posts')
+    .select('title, live_url, published_at')
+    .eq('client_id', clientId)
+    .eq('status', 'published')
+    .not('published_at', 'is', null)
+    .gte('published_at', since)
+    .order('published_at', { ascending: false })
+    .limit(1)
+  const row = data?.[0]
+  if (!row?.title) return null
+  return { title: String(row.title), url: row.live_url ? String(row.live_url) : null }
 }
 
 export interface FillResult {
@@ -227,6 +311,17 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   // to the next post in the same run — the exact window in which a brand is
   // most likely to repeat itself.
   const repeatPreventionPosts: string[] = await recentApprovedBodies(admin, client.id, 60)
+  // Blog-dependent sequencing — resolved ONCE per client, before any
+  // generation, and passed into every post generated for this client on this
+  // run. A non-null value means "a real blog went live in the last 7 days,
+  // you may reference it (and here are its title/URL)"; null means "no blog
+  // exists to reference, write standalone copy". buildUserMessage turns each
+  // case into an explicit prompt instruction, and review.ts enforces the
+  // null case deterministically — see _blog_context below.
+  const recentBlog = await recentPublishedBlog(admin, client.id, 7)
+  if (recentBlog) {
+    console.log(`[fill] ${client.name}: blog published in last 7 days — "${recentBlog.title}" — social posts may reference it`)
+  }
   // NOTE: posting days are no longer resolved once for the whole client —
   // they're resolved per platform inside the loop below, so facebook and
   // instagram can run on different days. See platformSchedule.
@@ -319,9 +414,19 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
       if (day > windowEnd) break
       if (!postingDays.has(dayOfWeekUK(day))) { day = addDays(day, 1); continue }
 
+      // A manually-written post already owns this day for this brand+platform
+      // — skip it and keep walking to the next empty day. Logged with its own
+      // explicit reason so a skipped slot is never ambiguous in the run log.
+      if (await hasManualPostOnDate(admin, client.id, platform, day)) {
+        const note = `${client.name}/${platform}: skipped ${dateOnly(day)} — manual post exists`
+        notes.push(note)
+        console.log(`[fill] ${note}`)
+        day = addDays(day, 1)
+        continue
+      }
+
       // Skip this brand+platform for this day if an auto-generated post
       // already exists — one auto post per brand per platform per day.
-      // Manual posts do not count (see above).
       if (await hasAutoPostOnDate(admin, client.id, platform, day)) { day = addDays(day, 1); continue }
 
       // A pillar that differs from the brand's last three published posts and
@@ -334,7 +439,19 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // placeholder (still fills the slot so we don't loop it) with the reason
         // shown to Adrian. The generator is shown recent topics (Fix 4) via the
         // client object so it steers away from them — no review-step change.
-        const review = await generateReviewedPost(admin, { ...client, _recent_topics: recentTopics, _optimisation_notes: optimisationNotes, _rejection_feedback: rejectionFeedback, _repeat_prevention_posts: repeatPreventionPosts }, platform, pillar)
+        // _blog_context is a deliberate tri-state: absent entirely means the
+        // caller didn't opt into blog sequencing (generate-content and other
+        // ad-hoc paths), so the blog-reference rule is not enforced at all.
+        // Present with recentBlog null means "checked, and there is no blog" —
+        // which IS enforced.
+        const review = await generateReviewedPost(admin, {
+          ...client,
+          _recent_topics: recentTopics,
+          _optimisation_notes: optimisationNotes,
+          _rejection_feedback: rejectionFeedback,
+          _repeat_prevention_posts: repeatPreventionPosts,
+          _blog_context: { recentBlog },
+        }, platform, pillar)
         // Hard backstop — strip any markdown the model still produced despite
         // FORMAT_RULES and the review step's retry, so it never reaches a
         // live post (see stripMarkdown in generate.ts).
