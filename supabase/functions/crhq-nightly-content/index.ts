@@ -62,6 +62,19 @@ const QUEUED_STATUSES = ['draft', 'pending', 'approved', 'scheduled']
 
 const SAFETY_MAX_DAYS_WALKED = 21
 
+// Incident fix — nextAvailableSlot's walk was bounded only by
+// SAFETY_MAX_DAYS_WALKED (21 days) and MAX_QUEUED_PER_PLATFORM (3 posts).
+// With CRHQ's real cadence (facebook Tue/Thu/Sat, instagram Mon/Tue/Thu/Fri
+// — see 55_crhq_content_config.sql), "3 queued" can legitimately span most
+// of a week, which is exactly how posts ended up scheduled for 6 and 8
+// August 2026 while the run date was 1 August — CRHQ content is
+// time-sensitive (geopolitics/defence) and must never be queued that far
+// ahead. Bounding the actual returned slot (not just the day-walk) to this
+// window is what fixes that at the source: if no free slot exists within
+// 48 hours, nextAvailableSlot now returns null and this platform is simply
+// skipped for the night, rather than reaching further into the future.
+const MAX_LOOKAHEAD_MS = 48 * 60 * 60 * 1000
+
 // Facebook images alternate: one post with an image, the next without, and so
 // on. Instagram is unaffected — every Instagram post still gets one.
 //
@@ -113,12 +126,18 @@ async function nextAvailableSlot(admin: Admin, client: Record<string, any>, plat
   const schedule = await platformSchedule(admin, client, platform)
   if (!schedule) return null
 
+  const cutoff = Date.now() + MAX_LOOKAHEAD_MS
   let day = addDays(new Date(), 1)
   for (let walked = 0; walked < SAFETY_MAX_DAYS_WALKED; walked++) {
     if (schedule.days.has(dayOfWeekUK(day)) && !(await hasAutoPostOnDate(admin, client.id, platform, day))) {
       const time = schedule.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
       const [hh, mm] = time.split(':')
       const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+      // The walk moves strictly forward in time, so the moment a candidate
+      // slot exceeds the 48h window every later candidate would too — no
+      // slot available within the window this run, rather than reaching
+      // for a date further out (see MAX_LOOKAHEAD_MS above).
+      if (slot.getTime() > cutoff) return null
       return slot
     }
     day = addDays(day, 1)

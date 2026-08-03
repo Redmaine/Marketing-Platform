@@ -25,13 +25,21 @@ export const REAL_CLIENTS = [
 // tripping the fabricated-client check below.
 const ADRIAN_OWNED_BRANDS = ['Quill', 'Your Company AI', 'Hormonely', 'Once Upon A You', 'Neuro Decoded', 'Steady']
 
+// Shared by permittedReferences and personalFabricationViolation below —
+// one identity check for "is this Adrian's personal LinkedIn brand", not
+// duplicated slug/name matching in two places.
+function isAdrianLinkedIn(client: Record<string, any>): boolean {
+  const slug = String(client.slug || '').toLowerCase()
+  const name = String(client.name || '').toLowerCase()
+  return slug === 'adrian-linkedin' || name.includes('adrian fielding')
+}
+
 // Fix 2 — permitted references for a specific brand. Problem. Solution. is a
 // sub-brand of Your Company AI whose entire pitch IS the YCA platform (YCA is
 // named in its master prompt and key services), so a reference to YCA is the
 // parent product it promotes, not an invented client. The YCA brand itself may
 // obviously reference its own product too. Everything else stays a fabrication.
 export function permittedReferences(client: Record<string, any>): string[] {
-  const slug = String(client.slug || '').toLowerCase()
   const name = String(client.name || '').toLowerCase()
   const list = [...REAL_CLIENTS]
   const isPS = name.includes('problem') && name.includes('solution')
@@ -43,10 +51,44 @@ export function permittedReferences(client: Record<string, any>): string[] {
   // referencing his own businesses by name every post, so all of them are
   // real, permitted references here (not case studies of someone else's
   // business).
-  if (slug === 'adrian-linkedin' || name.includes('adrian fielding')) {
+  if (isAdrianLinkedIn(client)) {
     list.push(...ADRIAN_OWNED_BRANDS.map((b) => `${b} — a real business Adrian Fielding personally owns/founded`))
   }
   return list
+}
+
+// Incident fix — the Adrian Fielding LinkedIn brand generated "We hired
+// someone last week who turned down a higher salary to join us." Redmaine
+// has no employees. This slipped through because the LLM judgement check
+// below (fabricated_client_or_result) only ever asked about named
+// businesses/case studies, never about first-person personal claims — a
+// hiring decision, a team member, a client quote, isn't "a business" in
+// that check's sense at all. Deterministic pattern match, not another LLM
+// judgement call, so the failure reason is always exactly "fabricated
+// personal claim" (plus which pattern matched) rather than depending on the
+// model to phrase it consistently. Scoped to Adrian's LinkedIn brand only —
+// other brands genuinely do have real teams/employees/clients and must be
+// allowed to write about them truthfully.
+const PERSONAL_FABRICATION_PATTERNS: { label: string; pattern: RegExp }[] = [
+  { label: 'hiring claim', pattern: /\b(?:we|i)(?:'ve| have)? (?:just |recently )?hired\b/i },
+  { label: 'hiring claim', pattern: /\bhiring (?:decision|someone|a new)\b/i },
+  { label: 'hiring claim', pattern: /\bturned down (?:a|an|the) .{0,40}(?:offer|salary|job) to join\b/i },
+  { label: 'new team member claim', pattern: /\bnew (?:hire|team member|employee|colleague)\b/i },
+  { label: 'team member claim', pattern: /\bjoined (?:us|the team|our team)\b/i },
+  { label: 'employee/team claim', pattern: /\b(?:our|my) (?:team|employees?|staff|colleagues?)\b/i },
+  { label: 'employee claim', pattern: /\bemployees?\b/i },
+  { label: 'employee claim', pattern: /\bstaff members?\b/i },
+  { label: 'client quote/testimonial', pattern: /\b(?:a |one )?client (?:said|says|told (?:us|me))\b/i },
+  { label: 'client quote/testimonial', pattern: /\bcustomer (?:said|says|told (?:us|me))\b/i },
+  { label: 'client quote/testimonial', pattern: /\btestimonial\b/i },
+]
+
+function personalFabricationViolation(client: Record<string, any>, body: string): string | null {
+  if (!isAdrianLinkedIn(client)) return null
+  for (const { label, pattern } of PERSONAL_FABRICATION_PATTERNS) {
+    if (pattern.test(body)) return `fabricated personal claim — ${label} detected`
+  }
+  return null
 }
 
 const HORMONELY_DISCLAIMER = 'Always speak to your GP before making changes to your health routine.'
@@ -106,6 +148,9 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
 
   const missingDisclaimer = disclaimerViolation(client, body)
   if (missingDisclaimer) return { pass: false, reason: `missing disclaimer: ${missingDisclaimer}` }
+
+  const personalFabrication = personalFabricationViolation(client, body)
+  if (personalFabrication) return { pass: false, reason: personalFabrication }
 
   // Layer 2 — judgement. Pull recent published copy for the repeat-topic check.
   // Fix 1 — only genuinely-past posts count as "already published". date_sent
