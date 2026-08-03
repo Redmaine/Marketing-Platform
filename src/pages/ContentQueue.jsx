@@ -5,6 +5,25 @@ import { useAuth } from '../context/AuthContext'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 
+// Platform labels/colours for the queue's platform badge — every value ever
+// written to mkt_content_queue.platform must have an entry here (falls back
+// to a generic grey + the raw value below if a new platform shows up).
+const PLATFORM_META = {
+  facebook: { label: 'Facebook', bg: '#DBEAFE', color: '#1E3A8A' },
+  instagram: { label: 'Instagram', bg: '#FCE7F3', color: '#9D174D' },
+  linkedin: { label: 'LinkedIn', bg: '#DBEAFE', color: '#0C4A6E' },
+  google_business: { label: 'Google Business', bg: '#DCFCE7', color: '#166534' },
+  blog: { label: 'Blog', bg: '#EDE9FE', color: '#5B21B6' },
+}
+function PlatformPill({ platform }) {
+  const meta = PLATFORM_META[platform] || { label: platform || 'Unknown platform', bg: 'var(--chalk)', color: 'var(--steel)' }
+  return (
+    <span className="pill" style={{ background: meta.bg, color: meta.color, fontWeight: 800, flexShrink: 0 }}>
+      {meta.label}
+    </span>
+  )
+}
+
 // A social post that references a blog (either explicitly linked via blog_id
 // by approve-blog, or detected by these phrases in the copy) is
 // "blog-dependent": it can't be approved until the blog it points to is live,
@@ -362,14 +381,17 @@ export function ContentQueue() {
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
                       <div>
-                        <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>
-                          {item.client?.short_name || item.client?.name}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                          <span style={{ fontSize: 13, fontWeight: 800 }}>
+                            {item.client?.short_name || item.client?.name}
+                          </span>
+                          <PlatformPill platform={item.platform} />
                         </div>
-                        <div style={{ fontSize: 11, color: 'var(--mist)', textTransform: 'capitalize' }}>
-                          {item.platform}{item.pillar ? ` · ${item.pillar}` : ''}
+                        <div style={{ fontSize: 11, color: 'var(--mist)' }}>
+                          {item.pillar}
                           {item.scheduled_for && (
-                            <span style={{ marginLeft: 8 }}>
-                              · {new Date(item.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                            <span style={{ marginLeft: item.pillar ? 8 : 0 }}>
+                              {item.pillar ? '· ' : ''}{new Date(item.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
                               {' at '}
                               {new Date(item.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                             </span>
@@ -514,9 +536,12 @@ export function ContentQueue() {
           <div style={{ marginTop: 18 }}>
             {visibleItems.length === 0 ? <p className="empty">Nothing here yet. Generate your first post above.</p> : visibleItems.map((item) => (
               <div key={item.id} className="card" style={{ marginBottom: 12 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)', textTransform: 'capitalize' }}>
-                    {item.client?.short_name || item.client?.name} · {item.platform} · {item.pillar}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--mist)' }}>
+                      {item.client?.short_name || item.client?.name}{item.pillar ? ` · ${item.pillar}` : ''}
+                    </span>
+                    <PlatformPill platform={item.platform} />
                   </div>
                   <span className="pill" style={{ background: 'var(--chalk)', color: 'var(--steel)' }}>{item.status}</span>
                 </div>
