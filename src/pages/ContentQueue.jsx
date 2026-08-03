@@ -73,6 +73,7 @@ export function ContentQueue() {
   const [writeForm, setWriteForm] = useState({ client_id: '', platform: 'facebook', body: '', isReactive: false })
   const [writeImageFile, setWriteImageFile] = useState(null)
   const [writeBusy, setWriteBusy] = useState(false)
+  const [hiddenExpanded, setHiddenExpanded] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -85,13 +86,40 @@ export function ContentQueue() {
       supabase.from('published_posts').select('*').lte('date_sent', new Date().toISOString()).order('date_sent', { ascending: false }).limit(500),
     ])
     const g = await supabase.from('mkt_graphic_copy').select('*, client:mkt_clients(short_name,name)').order('week_of', { ascending: false })
-    // Blog statuses drive the blog-dependent gate below. Small table; fetch all.
-    const b = await supabase.from('mkt_blog_posts').select('id, client_id, status, created_at').order('created_at', { ascending: false })
-    setItems(q.data || [])
+    // Blog statuses drive the blog-dependent gate below; title is needed for
+    // the Hidden posts section's "Waiting for [title] to publish" note.
+    // Small table; fetch all.
+    const b = await supabase.from('mkt_blog_posts').select('id, client_id, title, status, created_at').order('created_at', { ascending: false })
+    let itemRows = q.data || []
+    const blogRows = b.data || []
+
+    // Hidden posts — a blog_dependent post whose linked (or client's most
+    // recent) blog has since published is no longer actually dependent on
+    // anything; release it back into the main approval queue by resetting
+    // review_status to 'passed' (it already passed content review —
+    // blog_dependent only ever gates on the blog, see blogGate below). Same
+    // "no blog, or the blog is live → nothing to wait for" rule blogGate uses.
+    const toRelease = itemRows.filter((i) => {
+      if (i.status !== 'draft' || i.review_status !== 'blog_dependent') return false
+      const blog = i.blog_id
+        ? blogRows.find((b) => b.id === i.blog_id)
+        : blogRows.filter((b) => b.client_id === i.client_id && b.status !== 'published')[0]
+      return !blog || blog.status === 'published'
+    })
+    if (toRelease.length) {
+      const releaseIds = toRelease.map((i) => i.id)
+      const { error: releaseError } = await supabase.from('mkt_content_queue').update({ review_status: 'passed' }).in('id', releaseIds)
+      if (!releaseError) {
+        const releasedSet = new Set(releaseIds)
+        itemRows = itemRows.map((i) => releasedSet.has(i.id) ? { ...i, review_status: 'passed' } : i)
+      }
+    }
+
+    setItems(itemRows)
     setClients(c.data || [])
     setPublished(p.data || [])
     setGraphics(g.data || [])
-    setBlogs(b.data || [])
+    setBlogs(blogRows)
     if (c.data?.[0] && !gen.client_id) setGen((g) => ({ ...g, client_id: c.data[0].id }))
     setLoading(false)
   }
@@ -110,6 +138,18 @@ export function ContentQueue() {
   // Rejected posts must never clutter the main queue — they get their own
   // tab (below), not a spot in the default "Posts" list.
   const visibleItems = items.filter((i) => i.status !== 'rejected')
+
+  // Hidden posts — needs_attention and blog_dependent drafts, sourced from
+  // `items` directly (NOT `pending`, which already excludes both of these —
+  // that's exactly why they had no UI path to action them before this
+  // section existed). Deliberately kept separate from `needsAttention`
+  // above rather than fixing it in place, so the main approval queue's
+  // existing "Reject all failed" toolbar button — which reads
+  // `needsAttention` and has therefore never actually rendered — is left
+  // byte-for-byte unchanged.
+  const hiddenNeedsAttention = items.filter((i) => i.status === 'draft' && i.review_status === 'needs_attention')
+  const hiddenBlogDependent = items.filter((i) => i.status === 'draft' && i.review_status === 'blog_dependent')
+  const hiddenCount = hiddenNeedsAttention.length + hiddenBlogDependent.length
 
   // Find the blog a post depends on: the explicitly linked one (blog_id) if
   // present, otherwise the client's most recent not-yet-published blog (the
@@ -529,6 +569,13 @@ export function ContentQueue() {
             </div>
           </>
         )}
+
+        <HiddenPostsSection
+          expanded={hiddenExpanded} onToggle={() => setHiddenExpanded((e) => !e)}
+          needsAttention={hiddenNeedsAttention} blogDependent={hiddenBlogDependent}
+          relatedBlog={relatedBlog} onApprove={approve} onReject={reject}
+        />
+
         <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
           onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
       </div>
@@ -730,6 +777,69 @@ function RejectModal({ item, reason, setReason, onCancel, onSubmit }) {
           <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => onSubmit(reason)}>Reject</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// Hidden posts — needs_attention and blog_dependent drafts that the main
+// approval queue deliberately never renders (see the `pending` filter
+// above). Collapsed by default; the toggle always shows the count so a
+// backlog here isn't invisible. Auto-release for blog_dependent posts
+// happens in load() (their blog has published — they're filtered out of
+// `blogDependent` before it ever reaches this component), so everything
+// rendered here is still genuinely waiting on something.
+function HiddenPostsSection({ expanded, onToggle, needsAttention, blogDependent, relatedBlog, onApprove, onReject }) {
+  const total = needsAttention.length + blogDependent.length
+  if (total === 0) return null
+  return (
+    <div style={{ marginTop: 24 }}>
+      <button className="btn btn-ghost btn-sm" onClick={onToggle} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span>{expanded ? '▾' : '▸'}</span>
+        <span>Hidden ({total})</span>
+      </button>
+
+      {expanded && (
+        <div style={{ marginTop: 12 }}>
+          {needsAttention.map((item) => (
+            <div key={item.id} className="card" style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800 }}>{item.client?.short_name || item.client?.name}</span>
+                  <PlatformPill platform={item.platform} />
+                </div>
+                <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B', flexShrink: 0 }}>Needs attention</span>
+              </div>
+              <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                {item.review_reason || 'Automated review failed — no reason recorded.'}
+              </p>
+              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => onApprove(item)}>Approve anyway</button>
+                <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} onClick={() => onReject(item)}>Reject</button>
+              </div>
+            </div>
+          ))}
+
+          {blogDependent.map((item) => {
+            const blog = relatedBlog(item)
+            return (
+              <div key={item.id} className="card" style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>{item.client?.short_name || item.client?.name}</span>
+                    <PlatformPill platform={item.platform} />
+                  </div>
+                  <span className="pill" style={{ background: '#E0E7FF', color: '#3730A3', flexShrink: 0 }}>⏳ Waiting for blog</span>
+                </div>
+                <p style={{ fontSize: 12, color: '#3730A3', background: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                  Waiting for {blog?.title ? `"${blog.title}"` : 'its blog'} to publish.
+                </p>
+                <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{item.body}</p>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
