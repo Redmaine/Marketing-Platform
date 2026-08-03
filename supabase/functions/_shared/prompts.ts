@@ -289,6 +289,19 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
     lines.push(`\nHere is Combat Ready HQ's latest content from the last 48 hours:\n${items.join('\n')}\nReference this actual content factually — the channel name (Combat Ready HQ), the topic/title, and the URL only. Do not mention view counts, subscriber counts, engagement, reach, or any other performance figure for this or any other content — real or invented.`)
   }
 
+  // Explicit primary-source steer, set per platform by crhq-nightly-content
+  // (primarySourceForPlatform there): Facebook prefers the most recent
+  // article, falling back to the most recent video when no article was
+  // found; Instagram always uses the most recent video. Distinct from the
+  // "everything found" listing just above — that gives general context,
+  // this tells the model specifically what THIS post must be built around,
+  // so two posts generated the same night don't both gravitate to whichever
+  // single item happens to read as most interesting.
+  const primarySource = client._crhq_primary_source as { type: 'video' | 'article'; title: string; url: string } | undefined
+  if (primarySource) {
+    lines.push(`\nThis specific post must be built primarily around this ${primarySource.type}: "${primarySource.title}" — ${primarySource.url}. Reference it factually, as above.`)
+  }
+
   // CRHQ's per-platform rules. Placed after the recent-posts and scrape blocks
   // above because the Facebook rule about YOUTUBE10 frequency refers back to
   // them. Facebook and Instagram are genuinely different formats for this

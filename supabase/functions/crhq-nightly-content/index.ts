@@ -36,7 +36,7 @@
 //   same Stability pipeline and the same mkt_clients.visual_style.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
-import { scrapeCrhqContent } from '../_shared/crhqScrape.ts'
+import { scrapeCrhqContent, type ScrapedVideo, type ScrapedArticle } from '../_shared/crhqScrape.ts'
 import { platformSchedule, hasAutoPostOnDate } from '../_shared/fill.ts'
 import { dayOfWeekUK, addDays, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
@@ -104,6 +104,50 @@ async function facebookWantsImage(admin: Admin, clientId: string): Promise<boole
   const previous = data?.[0]
   if (!previous) return true // no Facebook history yet — start the cycle with an image
   return !previous.image_url
+}
+
+// Incident fix — last night's run found 2 videos and 0 articles but
+// generated 0 posts. The top-level gate a few lines below this function
+// (`foundContent = videos.length > 0 || articles.length > 0`) was already
+// an OR, not an AND, so "videos alone" already passed it; the actual
+// symptom traced to the per-platform slot/queue gates instead (a near-full
+// queue leaving no free slot inside the 48h window — see MAX_LOOKAHEAD_MS
+// above). Auditing that gate found a real, separate gap the brief also
+// asks to close: neither platform had an EXPLICIT primary source to build
+// from — both got the full videos+articles list undifferentiated (see
+// prompts.ts's scrape block), leaving it to the model to pick, which is
+// exactly how two posts on the same night can end up built around the
+// same single item, or Instagram ending up built around an article with
+// nothing visual to actually reference.
+//
+// Picks the most recent item by published_at — scrape ordering isn't
+// documented/guaranteed as most-recent-first by either source (YouTube's
+// uploads playlist and the news-page regex parser), so this sorts
+// explicitly rather than assuming index 0 already is.
+function mostRecent<T extends { published_at: string | null }>(items: T[]): T | undefined {
+  return [...items].sort((a, b) => new Date(b.published_at ?? 0).getTime() - new Date(a.published_at ?? 0).getTime())[0]
+}
+
+interface PrimarySource {
+  type: 'video' | 'article'
+  title: string
+  url: string
+}
+
+// Facebook: most recent article if one exists, else most recent video.
+// Instagram: most recent video, always — an article has nothing visual to
+// build an Instagram post around, so no video found means no eligible
+// source for Instagram this run (returns null; the caller skips with a
+// note, same pattern as the queue-cap/no-slot skips below).
+function primarySourceForPlatform(platform: string, videos: ScrapedVideo[], articles: ScrapedArticle[]): PrimarySource | null {
+  if (platform === 'instagram') {
+    const v = mostRecent(videos)
+    return v ? { type: 'video', title: v.title, url: v.url } : null
+  }
+  const a = mostRecent(articles)
+  if (a) return { type: 'article', title: a.title, url: a.url }
+  const v = mostRecent(videos)
+  return v ? { type: 'video', title: v.title, url: v.url } : null
 }
 
 async function countQueued(admin: Admin, clientId: string, platform: string): Promise<number> {
@@ -197,6 +241,20 @@ serve(async () => {
       const rejectionFeedback = await recentRejectionFeedback(admin, client.id)
 
       for (const platform of PLATFORMS) {
+        // Per-platform primary source — Facebook: most recent article, else
+        // most recent video. Instagram: most recent video, always. See
+        // primarySourceForPlatform's own comment. Checked early, same reason
+        // as the slot check just below: no point spending an LLM call (or
+        // even a queue-cap/slot lookup) on a platform with nothing eligible
+        // to build from — this is specifically Instagram with articles but
+        // no video found.
+        const primarySource = primarySourceForPlatform(platform, videos, articles)
+        if (!primarySource) {
+          notes.push(`${platform}: no eligible source found (Instagram requires a video; none found this run) — skipping`)
+          console.log(`[crhq-nightly-content] ${platform}: no eligible primary source — skipping`)
+          continue
+        }
+
         // Step 2 (limit check) — never let CRHQ accumulate a backlog.
         const queued = await countQueued(admin, client.id, platform)
         if (queued >= MAX_QUEUED_PER_PLATFORM) {
@@ -227,6 +285,10 @@ serve(async () => {
           ...client,
           _recent_topics: recentTopics,
           _crhq_scrape: { videos, articles },
+          // The explicit steer (see prompts.ts) — what THIS post must be
+          // built around, on top of the full videos+articles list above
+          // (which still gives the model general context/other angles).
+          _crhq_primary_source: primarySource,
           _optimisation_notes: optimisationNotes,
           _rejection_feedback: rejectionFeedback,
         }
