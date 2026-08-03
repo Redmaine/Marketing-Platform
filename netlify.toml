@@ -60,6 +60,15 @@
   [headers.values]
     Content-Type = "application/json"
 
+# opportunity-scanner-worker-background is a background function (fired by
+# the Supabase opportunity-scanner trigger via pg_cron) — its immediate 202
+# was getting cached by Netlify's edge layer, which could serve a stale
+# cached 202 in place of actually re-invoking the function on a later run.
+[[headers]]
+  for = "/.netlify/functions/opportunity-scanner-worker-background"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
 [[headers]]
   for = "/*"
   [headers.values]

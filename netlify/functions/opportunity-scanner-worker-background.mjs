@@ -732,8 +732,21 @@ async function sendEmail(resendKey, from, to, subject, html) {
   return await res.json()
 }
 
+// Netlify's edge layer was caching this background function's response —
+// see the netlify.toml header rule for this path, which is what actually
+// governs the immediate 202 Netlify sends the caller (background functions
+// respond before this handler even starts running, so that 202 is never
+// literally this return value — see the Handler comment below). These
+// headers are set on every response this handler code does return, both
+// for consistency with that rule and because they apply directly whenever
+// this function runs synchronously (e.g. local `netlify dev`).
+const NO_CACHE_HEADERS = {
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
+  Pragma: 'no-cache',
+}
+
 function json(statusCode, body) {
-  return { statusCode, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  return { statusCode, headers: { 'Content-Type': 'application/json', ...NO_CACHE_HEADERS }, body: JSON.stringify(body) }
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────────
