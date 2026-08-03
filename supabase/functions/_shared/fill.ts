@@ -99,13 +99,18 @@ export async function clientPlatforms(admin: Admin, client: Record<string, any>)
   return candidates.filter((p: string) => isPlatformConnected(client, p))
 }
 
-// Whether an AUTO-generated post already exists for this brand on this day.
-// Fix 2 / Fix 4: the cron generates a maximum of one post per brand per day
-// and must skip a brand for a day that already has an auto-generated post.
-// Manual posts (generated_by = 'human') are deliberately NOT counted here:
-// Adrian can add manual posts freely on any day for any brand, and they must
-// neither block the cron nor be blocked by it. Only 'ai' and 'cron' posts,
-// in a live (non-rejected) status, count as an existing auto post.
+// Whether an AUTO-generated post — OR a manually-written one (is_manual) —
+// already occupies this brand's slot on this day. Fix 2 / Fix 4: the cron
+// generates a maximum of one post per brand per day and must skip a brand
+// for a day that already has an auto-generated post.
+//
+// Content cadence control: a manual post (is_manual = true, written via the
+// ops platform's "Write a post" form — see create-manual-post) now DOES
+// block the cron for that day too, so the cron generates for the next
+// available empty slot instead of colliding with it. This is a deliberate
+// change from the previous behaviour (manual posts were invisible to this
+// check) — a manual post is a real commitment to that slot and must not be
+// double-booked by the same night's generation run.
 export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
   const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
   const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999)
@@ -113,10 +118,53 @@ export async function hasAutoPostOnDate(admin: Admin, clientId: string, platform
     .from('mkt_content_queue')
     .select('id', { count: 'exact', head: true })
     .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
-    .in('generated_by', ['ai', 'cron'])
+    .or('generated_by.in.(ai,cron),is_manual.eq.true')
     .neq('status', 'rejected')
     .gte('scheduled_for', dayStart.toISOString()).lte('scheduled_for', dayEnd.toISOString())
   return (count ?? 0) > 0
+}
+
+// Whether ANY live (non-rejected) post — auto or manual — already occupies
+// this brand's slot on this day. Used by create-manual-post to find a truly
+// empty slot to place a new/displaced post into, as opposed to
+// hasAutoPostOnDate's narrower "would the cron skip this day" question.
+export async function hasAnyPostOnDate(admin: Admin, clientId: string, platform: string, day: Date): Promise<boolean> {
+  const dayStart = new Date(day); dayStart.setHours(0, 0, 0, 0)
+  const dayEnd = new Date(day); dayEnd.setHours(23, 59, 59, 999)
+  const { count } = await admin
+    .from('mkt_content_queue')
+    .select('id', { count: 'exact', head: true })
+    .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
+    .neq('status', 'rejected')
+    .gte('scheduled_for', dayStart.toISOString()).lte('scheduled_for', dayEnd.toISOString())
+  return (count ?? 0) > 0
+}
+
+// The next empty posting slot for this brand+platform, walking forward from
+// tomorrow (or from `after`, exclusive, when given — used to find a slot for
+// a post being displaced FROM a specific day, so it never lands back on the
+// same day it started). Respects the platform's own schedule (days/times)
+// when set, otherwise falls back to the client-wide post_days/post_time —
+// the exact same resolution fillClientGap uses. Returns null if nothing
+// opens up within SAFETY_MAX_DAYS_WALKED days (a real misconfiguration, not
+// a case worth generating content for).
+export async function nextEmptySlot(admin: Admin, client: Record<string, any>, platform: string, after?: Date): Promise<Date | null> {
+  const schedule = await platformSchedule(admin, client, platform)
+  const postingDays = schedule ? schedule.days : clientPostingDays(client)
+
+  let day = addDays(after ?? new Date(), 1)
+  let daysWalked = 0
+  while (daysWalked < SAFETY_MAX_DAYS_WALKED) {
+    daysWalked++
+    if (postingDays.has(dayOfWeekUK(day)) && !(await hasAnyPostOnDate(admin, client.id, platform, day))) {
+      const slotTime = schedule?.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
+      const [hh, mm] = slotTime.split(':')
+      const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+      return slot
+    }
+    day = addDays(day, 1)
+  }
+  return null
 }
 
 export interface FillResult {

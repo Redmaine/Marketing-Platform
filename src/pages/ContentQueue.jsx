@@ -69,6 +69,10 @@ export function ContentQueue() {
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 })
   const [rejectingItem, setRejectingItem] = useState(null)
   const [rejectReasonInput, setRejectReasonInput] = useState('')
+  const [writingPost, setWritingPost] = useState(false)
+  const [writeForm, setWriteForm] = useState({ client_id: '', platform: 'facebook', body: '', isReactive: false })
+  const [writeImageFile, setWriteImageFile] = useState(null)
+  const [writeBusy, setWriteBusy] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -288,6 +292,50 @@ export function ContentQueue() {
     setGraphics((prev) => prev.map((x) => x.id === g.id ? { ...x, status } : x))
   }
 
+  function openWritePost() {
+    setWriteForm({ client_id: clients[0]?.id || '', platform: 'facebook', body: '', isReactive: false })
+    setWriteImageFile(null)
+    setWritingPost(true)
+  }
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+  async function submitWritePost() {
+    if (!writeForm.client_id || !writeForm.body.trim()) { setNotice('Pick a brand and write the copy first.'); return }
+    setWriteBusy(true); setNotice('')
+    let image_base64, image_content_type
+    if (writeImageFile) {
+      try {
+        image_base64 = await fileToBase64(writeImageFile)
+        image_content_type = writeImageFile.type
+      } catch {
+        setNotice('Could not read the image file — try a different one, or leave it blank.')
+        setWriteBusy(false)
+        return
+      }
+    }
+    const { data, error } = await supabase.functions.invoke('create-manual-post', {
+      body: {
+        client_id: writeForm.client_id, platform: writeForm.platform, body: writeForm.body,
+        is_reactive: writeForm.isReactive, image_base64, image_content_type,
+      },
+    })
+    setWriteBusy(false)
+    if (error || data?.error) { setNotice(data?.error || error?.message || 'Could not write that post — try again.'); return }
+    setWritingPost(false)
+    if (data?.displaced) {
+      setNotice(`Post added and scheduled. The next scheduled post for that brand/platform was moved to ${new Date(data.displaced.new_scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}.`)
+    } else {
+      setNotice('Post added and scheduled.')
+    }
+    load()
+  }
+
   async function generate() {
     if (!gen.client_id || !gen.pillar) { setNotice('Pick a client and a pillar first.'); return }
     setGenerating(true); setNotice('')
@@ -490,8 +538,13 @@ export function ContentQueue() {
   // ── Full queue view (/content) ───────────────────────────────────────────────
   return (
     <div className="page">
-      <h1>Content queue</h1>
-      <p className="page-sub">{pending.length === 0 ? 'Nothing waiting for approval.' : `${pending.length} waiting for approval.`}</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h1>Content queue</h1>
+          <p className="page-sub">{pending.length === 0 ? 'Nothing waiting for approval.' : `${pending.length} waiting for approval.`}</p>
+        </div>
+        <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={openWritePost}>Write a post</button>
+      </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 16, marginBottom: 4 }}>
         <button className={'btn btn-sm ' + (tab === 'posts' ? 'btn-primary' : 'btn-ghost')} onClick={() => setTab('posts')}>Posts</button>
@@ -578,6 +631,58 @@ export function ContentQueue() {
       )}
       <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
         onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
+      <WritePostModal open={writingPost} clients={clients} form={writeForm} setForm={setWriteForm}
+        imageFile={writeImageFile} setImageFile={setWriteImageFile} busy={writeBusy}
+        onCancel={() => setWritingPost(false)} onSubmit={submitWritePost} />
+    </div>
+  )
+}
+
+// "Write a post" — the content-cadence-control form. A brand, a platform, the
+// copy, an optional image, and a toggle for whether this is a reactive post
+// that should bump the next scheduled post along rather than sit alongside
+// it. All the actual displacement/scheduling logic lives server-side in the
+// create-manual-post edge function — this is just the form.
+function WritePostModal({ open, clients, form, setForm, imageFile, setImageFile, busy, onCancel, onSubmit }) {
+  if (!open) return null
+  return (
+    <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="modal">
+        <h2 style={{ fontSize: 18, marginBottom: 14 }}>Write a post</h2>
+        <div className="grid grid-2" style={{ marginBottom: 12 }}>
+          <div className="field"><label>Brand</label>
+            <select className="input" value={form.client_id} onChange={(e) => setForm((f) => ({ ...f, client_id: e.target.value }))}>
+              {clients.map((c) => <option key={c.id} value={c.id}>{c.short_name || c.name}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Platform</label>
+            <select className="input" value={form.platform} onChange={(e) => setForm((f) => ({ ...f, platform: e.target.value }))}>
+              <option value="facebook">Facebook</option>
+              <option value="instagram">Instagram</option>
+              <option value="linkedin">LinkedIn</option>
+            </select>
+          </div>
+        </div>
+        <div className="field" style={{ marginBottom: 12 }}>
+          <label>Copy</label>
+          <textarea className="input" rows={5} value={form.body} onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))} />
+        </div>
+        <div className="field" style={{ marginBottom: 12 }}>
+          <label>Image (optional)</label>
+          <input type="file" accept="image/*" onChange={(e) => setImageFile(e.target.files?.[0] || null)} />
+        </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 13, marginBottom: 16 }}>
+          <input type="checkbox" checked={form.isReactive} style={{ marginTop: 2 }}
+            onChange={(e) => setForm((f) => ({ ...f, isReactive: e.target.checked }))} />
+          <span>This is a reactive post — replace next scheduled post</span>
+        </label>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={onSubmit} disabled={busy}>
+            {busy ? 'Adding…' : 'Add post'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

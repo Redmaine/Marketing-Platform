@@ -32,7 +32,7 @@ serve(async () => {
       // first — not just today's slice. Posts with no scheduled_for sort
       // last (nullsFirst: false) rather than disappearing from the digest.
       admin.from('mkt_content_queue')
-        .select('id, platform, body, status, scheduled_for, client:mkt_clients(short_name,name,brand_primary_color)')
+        .select('id, platform, body, status, scheduled_for, is_manual, client:mkt_clients(short_name,name,brand_primary_color)')
         .in('status', ['draft', 'pending'])
         .order('scheduled_for', { ascending: true, nullsFirst: false }),
       isMondayUK
@@ -67,7 +67,10 @@ serve(async () => {
           ? new Date(p.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
           : 'no date set'
         html += `<div style="border-left:4px solid ${colour};background:#F7F9FA;border-radius:8px;padding:10px 12px;margin-top:10px">`
-        html += `<div style="font-weight:700;font-size:13px">${nameOf(p)} <span style="color:#8FA3B1;font-weight:400">· ${p.platform} · ${when}</span></div>`
+        const cadenceLabel = p.is_manual
+          ? `<span style="background:#EDE9FE;color:#5B21B6;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">manual</span>`
+          : `<span style="background:#F1F5F9;color:#475569;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">scheduled</span>`
+        html += `<div style="font-weight:700;font-size:13px">${nameOf(p)} <span style="color:#8FA3B1;font-weight:400">· ${p.platform} · ${when}</span>${cadenceLabel}</div>`
         html += `<div style="font-size:13px;color:#2E4057;margin:6px 0 8px">${preview}</div>`
         html += `<a href="${OPS_URL}/content?status=draft" style="background:${colour};color:#fff;text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:700">Review</a>`
         html += `</div>`
