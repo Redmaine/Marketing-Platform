@@ -20,7 +20,13 @@
   command = "npm run build"
 
 [build.environment]
-  NODE_VERSION = "20"
+  # Bumped from 20 -> 22: Node 20's Supabase client needs a WebSocket polyfill
+  # it doesn't have, which crashed opportunity-scanner-worker-background.mjs
+  # with "Node.js 20 detected without native WebSocket support". Node 22 has
+  # native WebSocket support. This value takes precedence over the site's
+  # NODE_VERSION env var (confirmed live: setting the env var alone did not
+  # change what `netlify env:get NODE_VERSION` resolved to until this changed).
+  NODE_VERSION = "22"
   # SUPABASE_URL is a project URL, not a credential (the actual secrets are
   # the anon/service_role keys) — it appears as plain documentation/config
   # text across netlify.toml, .env.example, and the cron migration SQL

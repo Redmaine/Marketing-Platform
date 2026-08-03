@@ -782,7 +782,13 @@ export async function handler(event) {
 
   const SUPABASE_URL = process.env.SUPABASE_URL
   const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY
-  const admin = SUPABASE_URL && SERVICE_KEY ? createClient(SUPABASE_URL, SERVICE_KEY) : null
+  // Node.js 20 detected without native WebSocket support — same fix as the
+  // outreach platform: pass the global fetch explicitly and disable realtime
+  // (this function never uses subscriptions) so the client doesn't try to
+  // open a WebSocket at all.
+  const admin = SUPABASE_URL && SERVICE_KEY
+    ? createClient(SUPABASE_URL, SERVICE_KEY, { global: { fetch }, realtime: { transport: undefined } })
+    : null
 
   const logRun = async (itemsFound, emailSent, error) => {
     if (!admin) return
