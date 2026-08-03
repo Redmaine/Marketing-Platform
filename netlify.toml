@@ -21,6 +21,13 @@
 
 [build.environment]
   NODE_VERSION = "20"
+  # SUPABASE_URL is a project URL, not a credential (the actual secrets are
+  # the anon/service_role keys) — it appears as plain documentation/config
+  # text across netlify.toml, .env.example, and the cron migration SQL
+  # files. Netlify's secret scanner started flagging every occurrence as a
+  # leaked secret and has been failing every deploy on this site since this
+  # morning, unrelated to any code change. Omit it from the scan.
+  SECRETS_SCAN_OMIT_KEYS = "SUPABASE_URL"
 
 # First Netlify Function in this repo — this block is required for
 # netlify/functions/* to be bundled and deployed at all.
