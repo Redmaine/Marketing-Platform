@@ -30,24 +30,12 @@
 // refresh-status.js supports for convenience).
 //
 // Required Netlify site env vars (Site settings -> Environment):
-//   RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, INTERNAL_SECRET
-//   (shared with refresh-status.js; the yca-platform trigger must send this
-//   same value)
+//   ANTHROPIC_API_KEY, RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY,
+//   INTERNAL_SECRET (shared with refresh-status.js; the yca-platform
+//   trigger must send this same value)
 // Optional:
 //   OPPORTUNITY_EMAIL_FROM, OPPORTUNITY_EMAIL_TO (fall back to the
 //   defaults below, same as the Deno version)
-//
-// ANTHROPIC_API_KEY is NOT read from a Netlify env var — this site's own
-// copy of it was wrong. It's fetched from the Supabase vault at runtime
-// instead, via the get_anthropic_api_key() RPC (see the call site below and
-// migration 82 in marketing-platform) — SUPABASE_URL/SUPABASE_SERVICE_KEY
-// above are what authenticate that call, not a separate credential.
-//
-// The vault had no ANTHROPIC_API_KEY secret in it as of this change — until
-// one is added (Supabase dashboard -> Project Settings -> Vault, or
-// `select vault.create_secret(...)`), every run will fail cleanly with
-// "ANTHROPIC_API_KEY not found in the Supabase vault" rather than silently
-// using a wrong key.
 import { createClient } from '@supabase/supabase-js'
 
 const MODEL = 'claude-sonnet-4-6'
@@ -802,34 +790,18 @@ export async function handler(event) {
     if (logErr) console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
   }
 
-  // ANTHROPIC_API_KEY now comes from the Supabase vault at runtime, not this
-  // site's own (wrong) copy of the env var. The vault itself
-  // (vault.decrypted_secrets) isn't reachable directly from application code
-  // — PostgREST doesn't expose the `vault` schema even to the service_role
-  // key (confirmed: a direct REST call returns 406 PGRST106 "Invalid schema:
-  // vault"). get_anthropic_api_key() is a narrow SECURITY DEFINER wrapper in
-  // `public` (migration 82, marketing-platform) that runs the requested
-  // `select decrypted_secret from vault.decrypted_secrets where name =
-  // 'ANTHROPIC_API_KEY' limit 1` server-side and is reachable via .rpc() —
-  // EXECUTE is granted to service_role only, so this SERVICE_KEY is the only
-  // way in.
-  let anthropicKey = null
-  if (admin) {
-    const { data: vaultKey, error: vaultErr } = await admin.rpc('get_anthropic_api_key')
-    if (vaultErr) console.error('[opportunity-scanner-worker-background] failed to read ANTHROPIC_API_KEY from vault:', vaultErr.message)
-    else anthropicKey = vaultKey || null
-  }
+  const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
 
   const section = sectionForDate(new Date())
 
   try {
-    if (!admin) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_KEY not configured — cannot reach the vault')
-    if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not found in the Supabase vault')
+    if (!admin) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_KEY not configured')
+    if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured')
     if (!resendKey) throw new Error('RESEND_API_KEY not configured')
 
     const config = SECTION_CONFIG[section]
     console.log(`[opportunity-scanner-worker-background] starting run ${dateStr} — section ${section}`)
-    const researchText = await fetchResearchText(anthropicKey, config.userPrompt, config.maxTokens, config.maxUses)
+    const researchText = await fetchResearchText(ANTHROPIC_API_KEY, config.userPrompt, config.maxTokens, config.maxUses)
     const prettyDate = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
 
     if (section === 'A') {
