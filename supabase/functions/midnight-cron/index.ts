@@ -31,6 +31,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { sundayOfWeek } from '../_shared/generate.ts'
 import { ensureWeeklyBlog } from '../_shared/blog.ts'
 import { fillClientGap } from '../_shared/fill.ts'
+import { buildRealEventsContext } from '../_shared/realEvents.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -246,6 +247,32 @@ serve(async () => {
           if (title) blogsGenerated++
         } catch (e) {
           const msg = `${client.name} (blog): ${String((e as Error)?.message ?? e)}`
+          errors.push(msg)
+          console.error(`[midnight-cron] ${msg}`)
+        }
+      }
+
+      // Adrian Fielding — LinkedIn only: real weekly activity, so generation
+      // has true material to write from instead of inventing something to
+      // satisfy its own "reference something real that happened this week"
+      // brief (see _shared/realEvents.ts — this is the root fix behind
+      // unverified_personal_narrative in review.ts, which only catches the
+      // fabrication after the fact). Attached directly onto generationClient
+      // BEFORE fillClientGap runs: fillClientGap's own `{...client, ...}`
+      // spread when calling generateReviewedPost carries this straight
+      // through untouched, exactly like every other `_`-prefixed context
+      // field already does, with no fill.ts change needed. buildSystemPrompt
+      // (prompts.ts) prepends it — see client._real_events_context there.
+      // Built fresh every run (7-day window), and only for this one client;
+      // a failure here must not block this client's blog/fill above or any
+      // other client's run.
+      if (client.slug === 'adrian-linkedin') {
+        try {
+          const context = await buildRealEventsContext(admin)
+          ;(generationClient as Record<string, unknown>)._real_events_context = context
+          console.log(`[midnight-cron] ${client.name}: real-events context built (${context.length} chars)`)
+        } catch (e) {
+          const msg = `${client.name} (real-events context): ${String((e as Error)?.message ?? e)}`
           errors.push(msg)
           console.error(`[midnight-cron] ${msg}`)
         }

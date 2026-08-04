@@ -209,7 +209,16 @@ export function buildSystemPrompt(client: Record<string, any>): string {
     ? client.master_prompt
     : MASTER_SYSTEM_PROMPT
 
-  const parts: string[] = [ANTI_FABRICATION]
+  const parts: string[] = []
+  // Real weekly activity — Adrian Fielding LinkedIn only (see
+  // _shared/realEvents.ts, set by midnight-cron before generation). Prepended
+  // first, ahead of everything else including ANTI_FABRICATION, so it is
+  // unambiguously the first thing the model reads and everything after it —
+  // including the master prompt — is framed by these facts. Absent for every
+  // other client and every non-cron generation path, which is a no-op here.
+  const realEventsContext = typeof client._real_events_context === 'string' ? client._real_events_context.trim() : ''
+  if (realEventsContext) parts.push(realEventsContext)
+  parts.push(ANTI_FABRICATION)
   if (name.includes('quill')) parts.push(QUILL_CLIENTS)
 
   // Repeat prevention, then the universal rules, then the brand's own prompt.
