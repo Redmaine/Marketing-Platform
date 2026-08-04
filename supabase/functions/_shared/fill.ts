@@ -404,7 +404,19 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     // seeds the generator with what to avoid (published history + posts produced
     // earlier in this run).
     const usedThisRun: string[] = []
-    const recentTopics: string[] = await recentPublishedSummaries(admin, client.id, 6)
+    // Bumped 6 -> 30: Hormonely's queue was repeating topics inside the same
+    // 7-day rotation window despite the rotation being specified in its
+    // master_prompt — the model was only ever shown its last 6 published
+    // posts, well under a full week's worth on a daily-plus cadence, so
+    // nothing in the prompt actually let it check "has this appeared in the
+    // last 7 days" the way its own rotation rule demands. 30 covers several
+    // full rotations for every brand, not just Hormonely — this is the
+    // shared cron fill path (midnight-cron), not brand-specific. The manual
+    // "Generate a post" button (generate-content/index.ts) and CRHQ's own
+    // pipeline (crhq-nightly-content) call the same underlying helper with
+    // their own n=6 and are deliberately left unchanged — this task is
+    // scoped to the cron's fill path only.
+    const recentTopics: string[] = await recentPublishedSummaries(admin, client.id, 30)
     let generatedForPlatform = 0
     let day = addDays(now, 1)
     let daysWalked = 0

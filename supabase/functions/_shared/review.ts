@@ -158,8 +158,27 @@ const REVIEW_SCHEMA = {
     voice_detail: { type: 'string', description: 'If wrong voice, why. Else empty.' },
     unsourced_statistic: { type: 'boolean', description: 'True ONLY for Steady: a statistic/number-claim is used without citing its source. False for all other brands or when no statistic is used.' },
     statistic_detail: { type: 'string', description: 'If unsourced statistic, which one. Else empty.' },
+    // Audit finding — the original Adrian Fielding LinkedIn incident ("We
+    // hired someone last week...") was fixed with a deterministic regex
+    // backstop (personalFabricationViolation), but that only covers a fixed
+    // vocabulary (hiring/team/client-quote). Three MORE posts for this same
+    // brand were generated and passed review, then had to be caught by
+    // Adrian manually rejecting them as "False" — a turned-down deal, a
+    // customer refund — neither matches any existing pattern, because
+    // they're not fixed-vocabulary claims, they're arbitrary invented
+    // weekly-business-events. fabricated_client_or_result's own description
+    // is scoped to "references a client... or names a business" — a
+    // first-person "I did X this week" claim about no external party isn't
+    // covered by it either, same gap as the original incident, just wider.
+    // True ONLY for Adrian Fielding — LinkedIn: a specific event, decision,
+    // or outcome presented as having genuinely happened that is not
+    // grounded in anything actually supplied in this prompt. False for
+    // every other brand, and false for genuinely reflective/introspective
+    // commentary that doesn't claim a specific unverifiable event occurred.
+    unverified_personal_narrative: { type: 'boolean', description: 'True ONLY for Adrian Fielding — LinkedIn: the post presents a specific event, decision, or business outcome (e.g. "I turned down a deal", "we refunded a customer", "I hired someone") as something that genuinely happened this week, but nothing in this prompt grounds it as real. False for every other brand. False for general reflection or opinion that makes no claim of a specific unverifiable event.' },
+    narrative_detail: { type: 'string', description: 'If unverified_personal_narrative, which specific claimed event. Else empty.' },
   },
-  required: ['fabricated_client_or_result', 'repeat_topic', 'wrong_brand_voice', 'unsourced_statistic'],
+  required: ['fabricated_client_or_result', 'repeat_topic', 'wrong_brand_voice', 'unsourced_statistic', 'unverified_personal_narrative'],
 }
 
 export interface ReviewResult {
@@ -222,12 +241,26 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
     `This brand's posts published in the last 30 days (for repeat-topic checking):`,
     recentSummary,
     '',
+    // Adrian Fielding — LinkedIn only. Its master_prompt requires the post to
+    // "reference something real that has happened in the business in the
+    // last week", but nothing in the generation prompt actually supplies
+    // real weekly events — so the model has no way to satisfy that
+    // instruction honestly except by inventing one. The deterministic
+    // hiring/team/client-quote patterns (personalFabricationViolation) catch
+    // a fixed, narrow vocabulary; this catches the open-ended rest — a
+    // turned-down deal, a customer refund, anything presented as a specific
+    // thing that genuinely happened this week with no grounding supplied
+    // here.
+    isAdrianLinkedIn(client)
+      ? `This post is for Adrian Fielding's personal LinkedIn. Its brief asks for a real event from the past week, but no real weekly events have been supplied to the generator — so treat ANY specific claimed event, decision, or outcome (e.g. "I turned down a deal", "we refunded a customer", "I hired someone", "I built a feature that took ten days") as unverifiable unless it is a general reflection making no claim of a specific occurrence. Flag it via unverified_personal_narrative.`
+      : '',
+    '',
     `THE POST TO REVIEW:`,
     '"""',
     body,
     '"""',
     '',
-    `Assess: fabricated client/result, repeat topic vs the list above, whether it sounds distinctly like ${client.name} (not any other brand), and — only if the brand is Steady — whether any statistic is used without citing a source. Return the review_post tool.`,
+    `Assess: fabricated client/result, repeat topic vs the list above, whether it sounds distinctly like ${client.name} (not any other brand), whether any specific claimed event is ungrounded (only relevant per the instruction above, else always false), and — only if the brand is Steady — whether any statistic is used without citing a source. Return the review_post tool.`,
   ].filter(Boolean).join('\n')
 
   let r: Record<string, any>
@@ -242,6 +275,7 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
   if (r.fabricated_client_or_result) return { pass: false, reason: `fabricated client or result${r.fabrication_detail ? ` — ${r.fabrication_detail}` : ''}` }
   if (r.repeat_topic) return { pass: false, reason: `repeat topic${r.repeat_detail ? ` — ${r.repeat_detail}` : ''}` }
   if (r.unsourced_statistic) return { pass: false, reason: `missing disclaimer: Steady statistic without a cited source${r.statistic_detail ? ` — ${r.statistic_detail}` : ''}` }
+  if (r.unverified_personal_narrative) return { pass: false, reason: `fabricated personal narrative${r.narrative_detail ? ` — ${r.narrative_detail}` : ''}` }
   if (r.wrong_brand_voice) return { pass: false, reason: `wrong brand voice${r.voice_detail ? ` — ${r.voice_detail}` : ''}` }
 
   return { pass: true, reason: null }
