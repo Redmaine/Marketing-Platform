@@ -133,7 +133,16 @@ export function ContentQueue() {
   // blog_dependent posts still exist in the DB and are counted/logged
   // elsewhere (mkt_cron_log, edge_function_errors, generate-daily-status) —
   // they are just never rendered here for a human to act on directly.
-  const pending = items.filter((i) => i.status === 'draft' && (i.review_status === 'passed' || !i.review_status))
+  //
+  // Fix 2 — a post whose scheduled_for has already passed is stale by the
+  // time anyone would approve it (its slot is gone); it must never sit in
+  // the approval queue waiting for a click that can no longer make sense.
+  // Compared by calendar day (not exact time) so a post scheduled earlier
+  // today still shows — only genuinely past dates are excluded. A post
+  // with no scheduled_for at all still shows (nothing to compare against).
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+  const pending = items.filter((i) => i.status === 'draft' && (i.review_status === 'passed' || !i.review_status)
+    && (!i.scheduled_for || new Date(i.scheduled_for) >= startOfToday))
   const now = new Date()
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
   const rejected = items.filter((i) => i.status === 'rejected')
@@ -710,6 +719,18 @@ export function ContentQueue() {
             </div>
             <button className="btn btn-primary" disabled={generating} onClick={generate}>{generating ? 'Writing…' : 'Generate'}</button>
           </div>
+
+          {/* Fix 3 — this is the nav's actual "Content" tab (the default
+              /content view); the Hidden posts toggle previously only
+              existed on the separate /content?status=draft "Awaiting
+              approval" view, so needs_attention/blog_dependent counts were
+              invisible from here. Same data, same toggle component, same
+              collapsed-by-default behaviour — just rendered here too. */}
+          <HiddenPostsSection
+            expanded={hiddenExpanded} onToggle={() => setHiddenExpanded((e) => !e)}
+            needsAttention={hiddenNeedsAttention} blogDependent={hiddenBlogDependent}
+            relatedBlog={relatedBlog} onApprove={approve} onReject={reject}
+          />
 
           <div style={{ marginTop: 18 }}>
             {visibleItems.length === 0 ? <p className="empty">Nothing here yet. Generate your first post above.</p> : visibleItems.map((item) => (
