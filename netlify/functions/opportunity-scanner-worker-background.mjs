@@ -30,20 +30,24 @@
 // refresh-status.js supports for convenience).
 //
 // Required Netlify site env vars (Site settings -> Environment):
-//   ANTHROPIC_API_KEY, RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY,
-//   INTERNAL_SECRET (shared with refresh-status.js; the yca-platform
-//   trigger must send this same value)
+//   RESEND_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, INTERNAL_SECRET
+//   (shared with refresh-status.js; the yca-platform trigger must send this
+//   same value)
 // Optional:
 //   OPPORTUNITY_EMAIL_FROM, OPPORTUNITY_EMAIL_TO (fall back to the
 //   defaults below, same as the Deno version)
 //
-// NONE of the four required vars above (nor INTERNAL_SECRET) were present
-// on this Netlify site as of this function's creation — confirmed via
-// `netlify env:list`. Every one of them must be added before this function
-// will do anything but return "not configured". This mirrors
-// refresh-status.js's own history exactly (see that file's header comment
-// and netlify.toml's top comment) — same missing-config situation, same
-// fail-clearly-not-silently handling.
+// ANTHROPIC_API_KEY is NOT read from a Netlify env var — this site's own
+// copy of it was wrong. It's fetched from the Supabase vault at runtime
+// instead, via the get_anthropic_api_key() RPC (see the call site below and
+// migration 82 in marketing-platform) — SUPABASE_URL/SUPABASE_SERVICE_KEY
+// above are what authenticate that call, not a separate credential.
+//
+// The vault had no ANTHROPIC_API_KEY secret in it as of this change — until
+// one is added (Supabase dashboard -> Project Settings -> Vault, or
+// `select vault.create_secret(...)`), every run will fail cleanly with
+// "ANTHROPIC_API_KEY not found in the Supabase vault" rather than silently
+// using a wrong key.
 import { createClient } from '@supabase/supabase-js'
 
 const MODEL = 'claude-sonnet-4-6'
@@ -775,7 +779,8 @@ export async function handler(event) {
   }
 
   const dateStr = new Date().toISOString().slice(0, 10)
-  const anthropicKey = process.env.ANTHROPIC_API_KEY
+  // RESEND_API_KEY is unaffected by this change — still read from the
+  // Netlify site env var exactly as before.
   const resendKey = process.env.RESEND_API_KEY
   const fromEmail = process.env.OPPORTUNITY_EMAIL_FROM || FALLBACK_FROM
   const toEmail = process.env.OPPORTUNITY_EMAIL_TO || FALLBACK_TO
@@ -797,10 +802,29 @@ export async function handler(event) {
     if (logErr) console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
   }
 
+  // ANTHROPIC_API_KEY now comes from the Supabase vault at runtime, not this
+  // site's own (wrong) copy of the env var. The vault itself
+  // (vault.decrypted_secrets) isn't reachable directly from application code
+  // — PostgREST doesn't expose the `vault` schema even to the service_role
+  // key (confirmed: a direct REST call returns 406 PGRST106 "Invalid schema:
+  // vault"). get_anthropic_api_key() is a narrow SECURITY DEFINER wrapper in
+  // `public` (migration 82, marketing-platform) that runs the requested
+  // `select decrypted_secret from vault.decrypted_secrets where name =
+  // 'ANTHROPIC_API_KEY' limit 1` server-side and is reachable via .rpc() —
+  // EXECUTE is granted to service_role only, so this SERVICE_KEY is the only
+  // way in.
+  let anthropicKey = null
+  if (admin) {
+    const { data: vaultKey, error: vaultErr } = await admin.rpc('get_anthropic_api_key')
+    if (vaultErr) console.error('[opportunity-scanner-worker-background] failed to read ANTHROPIC_API_KEY from vault:', vaultErr.message)
+    else anthropicKey = vaultKey || null
+  }
+
   const section = sectionForDate(new Date())
 
   try {
-    if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not configured')
+    if (!admin) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_KEY not configured — cannot reach the vault')
+    if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not found in the Supabase vault')
     if (!resendKey) throw new Error('RESEND_API_KEY not configured')
 
     const config = SECTION_CONFIG[section]
