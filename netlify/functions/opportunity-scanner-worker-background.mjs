@@ -266,14 +266,40 @@ Return 2-5 items. Only include genuine confirmed legislation or consultations fo
 // 8000/8 each when the combined prompt started reliably timing out at 150s
 // even after earlier cuts. That 150s ceiling was Supabase Edge Functions'
 // own execution budget — this Netlify background function has 15 minutes
-// instead, so the same split/budget is kept here for the actual research
+// instead, so the split/budget itself is kept here for the actual research
 // quality it was tuned for, not because 8000/8 is still a hard ceiling.
-const RESEARCH_TIMEOUT_MS = 120_000
+//
+// Incident fix (6-7 Aug 2026, two consecutive days) — RESEARCH_TIMEOUT_MS
+// was left at 120_000 (2 minutes) when this function moved from Supabase
+// (150s hard ceiling) to Netlify (900s). That 120s figure was ALREADY
+// tighter than the old 150s Supabase ceiling it was ported from — a
+// defensive margin that made sense when 150s was all there was, but never
+// got raised to match the platform this function actually runs on now.
+// Confirmed via opportunity_scanner_runs: both failing days logged the
+// exact same error, "Research call did not complete within 120s and was
+// aborted", while 5 Aug (two days earlier) completed successfully — the
+// underlying Anthropic call (8 web searches, multi-phase competitor
+// research) is inherently variable in duration and routinely exceeds 120s,
+// while 900s of real budget sat unused every time it did. Raised to 720s
+// (12 minutes) — generous enough that a slow research day should complete
+// normally, while leaving ~3 minutes of margin under Netlify's own 900s
+// kill for the rest of the handler (parsing, prospect dedup/insert, email
+// send, run logging) plus Netlify's own dispatch overhead. If Netlify's
+// hard kill ever fires instead of this abort, none of this function's own
+// error handling runs at all — this timeout must always stay safely below
+// it, not exactly at it.
+export const RESEARCH_TIMEOUT_MS = 720_000
 
-class ResearchTimeoutError extends Error {
-  constructor() {
-    super(`Research call did not complete within ${RESEARCH_TIMEOUT_MS / 1000}s and was aborted`)
+// Carries how long the call actually ran and whatever text had streamed in
+// before the abort — see fetchResearchText. Lets the caller attempt a
+// best-effort partial-results recovery instead of just reporting "it timed
+// out" with nothing to show for it.
+export class ResearchTimeoutError extends Error {
+  constructor(elapsedMs, partialText = '') {
+    super(`Research call did not complete within ${RESEARCH_TIMEOUT_MS / 1000}s (aborted after ${Math.round(elapsedMs / 1000)}s) and was aborted`)
     this.name = 'ResearchTimeoutError'
+    this.elapsedMs = elapsedMs
+    this.partialText = partialText
   }
 }
 
@@ -288,13 +314,21 @@ const SECTION_CONFIG = {
   B: { userPrompt: RESEARCH_USER_B, maxTokens: 8000, maxUses: 8 },
 }
 
-async function fetchResearchText(anthropicKey, userPrompt, maxTokens, maxUses) {
+// Streams the response instead of waiting for one final JSON blob, purely
+// so that IF the abort fires, whatever text the model had already produced
+// is still in `accumulated` and can be handed to the caller (via
+// ResearchTimeoutError.partialText) for a best-effort partial-results
+// parse — see the handler's catch block. On a normal, unaborted run this
+// returns exactly the same concatenated text the old non-streaming version
+// did, just assembled incrementally instead of read from one response body.
+export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, maxUses) {
   const controller = new AbortController()
+  const startedAt = Date.now()
   const timeoutId = setTimeout(() => controller.abort(), RESEARCH_TIMEOUT_MS)
 
-  let res
+  let accumulated = ''
   try {
-    res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': anthropicKey,
@@ -307,36 +341,58 @@ async function fetchResearchText(anthropicKey, userPrompt, maxTokens, maxUses) {
         system: RESEARCH_SYSTEM,
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
         messages: [{ role: 'user', content: userPrompt }],
+        stream: true,
       }),
       signal: controller.signal,
     })
+
+    if (!res.ok) {
+      const errBody = await res.text()
+      throw new Error(`Anthropic API ${res.status}: ${errBody.slice(0, 500)}`)
+    }
+
+    // Server-sent events — one JSON event per "data: " line. Only
+    // content_block_delta events carrying a text_delta contribute to the
+    // final answer text; everything else (message_start,
+    // content_block_start for server_tool_use/web_search_tool_result,
+    // ping, message_delta, message_stop) is irrelevant here — we only need
+    // the model's eventual text, not the search mechanics.
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? '' // keep the last (possibly partial) line for the next chunk
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        let evt
+        try { evt = JSON.parse(line.slice(6)) } catch { continue }
+        if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+          accumulated += evt.delta.text
+        }
+      }
+    }
   } catch (e) {
-    // AbortController.abort() makes fetch reject with a DOMException/Error
-    // named 'AbortError' in Node's fetch (undici) same as in a browser —
-    // that's the one and only way this catch's abort branch fires, so it's
-    // safe to treat any AbortError here as our own timeout (nothing else in
-    // this function aborts the signal).
-    if (e?.name === 'AbortError') throw new ResearchTimeoutError()
+    // AbortController.abort() makes fetch (and the in-progress body read)
+    // reject with a DOMException/Error named 'AbortError' in Node's fetch
+    // (undici) same as in a browser — that's the one and only way this
+    // catch's abort branch fires, so it's safe to treat any AbortError here
+    // as our own timeout (nothing else in this function aborts the signal).
+    // `accumulated` still holds whatever streamed in before the abort.
+    if (e?.name === 'AbortError') throw new ResearchTimeoutError(Date.now() - startedAt, accumulated)
     throw e
   } finally {
     clearTimeout(timeoutId)
   }
 
-  const data = await res.json()
-  if (!res.ok) {
-    throw new Error(`Anthropic API ${res.status}: ${JSON.stringify(data).slice(0, 500)}`)
-  }
-
-  // With web_search the response is a mix of text / server_tool_use /
-  // web_search_tool_result blocks. Concatenate every text block — the final
-  // answer (our JSON) lives in text.
-  return (Array.isArray(data.content) ? data.content : [])
-    .filter((b) => b.type === 'text')
-    .map((b) => String(b.text ?? ''))
-    .join('\n')
+  return accumulated
 }
 
-function parseOpportunities(text) {
+export function parseOpportunities(text) {
   // Prefer a fenced ```json block; fall back to the last bare [...] array.
   let jsonStr = null
   const fenced = [...text.matchAll(/```json\s*([\s\S]*?)```/g)]
@@ -359,7 +415,7 @@ function parseOpportunities(text) {
 // match the opportunities block above or vice versa). Independent of
 // parseOpportunities so a failure here can be handled without affecting the
 // existing opportunity analysis at all.
-function parseReplicateBusinesses(text) {
+export function parseReplicateBusinesses(text) {
   let jsonStr = null
   const fenced = [...text.matchAll(/```replicate\s*([\s\S]*?)```/g)]
   if (fenced.length) jsonStr = fenced[fenced.length - 1][1].trim()
@@ -376,7 +432,7 @@ function parseReplicateBusinesses(text) {
 // same pattern as parseReplicateBusinesses, so a failure here can be handled
 // without affecting the opportunity analysis or the replicate-businesses
 // section at all.
-function parseProspects(text) {
+export function parseProspects(text) {
   let jsonStr = null
   const fenced = [...text.matchAll(/```prospects\s*([\s\S]*?)```/g)]
   if (fenced.length) jsonStr = fenced[fenced.length - 1][1].trim()
@@ -441,7 +497,7 @@ async function insertProspects(admin, prospects) {
 // pattern as parseReplicateBusinesses and parseProspects, independent of
 // the other three parses, so a failure here can be handled without
 // affecting any of them.
-function parseLegislation(text) {
+export function parseLegislation(text) {
   let jsonStr = null
   const fenced = [...text.matchAll(/```legislation\s*([\s\S]*?)```/g)]
   if (fenced.length) jsonStr = fenced[fenced.length - 1][1].trim()
@@ -625,7 +681,8 @@ function prospectCard(o, i) {
 // Renders an explicit "nothing today" line per subsection (rather than
 // omitting it) so a quiet day still reads as "it ran and checked", matching
 // the brief's "send an email with that day's findings" for every run.
-function buildProspectsLegislationEmail(prospects, legislationItems, dateStr) {
+function buildProspectsLegislationEmail(prospects, legislationItems, dateStr, opts = {}) {
+  const banner = opts.partial ? partialResultsBanner('B', opts.elapsedMs) : ''
   const prospectsSection = prospects.length
     ? `
   <div style="margin-bottom:20px">
@@ -650,6 +707,7 @@ function buildProspectsLegislationEmail(prospects, legislationItems, dateStr) {
     <div style="font-size:22px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">YCA prospects + legislation</div>
     <div style="font-size:13px;color:#6b7280;font-family:sans-serif">${esc(dateStr)}</div>
   </div>
+  ${banner}
   ${prospectsSection}
   ${legislationSection}
   <div style="border-top:1px solid #e5e7eb;margin-top:8px;padding-top:20px;font-size:11px;color:#9ca3af;font-family:sans-serif;line-height:1.6">
@@ -662,7 +720,8 @@ function buildProspectsLegislationEmail(prospects, legislationItems, dateStr) {
 // belongs to Section B's own email (buildProspectsLegislationEmail) along
 // with prospects, since both sections run on separate days and never share
 // a run.
-function buildEmail(opportunities, dateStr, replicateBusinesses = []) {
+function buildEmail(opportunities, dateStr, replicateBusinesses = [], opts = {}) {
+  const banner = opts.partial ? partialResultsBanner('A', opts.elapsedMs) : ''
   const cards = opportunities.map(card).join('')
   const replicateSection = replicateBusinesses.length ? `
   <div style="margin-top:8px;margin-bottom:20px;padding-top:28px;border-top:2px solid #e5e7eb">
@@ -678,6 +737,7 @@ function buildEmail(opportunities, dateStr, replicateBusinesses = []) {
     <div style="font-size:22px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">Daily opportunity scan</div>
     <div style="font-size:13px;color:#6b7280;font-family:sans-serif">${esc(dateStr)} · ${opportunities.length} opportunit${opportunities.length === 1 ? 'y' : 'ies'} to review</div>
   </div>
+  ${banner}
   ${cards}
   ${replicateSection}
   <div style="border-top:1px solid #e5e7eb;margin-top:8px;padding-top:20px;font-size:11px;color:#9ca3af;font-family:sans-serif;line-height:1.6">
@@ -686,19 +746,38 @@ function buildEmail(opportunities, dateStr, replicateBusinesses = []) {
 </div></body></html>`
 }
 
-// Brief fallback for the specific ResearchTimeoutError case — deliberately
-// shorter than failureEmail (no raw error text to show, since "it was slow"
-// is the whole story). With 15 minutes available this should be rare, but
-// kept as a safeguard per the brief.
-function timeoutEmail(dateStr) {
+// Fallback for the specific ResearchTimeoutError case when NO partial text
+// could be recovered/parsed at all (see the handler's catch block — this is
+// now the rarer sub-case; a partial-results email via buildEmail/
+// buildProspectsLegislationEmail is sent instead whenever anything usable
+// streamed in before the abort). Reports elapsed time and which section
+// (A/B) was running rather than a bare "it was slow" — so if this fires a
+// third time, the email itself says why, not just that it happened.
+function timeoutEmail(dateStr, section, elapsedMs) {
+  const elapsedS = Math.round((elapsedMs ?? RESEARCH_TIMEOUT_MS) / 1000)
+  const sectionLabel = section === 'A' ? 'Section A (opportunities + businesses to replicate)' : 'Section B (YCA prospects + UK legislation)'
   return `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f3f4f6">
 <div style="max-width:560px;margin:0 auto;padding:32px 16px;font-family:sans-serif">
   <div style="font-size:18px;font-weight:700;color:#111827;margin-bottom:8px">Opportunity scan</div>
   <div style="font-size:13px;color:#6b7280;margin-bottom:16px">${esc(dateStr)}</div>
   <div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px;font-size:13px;color:#374151;line-height:1.6">
-    Research took too long today — will retry tomorrow.
+    ${esc(sectionLabel)} was aborted after ${elapsedS}s (limit ${RESEARCH_TIMEOUT_MS / 1000}s) — no usable partial output was recovered from what had streamed in by then, so nothing was found to send. Will run again tomorrow on the regular schedule; this is not an automatic retry of today's run.
   </div>
 </div></body></html>`
+}
+
+// Amber banner prepended to a partial-results email — see the handler's
+// catch block. Makes it visually unmistakable that this is a cut-off run,
+// not a normal complete one, without needing a separate email template for
+// every combination of "which fields recovered".
+function partialResultsBanner(section, elapsedMs) {
+  const elapsedS = Math.round(elapsedMs / 1000)
+  const sectionLabel = section === 'A' ? 'opportunities + businesses to replicate' : 'YCA prospects + UK legislation'
+  return `
+  <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:14px 16px;margin-bottom:20px;font-family:sans-serif">
+    <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px">Partial results — today's ${esc(sectionLabel)} research was cut off after ${elapsedS}s</div>
+    <div style="font-size:12px;color:#92400e;line-height:1.5">Whatever had completed before the abort is below. Some sections below may be shorter than usual, or a section that normally appears may be missing entirely if it hadn't been reached yet.</div>
+  </div>`
 }
 
 function failureEmail(errMsg, dateStr) {
@@ -879,22 +958,78 @@ export async function handler(event) {
     const errMsg = String(e?.message ?? e)
     console.error('[opportunity-scanner-worker-background] run failed:', errMsg)
 
-    // Best-effort failure notification so a broken run is never silent. A
-    // ResearchTimeoutError gets the brief "will retry tomorrow" copy instead
-    // of the generic failure email with the raw error message.
     const isTimeout = e instanceof ResearchTimeoutError
+    const prettyDate = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
     let emailSent = false
-    if (resendKey) {
+    let itemsFound = 0
+    let loggedError = errMsg
+
+    // Partial-results recovery — only possible for a genuine research
+    // timeout, since that's the only error carrying whatever text had
+    // streamed in before the abort (see fetchResearchText/
+    // ResearchTimeoutError). Runs the SAME parsers the normal path uses;
+    // each is independently best-effort (an unclosed/partial fenced block
+    // simply fails to parse and is treated as "not recovered", same pattern
+    // already used for replicateBusinesses/prospects/legislation) so this
+    // can only ever recover genuinely complete sections, never fabricate
+    // one from a truncated response.
+    if (isTimeout && e.partialText) {
+      try {
+        if (section === 'A') {
+          let opportunities = []
+          let replicateBusinesses = []
+          try { opportunities = parseOpportunities(e.partialText) } catch { /* not recovered */ }
+          try { replicateBusinesses = parseReplicateBusinesses(e.partialText) } catch { /* not recovered */ }
+          if (opportunities.length || replicateBusinesses.length) {
+            const html = buildEmail(opportunities, prettyDate, replicateBusinesses, { partial: true, elapsedMs: e.elapsedMs })
+            if (resendKey) {
+              await sendEmail(resendKey, fromEmail, toEmail, `Opportunity scan (partial — cut off after ${Math.round(e.elapsedMs / 1000)}s) — ${dateStr}`, html)
+              emailSent = true
+            }
+            itemsFound = opportunities.length
+            loggedError = `partial: aborted after ${Math.round(e.elapsedMs / 1000)}s during research — recovered ${opportunities.length} opportunity(ies), ${replicateBusinesses.length} business(es) to replicate`
+          }
+        } else {
+          let prospects = []
+          let legislationItems = []
+          try { prospects = parseProspects(e.partialText) } catch { /* not recovered */ }
+          try { legislationItems = parseLegislation(e.partialText) } catch { /* not recovered */ }
+          if (admin && prospects.length) {
+            try { await insertProspects(admin, prospects) } catch (insErr) {
+              console.error('[opportunity-scanner-worker-background] partial-recovery outreach_prospects insertion failed:', String(insErr?.message ?? insErr))
+            }
+          }
+          if (prospects.length || legislationItems.length) {
+            const html = buildProspectsLegislationEmail(prospects, legislationItems, prettyDate, { partial: true, elapsedMs: e.elapsedMs })
+            if (resendKey) {
+              await sendEmail(resendKey, fromEmail, toEmail, `YCA prospects + legislation (partial — cut off after ${Math.round(e.elapsedMs / 1000)}s) — ${dateStr}`, html)
+              emailSent = true
+            }
+            itemsFound = prospects.length + legislationItems.length
+            loggedError = `partial: aborted after ${Math.round(e.elapsedMs / 1000)}s during research — recovered ${prospects.length} prospect(s), ${legislationItems.length} legislation item(s)`
+          }
+        }
+      } catch (recoveryErr) {
+        console.error('[opportunity-scanner-worker-background] partial-results recovery itself failed:', String(recoveryErr?.message ?? recoveryErr))
+      }
+    }
+
+    // Either not a timeout, or a timeout with nothing recoverable in
+    // e.partialText (e.g. aborted before the model produced any text at
+    // all) — fall back to the existing failure/timeout notification. The
+    // timeout email is now specific about elapsed time and which section
+    // was running (see timeoutEmail) rather than a bare "it was slow".
+    if (!emailSent && resendKey) {
       try {
         await sendEmail(resendKey, fromEmail, toEmail,
           isTimeout ? `Opportunity scan — will retry tomorrow — ${dateStr}` : `Opportunity scanner failed — ${dateStr}`,
-          isTimeout ? timeoutEmail(dateStr) : failureEmail(errMsg, dateStr))
+          isTimeout ? timeoutEmail(dateStr, section, e.elapsedMs) : failureEmail(errMsg, dateStr))
         emailSent = true
       } catch (notifyErr) {
         console.error('[opportunity-scanner-worker-background] failure email also failed:', String(notifyErr?.message ?? notifyErr))
       }
     }
-    await logRun(0, emailSent, errMsg)
-    return json(500, { ok: false, error: errMsg, emailSent })
+    await logRun(itemsFound, emailSent, loggedError)
+    return json(500, { ok: false, error: errMsg, emailSent, partialRecovered: itemsFound > 0 })
   }
 }
