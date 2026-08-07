@@ -88,6 +88,24 @@ serve(async (req) => {
 
     const client = item.client
 
+    // LinkedIn personal-profile-vs-company-page routing: Metricool's
+    // /v2/scheduler/posts request body has no field for this — the
+    // "providers: [{ network: 'linkedin' }]" shape below is identical for
+    // both. The distinction is made entirely by which single LinkedIn
+    // account (personal or company page) is connected to the target
+    // blogId in the Metricool dashboard — Metricool allows only ONE
+    // LinkedIn connection per brand, of either type, not both. So the only
+    // way to route Adrian's personal posts and Quill's company-page posts
+    // correctly is via metricool_brand_id: two different mkt_clients rows,
+    // each pointing at a Metricool brand whose LinkedIn connection matches
+    // that row's intent. Verified live (7 Aug 2026): Adrian Fielding —
+    // LinkedIn uses blogId 6648946 (personal profile, its own brand) and
+    // Quill — LinkedIn uses blogId 6469945 (Quill's main brand, same blogId
+    // as Quill's Facebook page — fine, since one brand can hold one
+    // connection per DIFFERENT network type — its LinkedIn connection was
+    // activated as the company page in migration 86). If a future LinkedIn
+    // client is ever added sharing a blogId with an existing LinkedIn
+    // client here, that's the bug to look for — not this API call.
     const brandId = client?.metricool_brand_id
     if (!brandId) {
       const msg = `No Metricool brand ID set for client "${client?.name}".`
