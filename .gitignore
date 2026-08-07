@@ -2,6 +2,7 @@ node_modules
 dist
 .env
 .DS_Store
+supabase/.DS_Store
 *.local
 
 # Local Netlify folder
