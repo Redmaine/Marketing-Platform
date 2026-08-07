@@ -1,0 +1,65 @@
+-- =============================================================================
+-- 85_fix_broken_cron_auth_and_crhq_lookahead.sql
+--
+-- PART 1 — CRHQ Facebook "no available slot found in the next 21 days"
+-- (crhq-nightly-content, 5 Aug 22:00 run).
+--
+-- Audited live: mkt_content_schedule has NO per-slot reservation state to
+-- clear — it's just a recurring weekly template (client_id, platform,
+-- day_of_week, time_uk, active), nothing date-specific. mkt_content_queue
+-- for CRHQ facebook had NO orphaned/stale rows either — every non-rejected
+-- row had a real metricool_post_id. The actual bug: crhq-nightly-content's
+-- MAX_LOOKAHEAD_MS was 48h, but CRHQ facebook posts Tue/Thu/Sat and
+-- instagram Mon/Tue/Thu/Fri — both have a genuine 3-day gap between
+-- consecutive posting days (facebook Sat->Tue, instagram Fri->Mon). On a
+-- night where the very next posting day is already filled by a real,
+-- legitimately-scheduled post, the walk correctly moves to the day after
+-- that — which a 48h window can never reach. Fixed in code: MAX_LOOKAHEAD_MS
+-- raised to 96h (crhq-nightly-content/index.ts) — covers the worst-case
+-- single-skip gap for both platforms with margin, while staying well short
+-- of the 5-7-day-out incident that constant exists to prevent. No SQL
+-- change needed for this part; nothing to run here.
+--
+-- PART 2 — Quill had zero content scheduled/pending this week.
+--
+-- Root cause was NOT Quill-specific. mkt_content_schedule confirmed active
+-- for Quill facebook (Mon-Fri 08:00) and the client row is active with
+-- facebook connected. midnight-cron/index.ts has no per-brand skip logic
+-- that would exclude Quill (only CRHQ and adrian-linkedin get explicit
+-- skips, for unrelated reasons). The actual cause: the
+-- midnight-content-generation pg_cron job (see 11_cron_jobs.sql, jobid 6)
+-- has been failing on EVERY run since some point after 9 July — its
+-- Authorization header still carried the literal placeholder text
+-- "Bearer SERVICE_ROLE_KEY" that migration 11's own header explicitly warns
+-- must be replaced with the real key before running. Confirmed live via
+-- net._http_response: requests using this exact placeholder return
+-- 401 {"code":"UNAUTHORIZED_INVALID_JWT_FORMAT"} — rejected by Supabase's
+-- API gateway before midnight-cron's own code ever runs, which is why
+-- nothing ever landed in mkt_cron_log or edge_function_errors — the
+-- failure never reached our own logging, it happened one layer up.
+--
+-- Fixed live via cron.alter_job(6, command => ...), substituting the real
+-- service-role key already in live use by the other working cron jobs
+-- (crhq-nightly-content, scrape-crhq-content, weekly-brief, etc.) — NOT
+-- repeated here, for the same reason 11_cron_jobs.sql's own header gives:
+-- it's a full-database-access credential and this file is committed to
+-- git. To reapply by hand (Supabase SQL editor, with the real key):
+--
+--   select cron.alter_job(6, command => $$
+--     select net.http_post(
+--       url := 'https://fvyvtdwsomxfkpxwygpk.supabase.co/functions/v1/midnight-cron',
+--       headers := '{"Authorization": "Bearer <SERVICE_ROLE_KEY>", "Content-Type": "application/json"}'::jsonb,
+--       body := '{}'::jsonb
+--     );
+--   $$);
+--
+-- Four other jobs share this exact same broken placeholder — morning-digest
+-- (jobid 4), pull-gbp-reviews (jobid 7), check-client-news (jobid 13),
+-- monthly-performance-pull (jobid 28) — all silently failing every run for
+-- the same reason. Fixed the same way, live, alongside this one: same root
+-- cause, same one-line fix, found while auditing this exact failure mode.
+--
+-- Verify any of the five is still broken:
+--   select jobid, jobname, command like '%Bearer SERVICE_ROLE_KEY%' as still_broken
+--   from cron.job where jobid in (4, 6, 7, 13, 28);
+-- =============================================================================

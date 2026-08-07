@@ -71,9 +71,24 @@ const SAFETY_MAX_DAYS_WALKED = 21
 // time-sensitive (geopolitics/defence) and must never be queued that far
 // ahead. Bounding the actual returned slot (not just the day-walk) to this
 // window is what fixes that at the source: if no free slot exists within
-// 48 hours, nextAvailableSlot now returns null and this platform is simply
-// skipped for the night, rather than reaching further into the future.
-const MAX_LOOKAHEAD_MS = 48 * 60 * 60 * 1000
+// the window, nextAvailableSlot now returns null and this platform is
+// simply skipped for the night, rather than reaching further into the
+// future.
+//
+// Second incident fix — 48h was too tight for CRHQ's own cadence and
+// started causing the opposite failure ("no available slot found"). Both
+// platforms' schedules have a genuine 3-day gap between consecutive
+// posting days (facebook Sat->Tue, instagram Fri->Mon) — confirmed live:
+// on 5 August 22:00 (a Wednesday-night run), facebook's very next posting
+// day (Thursday 6 August) was already filled by a real, already-scheduled
+// post (metricool_post_id set, not stale/orphaned — mkt_content_schedule
+// itself has no per-slot reservation state to audit, it's just a
+// recurring weekly template), so the walk correctly moved on to Saturday
+// 8 August — a legitimate 3-day-out slot that a 48h window can never
+// reach. 96h covers that worst-case single-skip gap with margin for both
+// platforms while staying well short of the 5-7-day-out incident this
+// constant exists to prevent.
+const MAX_LOOKAHEAD_MS = 96 * 60 * 60 * 1000
 
 // Facebook images alternate: one post with an image, the next without, and so
 // on. Instagram is unaffected — every Instagram post still gets one.

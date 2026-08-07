@@ -32,9 +32,16 @@ serve(async (req) => {
   // Used for one-off shorter fills (e.g. a fresh 2-week restart) without
   // changing the default behaviour of this endpoint.
   let windowDays = DEFAULT_WINDOW_DAYS
+  // Optional — scope the run to a single client (e.g. { "client_slug":
+  // "quill" }) instead of every active client. Added for exactly the case
+  // that motivated it: a manual one-off top-up for one brand shouldn't have
+  // to re-walk every other brand's own backlog first. Omitted entirely,
+  // behaviour is unchanged (every active client, as before).
+  let clientSlug: string | null = null
   try {
     const body = await req.json()
     if (body?.window_days) windowDays = Number(body.window_days) || DEFAULT_WINDOW_DAYS
+    if (body?.client_slug) clientSlug = String(body.client_slug)
   } catch { /* no body sent — use default */ }
 
   const started = Date.now()
@@ -47,7 +54,9 @@ serve(async (req) => {
 
   try {
     const now = new Date()
-    const { data: clients } = await admin.from('mkt_clients').select('*').eq('active', true).order('name')
+    let clientsQuery = admin.from('mkt_clients').select('*').eq('active', true).order('name')
+    if (clientSlug) clientsQuery = clientsQuery.eq('slug', clientSlug)
+    const { data: clients } = await clientsQuery
 
     for (const client of clients ?? []) {
       clientsProcessed++
