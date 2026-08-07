@@ -76,7 +76,7 @@ export function PostsTodayModal({ posts, clients, onClose }) {
                 </div>
                 <span className="pill" style={{ ...statusStyle, flexShrink: 0 }}>{status}</span>
               </div>
-              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{post.body}</p>
+              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>{post.body}</p>
             </div>
           )
         })}

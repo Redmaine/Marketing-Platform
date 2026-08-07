@@ -318,7 +318,7 @@ function PostActionModal({ post, nameOf, onClose, onChanged }) {
 
         {mode === 'menu' && (
           <>
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.5, color: 'var(--mist)', maxHeight: 96, overflow: 'hidden', marginBottom: 14 }}>
+            <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 13, lineHeight: 1.5, color: 'var(--mist)', maxHeight: 96, overflow: 'hidden', marginBottom: 14 }}>
               {(post.body || '').slice(0, 160)}{(post.body || '').length > 160 ? '…' : ''}
             </div>
             {err && <p style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</p>}
@@ -334,7 +334,7 @@ function PostActionModal({ post, nameOf, onClose, onChanged }) {
 
         {mode === 'view' && (
           <>
-            <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>{post.body}</div>
+            <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 14, lineHeight: 1.6, marginBottom: 14 }}>{post.body}</div>
             <button className="btn btn-ghost btn-block" onClick={() => setMode('menu')}>Back</button>
           </>
         )}

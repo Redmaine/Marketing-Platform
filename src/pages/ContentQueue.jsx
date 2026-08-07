@@ -508,7 +508,7 @@ export function ContentQueue() {
                   {item.error_message}
                 </p>
               )}
-              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
+              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', marginBottom: 12 }}>{item.body}</p>
               <button className="btn btn-primary btn-sm" onClick={() => retry(item)}>Retry</button>
             </div>
           ))}
@@ -553,7 +553,12 @@ export function ContentQueue() {
               {pending.map((item) => { const blk = blogBlockState(item); return (
                 <div key={item.id} className="card" style={{ marginBottom: 12, display: 'flex', gap: 10 }}>
                   <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} style={{ marginTop: 4 }} />
-                  <div style={{ flex: 1 }}>
+                  {/* minWidth: 0 overrides the flex item's default auto min-width
+                      (which otherwise floors at the content's un-wrapped intrinsic
+                      width) — without it, a long unbroken string like a URL could
+                      still push this column wider than the card, even with
+                      overflow-wrap set on the paragraph itself. */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
@@ -629,7 +634,7 @@ export function ContentQueue() {
                     ) : (
                       <>
                         <PostImage item={item} />
-                        <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
+                        <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', marginBottom: 12 }}>{item.body}</p>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                           <label style={{ fontSize: 12, color: 'var(--mist)' }}>Send at</label>
                           <input type="datetime-local" className="input" style={{ width: 'auto', fontSize: 13, padding: '6px 8px' }}
@@ -750,7 +755,7 @@ export function ContentQueue() {
                 ) : (
                   <>
                     <PostImage item={item} />
-                    <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{item.body}</p>
+                    <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>{item.body}</p>
                   </>
                 )}
 
@@ -928,7 +933,7 @@ function HiddenPostsSection({ expanded, onToggle, needsAttention, blogDependent,
               <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
                 {item.review_reason || 'Automated review failed — no reason recorded.'}
               </p>
-              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>{item.body}</p>
+              <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', marginBottom: 12 }}>{item.body}</p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={() => onApprove(item)}>Approve anyway</button>
                 <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} onClick={() => onReject(item)}>Reject</button>
@@ -950,7 +955,7 @@ function HiddenPostsSection({ expanded, onToggle, needsAttention, blogDependent,
                 <p style={{ fontSize: 12, color: '#3730A3', background: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
                   Waiting for {blog?.title ? `"${blog.title}"` : 'its blog'} to publish.
                 </p>
-                <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0 }}>{item.body}</p>
+                <p style={{ fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', margin: 0 }}>{item.body}</p>
               </div>
             )
           })}
@@ -980,7 +985,7 @@ function RejectedTab({ rejected }) {
               Rejected {new Date(item.rejected_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
             </div>
           )}
-          <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', marginBottom: 10 }}>{item.body}</p>
+          <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', marginBottom: 10 }}>{item.body}</p>
           <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', margin: 0 }}>
             {item.rejection_reason || 'No reason given.'}
           </p>
@@ -1018,7 +1023,7 @@ function PublishedTab({ published, brand, setBrand }) {
               {new Date(p.date_sent).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
             </span>
           </div>
-          <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', margin: 0 }}>
+          <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', margin: 0 }}>
             {String(p.post_copy || '').slice(0, 100)}{String(p.post_copy || '').length > 100 ? '…' : ''}
           </p>
         </div>

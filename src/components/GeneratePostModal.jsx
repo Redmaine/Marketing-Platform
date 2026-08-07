@@ -112,7 +112,7 @@ export function GeneratePostModal({ client, onClose, onDone }) {
           <>
             <div className="field">
               <label style={{ textTransform: 'capitalize' }}>{draft.platform} · {draft.pillar}</label>
-              <div className="card" style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.5, maxHeight: 280, overflow: 'auto' }}>
+              <div className="card" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', fontSize: 14, lineHeight: 1.5, maxHeight: 280, overflow: 'auto' }}>
                 {draft.body}
               </div>
             </div>
