@@ -11,6 +11,8 @@ export function Blog() {
   const [editing, setEditing] = useState(undefined) // post row (edit) | null (create) | undefined (closed)
   const [notice, setNotice] = useState('')
   const [busyDraftId, setBusyDraftId] = useState(null)
+  const [rejectingBlog, setRejectingBlog] = useState(null)
+  const [blogRejectReason, setBlogRejectReason] = useState('')
   // Display-only filters for the AI drafts list — off by default so the
   // page opens showing just what needs attention. Neither touches what data
   // is loaded or what any button does; both filter the existing aiDrafts
@@ -96,6 +98,26 @@ export function Blog() {
     setBusyDraftId(null)
   }
 
+  // Reject flow — same pattern as the content queue (ContentQueue.jsx's
+  // reject/submitReject/RejectModal): reason is optional, defaults to
+  // "Rejected by Adrian" if left blank. Setting status='rejected' is enough
+  // to drop the draft out of visibleDrafts (see the filter above) unless
+  // "Show rejected" is checked, so no separate removal step is needed.
+  function rejectBlogDraft(blog) {
+    setRejectingBlog(blog)
+    setBlogRejectReason('')
+  }
+  async function submitRejectBlogDraft(reason) {
+    const blog = rejectingBlog
+    if (!blog) return
+    const finalReason = (reason || '').trim() || 'Rejected by Adrian'
+    const patch = { status: 'rejected', rejection_reason: finalReason, rejected_at: new Date().toISOString() }
+    const { error } = await supabase.from('mkt_blog_posts').update(patch).eq('id', blog.id)
+    setRejectingBlog(null)
+    if (error) { setNotice('Something went wrong — try again.'); return }
+    setAiDrafts((prev) => prev.map((b) => (b.id === blog.id ? { ...b, ...patch } : b)))
+  }
+
   if (loading) return <div className="page"><span className="spinner" /></div>
 
   return (
@@ -154,11 +176,21 @@ export function Blog() {
                 padding: 12, fontSize: 13, lineHeight: 1.6, marginBottom: 12,
               }} dangerouslySetInnerHTML={{ __html: blog.content_html }} />
               {blog.status === 'draft' ? (
-                <button className="btn btn-primary btn-sm" disabled={busyDraftId === blog.id} onClick={() => approveAndPublish(blog)}>
-                  {busyDraftId === blog.id ? 'Approving & publishing…' : 'Approve & publish'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" disabled={busyDraftId === blog.id} onClick={() => approveAndPublish(blog)}>
+                    {busyDraftId === blog.id ? 'Approving & publishing…' : 'Approve & publish'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" style={{ color: 'var(--red)' }} disabled={busyDraftId === blog.id} onClick={() => rejectBlogDraft(blog)}>
+                    Reject
+                  </button>
+                </div>
               ) : blog.status === 'published' ? (
                 <span className="pill" style={{ background: '#D1FAE5', color: '#065F46' }}>✓ Published</span>
+              ) : blog.status === 'rejected' ? (
+                <p style={{ fontSize: 12, color: '#991B1B', margin: 0 }}>
+                  Rejected{blog.rejected_at && ` ${new Date(blog.rejected_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+                  {' — '}{blog.rejection_reason || 'No reason given.'}
+                </p>
               ) : (
                 // 'publish_failed' or a rare stuck 'approved' — already
                 // approved (socials generated), so retry only the publish half.
@@ -229,6 +261,38 @@ export function Blog() {
           onSaved={() => { setNotice(''); load() }}
         />
       )}
+
+      <RejectBlogModal
+        blog={rejectingBlog}
+        reason={blogRejectReason}
+        setReason={setBlogRejectReason}
+        onCancel={() => setRejectingBlog(null)}
+        onSubmit={submitRejectBlogDraft}
+      />
+    </div>
+  )
+}
+
+// Same pattern as ContentQueue.jsx's RejectModal — reason optional, defaults
+// to "Rejected by Adrian" if left blank.
+function RejectBlogModal({ blog, reason, setReason, onCancel, onSubmit }) {
+  if (!blog) return null
+  return (
+    <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) onCancel() }}>
+      <div className="modal">
+        <h2 style={{ fontSize: 18, marginBottom: 4 }}>Reject blog post</h2>
+        <p className="muted" style={{ fontSize: 13, marginBottom: 14 }}>{blog.client?.short_name || blog.client?.name} — {blog.title}</p>
+        <div className="field">
+          <label>Reason (optional)</label>
+          <textarea className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
+            placeholder="Leave blank to skip." />
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={onCancel}>Cancel</button>
+          <button className="btn btn-ghost" onClick={() => onSubmit('')}>Skip &amp; reject</button>
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => onSubmit(reason)}>Reject</button>
+        </div>
+      </div>
     </div>
   )
 }
