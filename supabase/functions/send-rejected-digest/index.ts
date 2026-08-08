@@ -1,7 +1,14 @@
 // Supabase Edge Function: send-rejected-digest  (Deno) — runs 07:00 Europe/
 // London daily via pg_cron. Emails hello@yourcompanyai.co.uk a plain-text
 // summary of every post rejected in the last 24 hours, across all brands.
-// Sends nothing if there were no rejections.
+// Sends nothing if there were no rejections in that 24h window.
+//
+// Also scans a separate, wider 30-day window for a brand+reason pair whose
+// rejection reason is an EXACT match (case-insensitive, trimmed — no
+// semantic clustering) 3+ times, and prepends a highlighted "RECURRING
+// PATTERN" section to the email when one is found. This only ever adds a
+// section to an email that was already going out on the 24h trigger above —
+// it does not change whether the digest sends.
 //
 // Body params (all optional):
 //   { force: true }   -> bypass the London-07:00 check (manual/test runs).
@@ -24,6 +31,17 @@ const cors = {
 }
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const TO = 'hello@yourcompanyai.co.uk'
+
+// Recurring-pattern detection — a separate, wider lookback from the 24h
+// digest body below. Exact-match only (case-insensitive, trimmed): this pass
+// deliberately does NOT attempt semantic clustering of similarly-worded but
+// non-identical reasons ("dated wrong" vs "wrong date") — that's out of
+// scope. Mirrors the GENERIC_REASON exclusion in
+// _shared/rejectionFeedback.ts's content-quality feedback loop: a one-tap
+// reject carries no learnable signal and must never count toward a pattern.
+const PATTERN_LOOKBACK_DAYS = 30
+const PATTERN_THRESHOLD = 3
+const GENERIC_REASON = 'Rejected by Adrian'
 
 function dateLabel(d: Date): string {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -68,6 +86,38 @@ serve(async (req) => {
       return json({ ok: true, sent: false, count: 0 })
     }
 
+    // 30-day recurring-pattern scan — a wider, independent query from the 24h
+    // list above. Grouped per brand+reason (not globally by reason alone) so
+    // the flag reads as "this brand keeps hitting this exact wall", the same
+    // scope recentRejectionFeedback() already reasons about per client.
+    const patternSince = new Date(Date.now() - PATTERN_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    const { data: recent30d, error: patternError } = await admin
+      .from('mkt_content_queue')
+      .select('rejection_reason, client:mkt_clients(name, short_name)')
+      .eq('status', 'rejected')
+      .gte('rejected_at', patternSince)
+      .not('rejection_reason', 'is', null)
+    if (patternError) console.error(`[send-rejected-digest] 30-day pattern query failed: ${patternError.message}`)
+
+    const patternCounts = new Map<string, { brand: string; reason: string; n: number }>()
+    for (const row of recent30d ?? []) {
+      const reason = String(row.rejection_reason ?? '').trim()
+      if (!reason || reason === GENERIC_REASON) continue
+      const brand = row.client?.short_name || row.client?.name || 'Unknown brand'
+      const key = `${brand.toLowerCase()}::${reason.toLowerCase()}`
+      const existing = patternCounts.get(key)
+      if (existing) existing.n++
+      else patternCounts.set(key, { brand, reason, n: 1 })
+    }
+    const patterns = [...patternCounts.values()]
+      .filter((p) => p.n >= PATTERN_THRESHOLD)
+      .sort((a, b) => b.n - a.n)
+    const patternSection = patterns.length
+      ? `${'='.repeat(60)}\n⚠ RECURRING PATTERN — same rejection reason ${PATTERN_THRESHOLD}+ times in the last ${PATTERN_LOOKBACK_DAYS} days\n${'='.repeat(60)}\n` +
+        patterns.map((p) => `${p.brand}: "${p.reason}" — rejected ${p.n}× in the last ${PATTERN_LOOKBACK_DAYS} days`).join('\n') +
+        `\n${'='.repeat(60)}\n\n`
+      : ''
+
     const now = new Date()
     const blocks = rejected.map((p) => {
       const brand = p.client?.short_name || p.client?.name || 'Unknown brand'
@@ -81,7 +131,7 @@ serve(async (req) => {
         `Reason: ${p.rejection_reason || 'No reason given.'}`,
       ].join('\n')
     })
-    const text = `Rejected posts — last 24 hours (${rejected.length})\n\n${blocks.join('\n\n---\n\n')}\n`
+    const text = `Rejected posts — last 24 hours (${rejected.length})\n\n${patternSection}${blocks.join('\n\n---\n\n')}\n`
 
     const resendKey = Deno.env.get('RESEND_API_KEY')
     if (!resendKey) {

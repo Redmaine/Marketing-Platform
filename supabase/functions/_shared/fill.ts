@@ -482,17 +482,25 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // auto-approving broken content would defeat the point of the review
         // step entirely.
         const autoApprove = review.ok && client.auto_approve === true
+        // rejection_feedback_used: whether this specific post was generated
+        // with the content-quality feedback loop active — i.e.
+        // recentRejectionFeedback() found substantive recent rejections for
+        // this brand and folded them into the prompt (see _rejection_feedback
+        // above). Lets us later measure whether that loop actually reduces
+        // the brand's rejection rate.
         const row = review.ok
           ? {
               client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
               status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
               review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
+              rejection_feedback_used: rejectionFeedback !== null,
             }
           : {
               client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
               status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
               review_status: 'needs_attention', reviewed_at: review.reviewedAt,
               review_reason: review.reason, generation_attempts: review.attempts,
+              rejection_feedback_used: rejectionFeedback !== null,
             }
 
         const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
