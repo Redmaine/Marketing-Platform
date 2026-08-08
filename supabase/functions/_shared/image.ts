@@ -19,6 +19,13 @@ import { Image } from 'https://deno.land/x/imagescript@1.2.15/mod.ts'
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
+// imagescript 1.2.15 has no separate Font class — Image.renderText() takes
+// raw TTF bytes directly. Anton is a bold condensed display face, well
+// suited to a short punchy headline overlay at thumbnail size. Fetched once
+// per cold start and reused — see headlineFontBytes() below.
+const HEADLINE_FONT_URL = 'https://raw.githubusercontent.com/google/fonts/main/ofl/anton/Anton-Regular.ttf'
+let cachedHeadlineFont: Uint8Array | null = null
+
 const STABILITY_ENGINE_ID = 'stable-diffusion-xl-1024-v1-0'
 const IMAGE_SIZE = 1024
 
@@ -35,11 +42,11 @@ const INSTAGRAM_SIZE = 1080
 // happens to mention it.
 const NO_TEXT_INSTRUCTION = 'no text, no words, no letters, no typography, no labels'
 
-// TODO: Manual photography upload for CRHQ Instagram
+// TODO: Manual photography upload for CRHQ
 // Craig supplies real photography that takes priority over
 // AI-generated images. Needs: upload UI, 4:5 crop, storage path,
 // and override flag on mkt_content_queue. Not yet implemented.
-// Until then every CRHQ Instagram post gets an AI-generated image from
+// Until then every CRHQ post gets an AI-generated image from
 // the brand's visual_style brief below.
 
 // Turns the raw post copy into a short, concrete visual scene description —
@@ -52,12 +59,22 @@ const NO_TEXT_INSTRUCTION = 'no text, no words, no letters, no typography, no la
 // concrete visual concept instead. Falls back to the old truncation on any
 // failure — a slightly worse prompt must never be the reason an image (or
 // the post it belongs to) doesn't go out; see the file-level comment.
-async function summariseToVisualConcept(postBody: string): Promise<string> {
+const DEFAULT_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator. Describe ONE clear subject, setting, composition and mood that captures what the post is about. Never describe any text, quotes, numbers or words that should appear in the image — the image itself must never contain readable text. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+
+// CRHQ-specific concept system prompt — added after two rounds of test
+// samples (2026-08-08/09) showed the default concept prompt above kept
+// producing person-centric concepts ("a man reading a document," "officials
+// in a briefing") that put a face in frame almost by construction, which a
+// visual_style rule + a Stability negative prompt downstream weren't
+// reliably able to override. This attacks the root cause instead: steer the
+// CONCEPT itself away from portraiture, not just the finishing style.
+const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it in an editorial ink-wash illustration style — never photorealistic. Describe ONE clear setting, composition and mood that captures what the post is about, drawing from a wide range of possible settings (coastal and maritime, government or parliamentary buildings, outdoor and field locations, city streets, courtrooms, transport and infrastructure, or an interior only when it is genuinely the best fit) — do not default to an office, briefing room, or security operations centre unless the story is unambiguously about that exact thing. Critically: never describe a person\'s face, expression, or a close-up or portrait of a person — no "a man reading," no "an official looking concerned," nothing that puts a human face in frame. If a human presence belongs in the scene, describe it only as a distant figure, a silhouette, hands, or a figure seen from behind — never facial detail. Prefer scenes built around objects, architecture, landscape or symbolic detail over scenes built around a person. Never describe any text, quotes, numbers or words that should appear in the image. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+
+async function summariseToVisualConcept(postBody: string, systemPrompt: string = DEFAULT_CONCEPT_SYSTEM): Promise<string> {
   const body = String(postBody || '').replace(/\s+/g, ' ').trim()
   if (!body) return ''
-  const system = 'You turn a social media post into a short, concrete visual scene description for an AI image generator. Describe ONE clear subject, setting, composition and mood that captures what the post is about. Never describe any text, quotes, numbers or words that should appear in the image — the image itself must never contain readable text. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
   try {
-    const concept = await callAnthropic(system, `Post:\n${body.slice(0, 1000)}`, 150)
+    const concept = await callAnthropic(systemPrompt, `Post:\n${body.slice(0, 1000)}`, 150)
     return concept.replace(/\s+/g, ' ').trim() || body.slice(0, 220)
   } catch (e) {
     console.error(`[image] visual-concept summary failed, falling back to truncated post body — ${String((e as Error)?.message ?? e)}`)
@@ -67,9 +84,12 @@ async function summariseToVisualConcept(postBody: string): Promise<string> {
 
 // Post copy (summarised into a visual concept, not passed through raw) +
 // brand visual style, both folded into one prompt, with the no-text
-// instruction always appended last regardless of brand.
-async function buildImagePrompt(postBody: string, visualStyle: string | null): Promise<string> {
-  const concept = await summariseToVisualConcept(postBody)
+// instruction always appended last regardless of brand. CRHQ gets its own
+// concept system prompt (see CRHQ_CONCEPT_SYSTEM) — every other client is
+// completely unaffected.
+async function buildImagePrompt(postBody: string, visualStyle: string | null, client?: Record<string, any>): Promise<string> {
+  const conceptSystem = wantsHeadlineOverlay(client ?? {}) ? CRHQ_CONCEPT_SYSTEM : DEFAULT_CONCEPT_SYSTEM
+  const concept = await summariseToVisualConcept(postBody, conceptSystem)
   const style = String(visualStyle || '').trim()
   const parts = [concept, style, NO_TEXT_INSTRUCTION].filter(Boolean)
   return parts.join('. ')
@@ -90,6 +110,140 @@ async function resizeForPlatform(bytes: Uint8Array, platform: string): Promise<U
     console.error(`[image] resize to ${INSTAGRAM_SIZE}x${INSTAGRAM_SIZE} failed, using original ${IMAGE_SIZE}x${IMAGE_SIZE} — ${String((e as Error)?.message ?? e)}`)
     return bytes
   }
+}
+
+// Which clients get the forced-B&W + headline-banner treatment applied to
+// every generated image, on top of whatever their visual_style prompt says.
+// CRHQ only for now (2026-08 image-style overhaul) — deliberately a slug
+// check here rather than a new mkt_clients column, matching the existing
+// `client?.slug !== 'crhq'` pattern already used for Facebook image
+// attachment in schedule-to-metricool/index.ts. Revisit as a proper column
+// if a second client wants this.
+function wantsHeadlineOverlay(client: Record<string, any>): boolean {
+  return client?.slug === 'crhq'
+}
+
+// Genuine Stability negative prompt (weight -1), not just prose in the
+// positive prompt — added after the first round of test samples showed
+// prose alone ("no human faces under any circumstances") wasn't reliably
+// stopping Stability from rendering clear, recognisable faces, and one
+// sample defaulted straight back to a control-room/wall-of-screens scene
+// despite the positive prompt explicitly saying not to. Same gate as
+// wantsHeadlineOverlay — CRHQ only.
+const CRHQ_NEGATIVE_PROMPT = 'human face, human faces, visible eyes, close-up portrait, facial features, crowd of faces, photorealistic, photograph, press photograph, news photograph, real photo, colour, saturated colour, control room, operations room, security operations centre, wall of monitors, bank of screens, call center, office cubicles'
+
+// TODO (scoping note, not built — deliberately deferred, see 2026-08-09
+// CRHQ image-style overhaul): automated face-detection + regenerate-on-
+// failure as a hard backstop, in case CRHQ_CONCEPT_SYSTEM + the negative
+// prompt above don't hold up as reliably once run against the full spread
+// of real CRHQ stories, not just the 3 that were manually reviewed clean.
+// Two failed rounds before the concept-prompt fix (see git history) showed
+// prose + a negative prompt alone aren't trustworthy on their own — this
+// would be the belt-and-braces version if manual spot-checks start finding
+// face leakage again.
+//
+// Shape it would take:
+// - A face-detection call (cheapest real option: AWS Rekognition
+//   DetectFaces, pay-per-image, no infra to run; alternative is a
+//   self-hosted model, e.g. via a small onnxruntime-web build, if avoiding
+//   a second vendor dependency matters more than latency/cost) run against
+//   the decoded Stability output, before the B&W/headline compositing step
+//   in generatePostImage — i.e. right after callStabilityAI, gated behind
+//   wantsHeadlineOverlay same as everything else here.
+// - On a detected face: retry callStabilityAI up to some small cap (2-3
+//   attempts total, matching the existing "never block the post over an
+//   image" philosophy) — Stability has no seed-avoidance API, so a retry is
+//   just a fresh generation, not a guided correction.
+// - If every attempt still detects a face: fall back to no image for that
+//   post (image_url stays null) rather than shipping a face, and log it the
+//   same way disableImageGenForPlatform's callers do today — do NOT
+//   silently ship the last attempt.
+// - Cost/latency: each detection call is small (~100-300ms, fractions of a
+//   cent) but multiplies with retries — worst case 3x the Stability spend
+//   on a bad night. Fine at CRHQ's current volume; would need re-costing
+//   before applying this pattern to a second client.
+// - This does NOT need to be a new shared table/flag — same
+//   wantsHeadlineOverlay-style gate is enough unless a second client wants
+//   it, same reasoning as the rest of this file.
+
+// Fetched once per cold start and reused across every image in that
+// invocation — Anton (a bold condensed display face) rendered via
+// Image.renderText(), which imagescript 1.2.15 takes as raw TTF bytes with
+// no separate Font class.
+async function headlineFontBytes(): Promise<Uint8Array> {
+  if (cachedHeadlineFont) return cachedHeadlineFont
+  const res = await fetch(HEADLINE_FONT_URL)
+  if (!res.ok) throw new Error(`headline font fetch failed: HTTP ${res.status}`)
+  cachedHeadlineFont = new Uint8Array(await res.arrayBuffer())
+  return cachedHeadlineFont
+}
+
+// Turns the post copy into a short, punchy headline for the image's text
+// banner — Stability itself cannot render legible text (see
+// NO_TEXT_INSTRUCTION below), so the headline is composited on afterwards
+// instead. Falls back to a truncated, upper-cased slice of the post body on
+// any failure — same "never block the post over this" rule as
+// summariseToVisualConcept above.
+async function summariseToHeadline(postBody: string): Promise<string> {
+  const body = String(postBody || '').replace(/\s+/g, ' ').trim()
+  if (!body) return ''
+  const system = 'You turn a social media post into a short, punchy headline for a bold text banner on an image, legible at small thumbnail size. 3-5 words maximum. Plain title case, no ending punctuation, no quotation marks, no hashtags. Reply with only the headline text, nothing else.'
+  try {
+    const headline = await callAnthropic(system, `Post:\n${body.slice(0, 1000)}`, 40)
+    return headline.replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '') || body.split(' ').slice(0, 5).join(' ').toUpperCase()
+  } catch (e) {
+    console.error(`[image] headline summary failed, falling back to truncated post body — ${String((e as Error)?.message ?? e)}`)
+    return body.split(' ').slice(0, 5).join(' ').toUpperCase()
+  }
+}
+
+// Splits a short headline into at most two roughly balanced lines so it
+// composites cleanly onto a fixed-height banner — breaks at the space
+// nearest the character midpoint rather than the word-count midpoint, since
+// that reads more evenly for uneven word lengths. One line for 1-2 words.
+function wrapHeadlineLines(headline: string): string[] {
+  const words = headline.trim().split(/\s+/).filter(Boolean)
+  if (words.length <= 2) return [words.join(' ')]
+  const full = words.join(' ')
+  const target = full.length / 2
+  let bestIdx = -1
+  let bestDist = Infinity
+  let pos = 0
+  for (let i = 0; i < words.length - 1; i++) {
+    pos += words[i].length + 1
+    const dist = Math.abs(pos - target)
+    if (dist < bestDist) { bestDist = dist; bestIdx = i }
+  }
+  return [words.slice(0, bestIdx + 1).join(' '), words.slice(bestIdx + 1).join(' ')]
+}
+
+// Forces a deliberate, consistent B&W treatment regardless of what Stability
+// actually returned (don't rely on the prompt alone for this), then
+// composites a solid banner bar with the bold headline on top — Stability
+// cannot render legible text itself. Banner height and font scale are
+// proportional to the image's own dimensions so this looks right whether the
+// image is the native 1024x1024 (Facebook) or the resized 1080x1080
+// (Instagram). Mutates and returns the same Image instance.
+async function applyForcedBWAndHeadline(image: Image, headline: string): Promise<Image> {
+  image.saturation(0)
+  if (!headline) return image
+
+  const bannerHeight = Math.round(image.height * 0.24)
+  const bannerY = image.height - bannerHeight
+  image.drawBox(0, bannerY, image.width, bannerHeight, () => 0x000000ee)
+
+  const font = await headlineFontBytes()
+  const fontScale = Math.round(image.width * 0.0667)
+  const lineGap = Math.round(fontScale * 0.17)
+  const lines = wrapHeadlineLines(headline).map((line) => Image.renderText(font, fontScale, line, 0xffffffff))
+  const totalTextHeight = lines.reduce((sum, l) => sum + l.height, 0) + lineGap * (lines.length - 1)
+  let lineY = Math.round(bannerY + (bannerHeight - totalTextHeight) / 2)
+  for (const line of lines) {
+    const lineX = Math.round((image.width - line.width) / 2)
+    image.composite(line, lineX, lineY)
+    lineY += line.height + lineGap
+  }
+  return image
 }
 
 // Deterministic style-prefix check (not an AI/vision check) — does the prompt
@@ -127,7 +281,9 @@ async function disableImageGenForPlatform(admin: Admin, client: Record<string, a
 
 interface StabilityArtifact { base64: string; finishReason: string }
 
-async function callStabilityAI(prompt: string, apiKey: string): Promise<Uint8Array> {
+async function callStabilityAI(prompt: string, apiKey: string, negativePrompt?: string): Promise<Uint8Array> {
+  const text_prompts = [{ text: prompt, weight: 1 }]
+  if (negativePrompt) text_prompts.push({ text: negativePrompt, weight: -1 })
   const res = await fetch(`https://api.stability.ai/v1/generation/${STABILITY_ENGINE_ID}/text-to-image`, {
     method: 'POST',
     headers: {
@@ -136,7 +292,7 @@ async function callStabilityAI(prompt: string, apiKey: string): Promise<Uint8Arr
       Accept: 'application/json',
     },
     body: JSON.stringify({
-      text_prompts: [{ text: prompt, weight: 1 }],
+      text_prompts,
       height: IMAGE_SIZE,
       width: IMAGE_SIZE,
       samples: 1,
@@ -173,9 +329,12 @@ export async function generatePostImage(
   // platform returns here before any work happens: no Anthropic summarisation,
   // no Stability call, no upload, no image_url. Empty/unset means "no
   // restriction", so clients without an allow-list are completely unaffected.
-  // CRHQ is configured Instagram-only. Checked before the deny-list below
-  // because it's deliberate configuration, whereas the deny-list is the
-  // automatic post-failure kill-switch.
+  // CRHQ is configured for both instagram and facebook — see
+  // schedule-to-metricool/index.ts's facebookTextOnly check, which is the
+  // reason CRHQ is the one brand whose Facebook posts get the image attached
+  // at all. Checked before the deny-list below because it's deliberate
+  // configuration, whereas the deny-list is the automatic post-failure
+  // kill-switch.
   const allowedPlatforms: string[] = Array.isArray(client.image_gen_platforms) ? client.image_gen_platforms : []
   if (allowedPlatforms.length && !allowedPlatforms.some((p) => String(p).toLowerCase() === String(platform).toLowerCase())) {
     console.log(`[image] ${client.name}: platform "${platform}" not in image_gen_platforms — skipping image for ${contentQueueId}`)
@@ -194,7 +353,7 @@ export async function generatePostImage(
     return
   }
 
-  const prompt = await buildImagePrompt(postBody, client.visual_style)
+  const prompt = await buildImagePrompt(postBody, client.visual_style, client)
 
   // Fails closed: an opportunity to enforce the brand's locked visual style
   // silently dropping is worse than one missing image. Disables this
@@ -207,8 +366,27 @@ export async function generatePostImage(
   }
 
   try {
-    const rawBytes = await callStabilityAI(prompt, apiKey)
-    const bytes = await resizeForPlatform(rawBytes, platform)
+    const negativePrompt = wantsHeadlineOverlay(client) ? CRHQ_NEGATIVE_PROMPT : undefined
+    const rawBytes = await callStabilityAI(prompt, apiKey, negativePrompt)
+    let bytes = await resizeForPlatform(rawBytes, platform)
+
+    // CRHQ-only (see wantsHeadlineOverlay): force a deliberate B&W treatment
+    // and composite a bold headline banner on top, regardless of platform —
+    // both facebook and instagram get the same treated image, since CRHQ is
+    // the one brand whose Facebook posts actually attach the image (see the
+    // allow-list comment above). A failure here falls back to the plain
+    // Stability output rather than losing the image entirely — this is a
+    // finishing step, not a hard requirement for the post to go out.
+    if (wantsHeadlineOverlay(client)) {
+      try {
+        const headline = await summariseToHeadline(postBody)
+        const image = await Image.decode(bytes)
+        await applyForcedBWAndHeadline(image, headline)
+        bytes = await image.encode()
+      } catch (e) {
+        console.error(`[image] ${client.name}: forced B&W/headline compositing failed, using plain image — ${String((e as Error)?.message ?? e)}`)
+      }
+    }
 
     const folder = client.slug || 'unknown-brand'
     const path = `${folder}/${contentQueueId}.png`
