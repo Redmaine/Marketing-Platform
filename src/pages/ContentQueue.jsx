@@ -600,8 +600,13 @@ export function ContentQueue() {
                         {/* Task 2 — any pending post with no review timestamp never
                             went through _shared/review.ts. Flag it distinctly (amber
                             with a border) rather than letting it read as a normal
-                            reviewed-pending post. */}
-                        {!item.reviewed_at && (
+                            reviewed-pending post. Gated on review_status !== 'passed'
+                            too — some rows carry review_status='passed' with a null
+                            reviewed_at (backfilled/legacy), and reviewed_at alone used
+                            to show this badge even then, contradicting the green
+                            Reviewed badge above (which is keyed on review_status). Only
+                            one of the two should ever show for a given post. */}
+                        {!item.reviewed_at && item.review_status !== 'passed' && (
                           <span className="pill" title="Queued without an automated review — reviewed_at is null."
                             style={{ background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}>⚠ Unreviewed</span>
                         )}
@@ -609,7 +614,7 @@ export function ContentQueue() {
                       </div>
                     </div>
 
-                    {!item.reviewed_at && (
+                    {!item.reviewed_at && item.review_status !== 'passed' && (
                       <p style={{ fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
                         This post has not been through the automated review — it was queued before the review step existed. Read it carefully before approving.
                       </p>
