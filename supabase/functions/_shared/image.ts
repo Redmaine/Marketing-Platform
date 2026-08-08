@@ -123,6 +123,47 @@ function wantsHeadlineOverlay(client: Record<string, any>): boolean {
   return client?.slug === 'crhq'
 }
 
+// Quill's dedicated LinkedIn company-page client (mkt_clients.slug =
+// 'quill-linkedin', metricool_brand_id 6469945) — deliberately a slug check
+// here rather than a new mkt_clients column, same reasoning as
+// wantsHeadlineOverlay above. Revisit as a proper column if a second client
+// wants alternating images.
+function isQuillLinkedIn(client: Record<string, any>): boolean {
+  return client?.slug === 'quill-linkedin'
+}
+
+// Post-by-post image alternation for Quill LinkedIn — odd-numbered posts in
+// the schedule get an image, even-numbered don't. Same self-correcting
+// pattern as CRHQ's facebookWantsImage (crhq-nightly-content/index.ts): look
+// at the most recently scheduled post for this client and do the opposite of
+// whether IT had an image, rather than tracking parity state in memory —
+// this self-corrects after any gap (a deleted post, a manual override) and
+// needs no counter column. No prior post at all -> true, so the very first
+// post starts the cycle with an image (post 1 = odd = image).
+//
+// excludeId matters exactly like facebookWantsImage's own warning: fill.ts
+// calls this AFTER the new row is already inserted (with image_url still
+// null), so without excluding contentQueueId itself, the query would find
+// its own row as "most recent" and always answer true.
+async function quillLinkedInWantsImage(admin: Admin, clientId: string, excludeId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('mkt_content_queue')
+    .select('image_url')
+    .eq('client_id', clientId).eq('content_type', 'post')
+    .neq('id', excludeId)
+    .order('scheduled_for', { ascending: false })
+    .limit(1)
+  if (error) {
+    // Fail closed — a lookup failure must not turn into an image on every
+    // post. No image is the safe side of this decision.
+    console.error(`[image] Quill LinkedIn image alternation lookup failed (${error.message}) — defaulting to no image`)
+    return false
+  }
+  const previous = data?.[0]
+  if (!previous) return true // no history yet — start the cycle with an image
+  return !previous.image_url
+}
+
 // Genuine Stability negative prompt (weight -1), not just prose in the
 // positive prompt — added after the first round of test samples showed
 // prose alone ("no human faces under any circumstances") wasn't reliably
@@ -344,6 +385,14 @@ export async function generatePostImage(
   const disabledPlatforms: string[] = Array.isArray(client.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : []
   if (disabledPlatforms.includes(platform)) {
     console.log(`[image] ${client.name}: image generation disabled for platform "${platform}" — skipping ${contentQueueId}`)
+    return
+  }
+
+  // Quill LinkedIn only — odd/even alternation (see quillLinkedInWantsImage).
+  // Checked after the allow/deny-list gates above (deliberate configuration
+  // always wins first) but before any generation work starts.
+  if (isQuillLinkedIn(client) && !(await quillLinkedInWantsImage(admin, client.id, contentQueueId))) {
+    console.log(`[image] ${client.name}: skipping image for ${contentQueueId} — alternating (previous post had one)`)
     return
   }
 

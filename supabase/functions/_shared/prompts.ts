@@ -11,7 +11,7 @@
 export const ANTI_FABRICATION = `You are writing a real social media post for a real brand. Do not invent clients, case studies, testimonials, results, metrics, or business outcomes. Do not reference any business, person, or result that has not been explicitly provided to you in this prompt. If you cannot write a post on this topic without inventing content, choose a different angle from the content pillars provided.`
 
 // Fix 1 — Quill-specific addition (only real clients).
-const QUILL_CLIENTS = `The only real clients Quill has are Riverside Sheetmetal Fabrications, Combat Ready HQ, Safe Hands Funeral Services, and Steady. Do not reference any other client under any circumstances.`
+const QUILL_CLIENTS = `The only real clients Quill has are Riverside Sheetmetal Fabrications, Combat Ready HQ, and Steady. Do not reference any other client under any circumstances.`
 
 // Fix 2 — format rules. Included verbatim in every brand's generation prompt.
 export const FORMAT_RULES = `Write in prose only. No bullet points. No bold markdown asterisks. No emojis. No exclamation marks. Single space after every full stop. No headers. No numbered lists.`

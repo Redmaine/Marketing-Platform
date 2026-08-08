@@ -14,10 +14,15 @@ type Admin = any
 
 // The ONLY businesses a post may reference as a real client / case study /
 // result. Anything else is a fabrication and must be rejected.
+//
+// Safe Hands Funeral Services removed (2026-08-08) — pipeline client only,
+// no agreement in place, Quill does not manage their social media. Must
+// never be treated as a current/real client anywhere in the system, not
+// just in Quill's own generation prompt (see prompts.ts's QUILL_CLIENTS,
+// fixed alongside this).
 export const REAL_CLIENTS = [
   'Riverside Sheetmetal Fabrications',
   'Combat Ready HQ',
-  'Safe Hands Funeral Services',
   'Steady',
 ]
 
