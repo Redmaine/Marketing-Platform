@@ -46,7 +46,6 @@ export function Dashboard() {
     setLoading(true)
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
     const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
-    const nowIso = new Date().toISOString()
     const [c, approval, today, failed, blogs] = await Promise.all([
       supabase.from('mkt_clients').select('*').eq('active', true).order('name'),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
@@ -57,8 +56,15 @@ export function Dashboard() {
         .lte('scheduled_for', todayEnd.toISOString())
         .neq('status', 'rejected')
         .order('scheduled_for', { ascending: true }),
+      // Matches ContentQueue.jsx's `failed` bucket — unconditional on
+      // scheduled_for. Scheduling to Metricool happens once, synchronously,
+      // at approval time with no later retry sweep, so an approved post
+      // with no metricool_post_id is stuck the same way whether its slot
+      // is already overdue or still days away. Previously required
+      // scheduled_for < now, which meant a post rescheduled to a future
+      // date to fix the overdue case dropped out of this count entirely.
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
-        .eq('status', 'approved').is('metricool_post_id', null).lt('scheduled_for', nowIso),
+        .eq('status', 'approved').is('metricool_post_id', null),
       // mkt_blog_posts has no 'pending_review' status (its CHECK constraint only
       // allows draft/approved/published/publish_failed/rejected) — 'draft' is the
       // equivalent unreviewed state here, matching the Blog tab's own approval flow.

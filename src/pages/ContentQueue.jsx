@@ -144,7 +144,17 @@ export function ContentQueue() {
   const pending = items.filter((i) => i.status === 'draft' && (i.review_status === 'passed' || !i.review_status)
     && (!i.scheduled_for || new Date(i.scheduled_for) >= startOfToday))
   const now = new Date()
-  const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id && i.scheduled_for && new Date(i.scheduled_for) < now)
+  // Was scoped to only overdue rows (scheduled_for < now). Scheduling to
+  // Metricool happens once, synchronously, at the moment a post is approved
+  // — there is no later cron sweep that retries it — so an approved post
+  // with no metricool_post_id is stuck the same way whether its slot is
+  // already overdue or still days away; there is no cron between now and
+  // then that would fix it on its own. Rescheduling such a post to a future
+  // date (the fix for the overdue case) used to pull it out of this filter
+  // entirely, making it invisible everywhere in the UI. Unconditional on
+  // scheduled_for now, so any approved-but-unscheduled row stays visible
+  // regardless of date, for every brand.
+  const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id)
   const rejected = items.filter((i) => i.status === 'rejected')
   const needsAttention = pending.filter((i) => i.review_status === 'needs_attention')
   // Rejected posts must never clutter the main queue — they get their own
