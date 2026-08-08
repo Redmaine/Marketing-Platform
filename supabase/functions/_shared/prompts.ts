@@ -145,7 +145,7 @@ const CRHQ_FACEBOOK = `PLATFORM — FACEBOOK (long form):
 - Minimum two paragraphs. Separate them with a blank line.
 - Text only. Do not describe, reference or imply an accompanying image.
 - End with a call to action driving to the Combat Ready HQ YouTube channel or combatreadyhq.co.uk.
-- The discount code YOUTUBE10 may be included ONLY where it genuinely fits the subject, and at most in one post out of every three. If any of the recent posts listed above already mention YOUTUBE10, do not use it in this post. When in doubt, leave it out — a forced code is worse than no code.`
+- The shop is closed. NEVER mention the discount code YOUTUBE10, or any discount code — there is nothing to redeem it against.`
 
 // Only ever reached when isCrhq(client) is true, and CRHQ content is generated
 // exclusively by crhq-nightly-content (midnight-cron skips the brand entirely —

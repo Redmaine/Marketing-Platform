@@ -122,6 +122,26 @@ function blogReferenceViolation(client: Record<string, any>, body: string): stri
 const HORMONELY_DISCLAIMER = 'Always speak to your GP before making changes to your health routine.'
 const STEADY_DISCLAIMER = 'Steady provides lifestyle and wellbeing guidance only. Always follow the advice of your prescriber or GP.'
 
+// Per-brand hard-banned strings — checked regardless of what the prompt says,
+// since a prompt-only rule (e.g. CRHQ_FACEBOOK's old "use YOUTUBE10 sparingly")
+// can still leak through. CRHQ's shop has closed, so YOUTUBE10 is no longer a
+// valid discount code and must never appear, full stop — not "at most one post
+// in three" as the prompt previously allowed.
+const BANNED_PHRASES: Record<string, string[]> = {
+  crhq: ['YOUTUBE10'],
+}
+
+function bannedPhraseViolation(client: Record<string, any>, body: string): string | null {
+  const slug = String(client.slug || '').toLowerCase()
+  const banned = BANNED_PHRASES[slug]
+  if (!banned) return null
+  const lower = body.toLowerCase()
+  for (const phrase of banned) {
+    if (lower.includes(phrase.toLowerCase())) return `banned phrase "${phrase}"`
+  }
+  return null
+}
+
 // ── Layer 1: deterministic content rules ────────────────────────────────────
 // Returns the specific rule broken, or null if clean.
 export function contentRuleViolation(body: string): string | null {
@@ -195,6 +215,9 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
 
   const missingDisclaimer = disclaimerViolation(client, body)
   if (missingDisclaimer) return { pass: false, reason: `missing disclaimer: ${missingDisclaimer}` }
+
+  const bannedPhrase = bannedPhraseViolation(client, body)
+  if (bannedPhrase) return { pass: false, reason: bannedPhrase }
 
   const personalFabrication = personalFabricationViolation(client, body)
   if (personalFabrication) return { pass: false, reason: personalFabrication }
