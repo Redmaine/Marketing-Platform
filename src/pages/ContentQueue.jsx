@@ -559,7 +559,7 @@ export function ContentQueue() {
                       still push this column wider than the card, even with
                       overflow-wrap set on the paragraph itself. */}
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
                       <div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
                           <span style={{ fontSize: 13, fontWeight: 800 }}>
@@ -578,7 +578,12 @@ export function ContentQueue() {
                           )}
                         </div>
                       </div>
-                      <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      {/* flexWrap here (plus flexWrap on the row above) is the fix for
+                          the badge-row overflow bug: without it this group of up to 4
+                          pills refuses to shrink below its unwrapped width — same
+                          min-width/flex-shrink flex-item gotcha as the body-text fix
+                          above, just on a nested flex container instead of a <p>. */}
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
                         {item.review_status === 'passed' && (
                           <span className="pill" title={item.reviewed_at ? `Reviewed ${new Date(item.reviewed_at).toLocaleString('en-GB')}` : 'Reviewed'}
                             style={{ background: '#DCFCE7', color: '#166534' }}>✓ Reviewed</span>
