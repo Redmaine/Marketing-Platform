@@ -316,22 +316,22 @@ serve(async () => {
           // reasoning: only applies to a post that passed review, never to a
           // needs_attention placeholder.
           const autoApprove = review.ok && client.auto_approve === true
-          // rejection_feedback_used: same as fill.ts's identical field — was
-          // this post's prompt built with recentRejectionFeedback()'s output
-          // for CRHQ, or was there nothing substantive to feed back.
+          // rejection_feedback_used: same as fill.ts's identical field — the
+          // resolved rejection-feedback string actually fed into CRHQ's
+          // prompt for this post, or null when there was nothing to feed.
           const row = review.ok
             ? {
                 client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
                 status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
                 review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
-                content_source, rejection_feedback_used: rejectionFeedback !== null,
+                content_source, rejection_feedback_used: rejectionFeedback,
               }
             : {
                 client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
                 status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
                 review_status: 'needs_attention', reviewed_at: review.reviewedAt,
                 review_reason: review.reason, generation_attempts: review.attempts,
-                content_source, rejection_feedback_used: rejectionFeedback !== null,
+                content_source, rejection_feedback_used: rejectionFeedback,
               }
 
           const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
