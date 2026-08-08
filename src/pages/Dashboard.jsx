@@ -23,6 +23,7 @@ export function Dashboard() {
   const [postsToday, setPostsToday] = useState(0)
   const [awaitingApproval, setAwaitingApproval] = useState(0)
   const [failedToSchedule, setFailedToSchedule] = useState(0)
+  const [blogsToReview, setBlogsToReview] = useState(0)
   const [genClient, setGenClient] = useState(null)
   const [showToday, setShowToday] = useState(false)
   const [copyState, setCopyState] = useState('idle') // idle | copied | failed
@@ -46,7 +47,7 @@ export function Dashboard() {
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
     const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
     const nowIso = new Date().toISOString()
-    const [c, approval, today, failed] = await Promise.all([
+    const [c, approval, today, failed, blogs] = await Promise.all([
       supabase.from('mkt_clients').select('*').eq('active', true).order('name'),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'draft').or('review_status.eq.passed,review_status.is.null'),
@@ -58,6 +59,11 @@ export function Dashboard() {
         .order('scheduled_for', { ascending: true }),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
         .eq('status', 'approved').is('metricool_post_id', null).lt('scheduled_for', nowIso),
+      // mkt_blog_posts has no 'pending_review' status (its CHECK constraint only
+      // allows draft/approved/published/publish_failed/rejected) — 'draft' is the
+      // equivalent unreviewed state here, matching the Blog tab's own approval flow.
+      supabase.from('mkt_blog_posts').select('id', { count: 'exact', head: true })
+        .eq('status', 'draft'),
     ])
 
     const byClient = {}
@@ -71,6 +77,7 @@ export function Dashboard() {
     setPostsToday((today.data || []).length)
     setAwaitingApproval(approval.count || 0)
     setFailedToSchedule(failed.count || 0)
+    setBlogsToReview(blogs.count || 0)
     setLoading(false)
   }
 
@@ -89,8 +96,8 @@ export function Dashboard() {
     <div className="page">
       <div className="skel" style={{ height: 34, width: 200, marginBottom: 8 }} />
       <div className="skel" style={{ height: 16, width: 160, marginBottom: 22 }} />
-      <div className="grid grid-3" style={{ marginBottom: 20 }}>
-        {[1, 2, 3].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 56 }} /></div>)}
+      <div className="grid grid-4" style={{ marginBottom: 20 }}>
+        {[1, 2, 3, 4].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 56 }} /></div>)}
       </div>
       <div className="cards-swipe">
         {[1, 2, 3, 4].map((i) => <div key={i} className="card"><div className="skel" style={{ height: 140 }} /></div>)}
@@ -110,10 +117,11 @@ export function Dashboard() {
         </button>
       </div>
 
-      <div className="grid grid-3" style={{ marginBottom: 20 }}>
+      <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} onClick={() => setShowToday(true)} />
         <StatPill label="Awaiting approval" value={awaitingApproval} accent={awaitingApproval > 0} onClick={() => navigate('/content?status=draft')} />
         <StatPill label="Failed to schedule" value={failedToSchedule} accent={failedToSchedule > 0} onClick={() => navigate('/content?status=failed')} />
+        <StatPill label="Blogs to review" value={blogsToReview} accent={blogsToReview > 0} onClick={() => navigate('/blog')} />
       </div>
 
       <div className="cards-swipe">
