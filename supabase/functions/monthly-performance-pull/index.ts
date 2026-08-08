@@ -5,8 +5,13 @@
 // English -> feed it back into what gets generated next month. Per active
 // client:
 //   1. Pull Metricool post analytics for last month -> mkt_post_performance
-//      (see _shared/metricool.ts — the analytics endpoint/response shape is
-//      UNCONFIRMED, read that file's header before trusting these numbers).
+//      (see _shared/metricool-v2.ts — the real, empirically-verified
+//      endpoints; this function previously called the old _shared/metricool.ts,
+//      whose guessed paths 404 against the live API, which is why every
+//      brand's pull silently failed and July's reports had to be done by
+//      hand. Migrated 8 Aug 2026, same pattern as metricool-weekly-pull.
+//      Instagram follower_change is always null — Metricool's v2 API has no
+//      historical followers timeline for Instagram, only Facebook).
 //   2. Generate a plain-English report via Claude -> mkt_monthly_reports.
 //   3. Derive next month's content weighting -> mkt_client_optimisation,
 //      read by fill.ts / crhq-nightly-content (_shared/optimisation.ts) and
@@ -25,7 +30,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { callAnthropic } from '../_shared/generate.ts'
-import { fetchMetricoolPostStats, fetchMetricoolFollowerCount } from '../_shared/metricool.ts'
+import { fetchPosts, fetchTimeline, MetricoolNoConnectionError } from '../_shared/metricool-v2.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -103,10 +108,52 @@ function bestBucket(posts: PulledPost[], keyFn: (p: PulledPost) => string | null
   return best
 }
 
+// Maps one raw Metricool v2 post to the fields this function needs — same
+// field names/shapes as mapFacebookPost/mapInstagramPost in
+// metricool-weekly-pull/index.ts (the empirically-verified mapping; kept in
+// sync deliberately rather than importing across function boundaries).
+function mapPlatformPost(
+  network: string,
+  p: Record<string, unknown>,
+): { metricool_post_id: string; published_at: string | null; reach: number | null; impressions: number | null; likes: number | null; comments: number | null; shares: number | null } {
+  if (network === 'facebook') {
+    return {
+      metricool_post_id: String(p.postId ?? ''),
+      published_at: (p.created as { dateTime?: string } | undefined)?.dateTime ?? null,
+      reach: Number(p.impressionsUnique ?? 0),
+      impressions: Number(p.impressions ?? 0),
+      likes: Number(p.like ?? 0),
+      comments: Number(p.comments ?? 0),
+      shares: Number(p.shares ?? 0),
+    }
+  }
+  return {
+    metricool_post_id: String(p.postId ?? ''),
+    published_at: (p.publishedAt as { dateTime?: string } | undefined)?.dateTime ?? null,
+    reach: Number(p.reach ?? 0),
+    impressions: Number(p.impressionsTotal ?? p.impressions ?? 0),
+    likes: Number(p.likes ?? 0),
+    comments: Number(p.comments ?? 0),
+    shares: Number(p.shares ?? 0),
+  }
+}
+
+// Historical follower count change over the month. Only Facebook exposes a
+// usable timeline metric (pageFollows, subject=account) via the v2 API —
+// same documented gap as metricool-weekly-pull's follower_change_7d/30d:
+// Instagram has no equivalent account-level followers timeline, so its
+// change is left null (current count is still accurate elsewhere, just not
+// a month-over-month delta).
+async function fetchFollowerChange(network: string, blogId: string, start: Date, end: Date): Promise<number | null> {
+  if (network !== 'facebook') return null
+  const values = await fetchTimeline('facebook', 'pageFollows', 'account', blogId, start.toISOString().slice(0, 19), end.toISOString().slice(0, 19))
+  if (values.length === 0) return null
+  return values[values.length - 1].value - values[0].value
+}
+
 // ── Per-client pull ──────────────────────────────────────────────────────
 async function pullClientPosts(
   admin: Admin,
-  apiKey: string,
   client: Record<string, any>,
   start: Date,
   end: Date,
@@ -123,17 +170,27 @@ async function pullClientPosts(
   const followerChangeByPlatform: Record<string, number | null> = {}
 
   for (const platform of platforms) {
-    const { posts: platformPosts, error: postsError } = await fetchMetricoolPostStats(apiKey, brandId, platform, start, end)
-    if (postsError) errors.push(`${client.name} (${platform}): ${postsError}`)
-    for (const stat of platformPosts) raw.push({ platform, stat })
+    try {
+      const rawPosts = await fetchPosts(platform, String(brandId), start.toISOString().slice(0, 19), end.toISOString().slice(0, 19))
+      for (const p of rawPosts) {
+        const stat = mapPlatformPost(platform, p)
+        if (stat.metricool_post_id) raw.push({ platform, stat })
+      }
+    } catch (e) {
+      if (e instanceof MetricoolNoConnectionError) {
+        console.log(`[monthly-performance-pull] ${client.name}/${platform}: not connected, skipping`)
+        continue
+      }
+      errors.push(`${client.name} (${platform}): ${String((e as Error)?.message ?? e)}`)
+      continue
+    }
 
-    const [{ followers: startFollowers, error: startErr }, { followers: endFollowers, error: endErr }] = await Promise.all([
-      fetchMetricoolFollowerCount(apiKey, brandId, platform, start),
-      fetchMetricoolFollowerCount(apiKey, brandId, platform, new Date(end.getTime() - 86400_000)),
-    ])
-    if (startErr) errors.push(`${client.name} (${platform} followers, start): ${startErr}`)
-    if (endErr) errors.push(`${client.name} (${platform} followers, end): ${endErr}`)
-    followerChangeByPlatform[platform] = (startFollowers != null && endFollowers != null) ? endFollowers - startFollowers : null
+    try {
+      followerChangeByPlatform[platform] = await fetchFollowerChange(platform, String(brandId), start, end)
+    } catch (e) {
+      errors.push(`${client.name} (${platform} follower change): ${String((e as Error)?.message ?? e)}`)
+      followerChangeByPlatform[platform] = null
+    }
   }
 
   if (raw.length === 0) return { posts: [], errors }
@@ -364,17 +421,18 @@ serve(async () => {
     for (const client of clients ?? []) {
       clientsProcessed++
       try {
-        const { posts, errors: pullErrors } = await pullClientPosts(admin, apiKey, client, start, end)
+        const { posts, errors: pullErrors } = await pullClientPosts(admin, client, start, end)
         if (pullErrors.length) { errors.push(...pullErrors); for (const e of pullErrors) console.error(`[monthly-performance-pull] ${e}`) }
 
         if (posts.length) {
           // The onConflict target below matches mkt_post_performance_uniq, a
           // PARTIAL unique index (WHERE metricool_post_id IS NOT NULL — see
           // the migration). That's only a valid upsert arbiter for rows that
-          // satisfy the predicate. Safe here because fetchMetricoolPostStats
-          // already drops any post with no id before it reaches `posts` —
-          // every row below always has one. Don't remove that upstream
-          // filter without also handling null metricool_post_id here.
+          // satisfy the predicate. Safe here because pullClientPosts already
+          // drops any post with no id (the `if (stat.metricool_post_id)`
+          // check above) before it reaches `posts` — every row below always
+          // has one. Don't remove that upstream filter without also handling
+          // null metricool_post_id here.
           const rows = posts.map((p) => ({
             client_id: client.id,
             metricool_post_id: p.metricool_post_id || null,
