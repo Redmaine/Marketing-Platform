@@ -49,7 +49,7 @@ export function Dashboard() {
     const [c, approval, today, failed] = await Promise.all([
       supabase.from('mkt_clients').select('*').eq('active', true).order('name'),
       supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
-        .eq('status', 'draft'),
+        .eq('status', 'draft').or('review_status.eq.passed,review_status.is.null'),
       supabase.from('mkt_content_queue')
         .select('id, client_id, body, status, platform, scheduled_for, metricool_post_id')
         .gte('scheduled_for', todayStart.toISOString())
