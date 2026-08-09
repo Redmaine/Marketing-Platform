@@ -72,11 +72,22 @@ export function Calendar() {
           .in('status', ['draft', 'pending', 'approved', 'scheduled', 'published']),
       ])
 
-      // Merge, deduplicate by id
+      // Merge, deduplicate by the underlying content_queue row — NOT p.id.
+      // A scheduled post exists as two DIFFERENT rows with two DIFFERENT
+      // primary keys: its own id in mkt_content_queue, and a separate
+      // auto-generated id in mkt_scheduled_posts (which stores
+      // content_queue_id pointing back at the same post). Deduping on p.id
+      // alone never catches this — every scheduled post showed twice, once
+      // from each table, which is exactly what surfaced as "duplicate
+      // posts" on the calendar. content_queue_id is the field both shapes
+      // share (mkt_content_queue rows have no such field, so their own id
+      // IS their content_queue_id); mkt_scheduled_posts is queried first,
+      // so where both exist its copy wins.
       const seen = new Set()
       const merged = []
       for (const p of [...(s.data || []), ...(q.data || [])]) {
-        if (!seen.has(p.id)) { seen.add(p.id); merged.push(p) }
+        const key = p.content_queue_id || p.id
+        if (!seen.has(key)) { seen.add(key); merged.push(p) }
       }
 
       setPosts(merged); setClients(c.data || []); setLoading(false)
