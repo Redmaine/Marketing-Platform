@@ -4,6 +4,10 @@
 // Invoke (cron, no body) or { client_id } for one client.
 //
 // Deploy:  supabase functions deploy pull-gbp-reviews --no-verify-jwt
+// (Deployed with JWT verification off so it can be triggered directly by the
+// cron schedule — protected instead by a service-role bearer check below,
+// same pattern as backfill-content, since this pulls real client data and
+// spends Anthropic credits per invocation with no caller in the frontend.)
 // Schedule (every 6h): see Phase 5 / dashboard. e.g.
 //   supabase functions schedule create pull-gbp-reviews --cron "0 */6 * * *"
 // Secrets (Supabase vault): GOOGLE_MY_BUSINESS_API_KEY, ANTHROPIC_API_KEY
@@ -34,8 +38,13 @@ async function draftResponse(client: Record<string, unknown>, rating: number, bo
 
 serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
+
+  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
+  if (bearer !== SERVICE_ROLE_KEY) return json({ error: 'Not authorised' }, 401)
+
   try {
-    const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+    const admin = createClient(Deno.env.get('SUPABASE_URL')!, SERVICE_ROLE_KEY)
     const gbpKey = Deno.env.get('GOOGLE_MY_BUSINESS_API_KEY')
     if (!gbpKey) return json({ error: 'GOOGLE_MY_BUSINESS_API_KEY not configured' }, 500)
 

@@ -20,6 +20,14 @@
 //
 // Invoke (cron or authenticated, no body required).
 // Deploy:  supabase functions deploy generate-daily-status --no-verify-jwt
+// (Deployed with JWT verification off so the cron schedule can call it
+// directly — protected instead by a check below that accepts EITHER the
+// service-role bearer [cron, see 48_daily_status_cron.sql] OR a real
+// authenticated admin session [the frontend calls this live from
+// ContentQueue.jsx after every approve/reject — a service-role-only gate
+// like backfill-content's would break that path, since the browser never
+// holds the service-role key]. Same mkt_is_admin() check send-report and
+// 11 other functions in this repo already use for the frontend case.)
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { callAnthropic } from '../_shared/generate.ts'
@@ -96,11 +104,22 @@ async function generateSummary(context: Record<string, unknown>): Promise<string
   return text.trim()
 }
 
-serve(async () => {
+serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
 
+  const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
+  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
+  if (bearer !== SERVICE_ROLE_KEY) {
+    const userClient = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY')!, {
+      global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
+    })
+    const { data: isAdmin } = await userClient.rpc('mkt_is_admin')
+    if (isAdmin !== true) return json({ error: 'Not authorised' }, 401)
+  }
+
   try {
-    const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+    const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
     const now = new Date()
 
     // Day/week boundaries, UK-local (good enough for a daily status export —

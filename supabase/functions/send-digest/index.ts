@@ -4,6 +4,10 @@
 // Invoke (cron, no body).
 //
 // Deploy:  supabase functions deploy send-digest --no-verify-jwt
+// (Deployed with JWT verification off so it can be triggered directly by the
+// cron schedule — protected instead by a service-role bearer check below,
+// same pattern as backfill-content, since this emails Adrian directly and
+// has no caller in the frontend.)
 // Secrets (Supabase vault): RESEND_API_KEY, DIGEST_RECIPIENT_EMAIL
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -12,10 +16,15 @@ const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const OPS_URL = 'https://ops.yourcompanyai.co.uk'
 const DEFAULT_RECIPIENT = 'adrianfielding@me.com'
 
-serve(async () => {
+serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
+
+  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
+  if (bearer !== SERVICE_ROLE_KEY) return json({ error: 'Not authorised' }, 401)
+
   try {
-    const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+    const admin = createClient(Deno.env.get('SUPABASE_URL')!, SERVICE_ROLE_KEY)
     const today = new Date().toISOString().split('T')[0]
 
     // Part 5 — competitor intelligence only runs Monday 06:00 (see
