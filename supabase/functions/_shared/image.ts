@@ -317,7 +317,21 @@ async function disableImageGenForPlatform(admin: Admin, client: Record<string, a
     return
   }
   client.image_gen_disabled_platforms = next
-  console.error(`[image] ${client.name}: image generation disabled for platform "${platform}" — ${reason}`)
+  const logMessage = `${client.name}: image generation disabled for platform "${platform}" — ${reason}`
+  console.error(`[image] ${logMessage}`)
+
+  // Best-effort — console.error alone is lost after Supabase's ~24h log
+  // retention window, so this is the durable record. Must never block the
+  // disable itself, which has already landed by this point.
+  try {
+    const { error: efeError } = await admin.from('edge_function_errors').insert({
+      function_name: 'image',
+      error_message: logMessage.slice(0, 4000),
+    })
+    if (efeError) console.error(`[image] failed to write edge_function_errors: ${efeError.message}`)
+  } catch (e) {
+    console.error(`[image] failed to write edge_function_errors: ${(e as Error)?.message ?? e}`)
+  }
 }
 
 interface StabilityArtifact { base64: string; finishReason: string }
