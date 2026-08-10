@@ -164,13 +164,16 @@ serve(async (req) => {
     // never attached to the Metricool call when the target is Facebook.
     // Instagram (and any other connected platform) is unaffected.
     //
-    // One exception: CRHQ. Its Facebook stream now carries an image on every
-    // other post (generated in crhq-nightly-content), and this function builds
-    // the only Metricool payload in the repo — so without this carve-out those
-    // images would be generated, stored and paid for but never actually reach
-    // Facebook. Scoped to CRHQ by slug so the text-only rule still stands for
-    // every other brand.
-    const facebookTextOnly = item.platform === 'facebook' && client?.slug !== 'crhq'
+    // Two exceptions: CRHQ, and now Quill (2026-08-10, Facebook/LinkedIn
+    // 50/50 image test — with vs without AI artwork). Both brands' Facebook
+    // streams now carry an image on every other post (CRHQ in
+    // crhq-nightly-content; Quill via _shared/image.ts's generalised
+    // alternation, see isQuillAlternatingStream), and this function builds
+    // the only Metricool payload in the repo — so without this carve-out
+    // those images would be generated, stored and paid for but never
+    // actually reach Facebook. Scoped by slug so the text-only rule still
+    // stands for every other brand.
+    const facebookTextOnly = item.platform === 'facebook' && client?.slug !== 'crhq' && client?.slug !== 'quill'
     if (item.image_url && !facebookTextOnly) requestBody.media = [item.image_url]
 
     // Issue 8: if metricool_post_id already exists, PATCH the existing post
