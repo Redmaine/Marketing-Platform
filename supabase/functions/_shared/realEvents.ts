@@ -135,5 +135,26 @@ export async function buildRealEventsContext(admin: Admin): Promise<string> {
   lines.push('')
   lines.push(`Note: Redmaine is a solo operation run by Adrian Fielding. There are no employees, no team members, no customers yet beyond Riverside Sheet Metal and Combat Ready HQ as freebie clients. Any post must be grounded in the facts above or in the honest reality of building a solo AI operation from scratch.`)
 
-  return lines.join('\n')
+  const context = lines.join('\n')
+
+  // Diagnostic (2026-08-10) — the review check on Adrian Fielding LinkedIn
+  // posts has passed 9/9 invented-event posts, and this function is the
+  // intended fix (give generation real material so it never needs to
+  // invent). Raw character count alone can't distinguish "thin, mostly
+  // 'none' placeholders" from "genuinely rich" — a context full of "Posts
+  // published this week: none." / "Blogs published this week: none." lines
+  // is long enough in characters to look substantial while giving the model
+  // almost nothing to actually write from. Logging the real signal: how many
+  // of the four dynamic sections found actual data versus fell back to a
+  // "none" placeholder, so a run can be checked against this instead of
+  // guessing between "thin context" and "model ignoring rich context".
+  const sectionsWithData = [
+    countsByBrand.size > 0,
+    allPostIds.length > 0 && context.includes('Top performing post this week'),
+    (blogRows?.length ?? 0) > 0,
+    rejectionCounts.size > 0,
+  ].filter(Boolean).length
+  console.log(`[realEvents] buildRealEventsContext: ${context.length} chars, ${sectionsWithData}/4 dynamic sections had real data (posts=${countsByBrand.size > 0}, top_performer=${allPostIds.length > 0 && context.includes('Top performing post this week')}, blogs=${(blogRows?.length ?? 0) > 0}, rejections=${rejectionCounts.size > 0})`)
+
+  return context
 }

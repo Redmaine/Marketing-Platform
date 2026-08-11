@@ -75,24 +75,81 @@ export function permittedReferences(client: Record<string, any>): string[] {
 // model to phrase it consistently. Scoped to Adrian's LinkedIn brand only —
 // other brands genuinely do have real teams/employees/clients and must be
 // allowed to write about them truthfully.
-const PERSONAL_FABRICATION_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: 'hiring claim', pattern: /\b(?:we|i)(?:'ve| have)? (?:just |recently )?hired\b/i },
-  { label: 'hiring claim', pattern: /\bhiring (?:decision|someone|a new)\b/i },
-  { label: 'hiring claim', pattern: /\bturned down (?:a|an|the) .{0,40}(?:offer|salary|job) to join\b/i },
-  { label: 'new team member claim', pattern: /\bnew (?:hire|team member|employee|colleague)\b/i },
-  { label: 'team member claim', pattern: /\bjoined (?:us|the team|our team)\b/i },
-  { label: 'employee/team claim', pattern: /\b(?:our|my) (?:team|employees?|staff|colleagues?)\b/i },
-  { label: 'employee claim', pattern: /\bemployees?\b/i },
-  { label: 'employee claim', pattern: /\bstaff members?\b/i },
-  { label: 'client quote/testimonial', pattern: /\b(?:a |one )?client (?:said|says|told (?:us|me))\b/i },
-  { label: 'client quote/testimonial', pattern: /\bcustomer (?:said|says|told (?:us|me))\b/i },
-  { label: 'client quote/testimonial', pattern: /\btestimonial\b/i },
+// Refined 2026-08-10 — the patterns above catch a fixed vocabulary
+// (hiring/team/client-quote), but the LLM-only unverified_personal_narrative
+// check meant to catch the open-ended rest (see its schema comment) passed
+// 9 out of 9 real invented-event posts for this brand, including a
+// turned-down deal and a customer refund that this same incident-fix
+// comment already names as gaps. Adding those specific named-transaction
+// types rather than trusting the model's judgement call again for this
+// brand, and — per the same refinement — every pattern below (including the
+// original hiring/team ones) is now checked against real_events_context
+// before it's treated as a fabrication, not just pattern-matched blind.
+//
+// Deliberately narrow, both in what the patterns match and in what counts as
+// grounded: the brief is to flag a NAMED, CHECKABLE transaction (a refund
+// actually issued, a deal actually signed/turned down, a meeting with a
+// specific named counterparty, a hire actually made), not general reflective
+// "this week I've been thinking about..." framing — that's an approved,
+// deliberate style for this brand, not fabrication. Each pattern requires a
+// past-tense verb asserting the transaction occurred, not the topic word
+// alone (e.g. "refund" appearing in a reflective sentence about pricing
+// policy must not match — only "refunded a customer" etc. does). Two
+// previously-standalone bare-noun patterns ("employees", "staff members")
+// were removed for the same reason: they matched the word alone, with no
+// transactional structure, unlike every other pattern here, and would have
+// flagged purely topical mentions with no claimed event at all — the
+// existing possessive form ("our/my team/employees/staff/colleagues") below
+// already covers the actual claim-shaped version of this.
+const PERSONAL_FABRICATION_PATTERNS: { label: string; keyword: string; pattern: RegExp }[] = [
+  { label: 'hiring claim', keyword: 'hir', pattern: /\b(?:we|i)(?:'ve| have)? (?:just |recently )?hired\b/i },
+  { label: 'hiring claim', keyword: 'hir', pattern: /\bhiring (?:decision|someone|a new)\b/i },
+  { label: 'hiring claim', keyword: 'hir', pattern: /\bturned down (?:a|an|the) .{0,40}(?:offer|salary|job) to join\b/i },
+  { label: 'new team member claim', keyword: 'hir', pattern: /\bnew (?:hire|team member|employee|colleague)\b/i },
+  { label: 'team member claim', keyword: 'team', pattern: /\bjoined (?:us|the team|our team)\b/i },
+  { label: 'employee/team claim', keyword: 'team', pattern: /\b(?:our|my) (?:team|employees?|staff|colleagues?)\b/i },
+  { label: 'client quote/testimonial', keyword: 'client', pattern: /\b(?:a |one )?client (?:said|says|told (?:us|me))\b/i },
+  { label: 'client quote/testimonial', keyword: 'customer', pattern: /\bcustomer (?:said|says|told (?:us|me))\b/i },
+  { label: 'client quote/testimonial', keyword: 'testimonial', pattern: /\btestimonial\b/i },
+  // Refund actually issued — a checkable transaction, not "refund" as a topic.
+  { label: 'refund claim', keyword: 'refund', pattern: /\b(?:we|i)(?:'ve| have)? (?:just |recently )?refunded\b/i },
+  { label: 'refund claim', keyword: 'refund', pattern: /\brefunded (?:a|an|the|one) (?:customer|client)\b/i },
+  { label: 'refund claim', keyword: 'refund', pattern: /\b(?:issued|gave|processed) (?:a|the|their) (?:full |partial )?refund\b/i },
+  // Deal signed, closed, or turned down — a checkable transaction, not
+  // "deal" used generically (e.g. "a raw deal", "no big deal").
+  { label: 'deal claim', keyword: 'deal', pattern: /\bsigned (?:a|an|the|our) (?:new )?(?:deal|contract|client|agreement)\b/i },
+  { label: 'deal claim', keyword: 'deal', pattern: /\bclosed (?:a|an|the|our) (?:new )?deal\b/i },
+  { label: 'deal claim', keyword: 'deal', pattern: /\bturned down (?:a|an|the) .{0,60}(?:deal|contract)\b/i },
+  // A specific meeting with a named type of counterparty — not "meetings"
+  // discussed as a general topic.
+  { label: 'specific meeting claim', keyword: 'meeting', pattern: /\b(?:met|meeting) with (?:a|an|the|our|my) (?:client|customer|investor|supplier|partner|prospect)\b/i },
+  { label: 'specific meeting claim', keyword: 'meeting', pattern: /\bsat down with (?:a|an|the|our|my) (?:client|customer|investor|supplier|partner|prospect)\b/i },
+  { label: 'specific meeting claim', keyword: 'meeting', pattern: /\bhad (?:a|the) call with (?:a|an|the|our|my) (?:client|customer|investor|supplier|partner|prospect)\b/i },
 ]
+
+// A matched claim is only a fabrication if nothing in the real weekly-
+// activity context supplied to generation (see _shared/realEvents.ts)
+// plausibly substantiates it. Crude keyword-presence check rather than
+// semantic matching, deliberately: real_events_context is structured
+// factual data (post counts, blog titles, rejection reasons), never
+// narrative prose, so a genuine grounding would contain the relevant
+// keyword somewhere in a structured line about it. Today's
+// real_events_context never mentions hiring/refunds/deals/meetings at all,
+// so this is a no-op in practice — it exists so the check correctly stands
+// down if that context is ever extended to include genuinely verifiable
+// events of these kinds, rather than false-positiving on legitimately
+// grounded content forever.
+function groundedInRealEvents(client: Record<string, any>, keyword: string): boolean {
+  const context = typeof client._real_events_context === 'string' ? client._real_events_context : ''
+  return !!context && context.toLowerCase().includes(keyword.toLowerCase())
+}
 
 function personalFabricationViolation(client: Record<string, any>, body: string): string | null {
   if (!isAdrianLinkedIn(client)) return null
-  for (const { label, pattern } of PERSONAL_FABRICATION_PATTERNS) {
-    if (pattern.test(body)) return `fabricated personal claim — ${label} detected`
+  for (const { label, keyword, pattern } of PERSONAL_FABRICATION_PATTERNS) {
+    if (pattern.test(body) && !groundedInRealEvents(client, keyword)) {
+      return `fabricated personal claim — ${label} detected`
+    }
   }
   return null
 }
