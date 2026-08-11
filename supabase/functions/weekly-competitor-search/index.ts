@@ -17,6 +17,7 @@
 // Secrets (vault): ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -134,7 +135,10 @@ async function runSearch(query: string): Promise<{ result_summary: string; sourc
   }
 }
 
-serve(async () => {
+serve(async (req) => {
+  const auth = await checkCronAuth(req, 'weekly-competitor-search')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const errors: string[] = []
   let searchesRun = 0

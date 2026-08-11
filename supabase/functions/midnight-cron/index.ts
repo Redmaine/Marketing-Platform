@@ -30,11 +30,15 @@
 // Schedule: see 11_cron_jobs.sql (unchanged — same job, same 00:00 trigger).
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
-serve(async () => {
+serve(async (req) => {
+  const auth = await checkCronAuth(req, 'midnight-cron')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
   const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!

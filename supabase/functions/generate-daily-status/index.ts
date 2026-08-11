@@ -31,6 +31,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { callAnthropic } from '../_shared/generate.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 const BUCKET = 'ops-exports'
 const FILE = 'daily-status.json'
@@ -109,8 +110,14 @@ serve(async (req) => {
 
   const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
   const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
-  if (bearer !== SERVICE_ROLE_KEY) {
+
+  // Two legitimate callers: cron/service (checkCronAuth — x-cron-secret or
+  // the real service-role bearer), or a logged-in admin from the frontend
+  // (ContentQueue.jsx, after every approve/reject) — a service-role-only
+  // gate would break that path, since the browser never holds the
+  // service-role key.
+  const cronAuth = await checkCronAuth(req, 'generate-daily-status')
+  if (!cronAuth.authorised) {
     const userClient = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY')!, {
       global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
     })

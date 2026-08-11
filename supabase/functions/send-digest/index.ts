@@ -11,6 +11,7 @@
 // Secrets (Supabase vault): RESEND_API_KEY, DIGEST_RECIPIENT_EMAIL
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const OPS_URL = 'https://ops.yourcompanyai.co.uk'
@@ -19,11 +20,11 @@ const DEFAULT_RECIPIENT = 'adrianfielding@me.com'
 serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
 
-  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
-  if (bearer !== SERVICE_ROLE_KEY) return json({ error: 'Not authorised' }, 401)
+  const auth = await checkCronAuth(req, 'send-digest')
+  if (!auth.authorised) return auth.response!
 
   try {
+    const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, SERVICE_ROLE_KEY)
     const today = new Date().toISOString().split('T')[0]
 

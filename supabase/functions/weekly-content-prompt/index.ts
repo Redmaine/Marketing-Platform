@@ -18,6 +18,7 @@
 // Secrets (Supabase vault): RESEND_API_KEY.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const RECIPIENT = 'hello@yourcompanyai.co.uk'
@@ -52,7 +53,10 @@ function thisWeekBounds(now: Date): { monday: Date; nextMonday: Date } {
   return { monday, nextMonday }
 }
 
-serve(async () => {
+serve(async (req) => {
+  const auth = await checkCronAuth(req, 'weekly-content-prompt')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const errors: string[] = []
   let clientsProcessed = 0

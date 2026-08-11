@@ -31,6 +31,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { callAnthropic } from '../_shared/generate.ts'
 import { fetchPosts, fetchTimeline, MetricoolNoConnectionError } from '../_shared/metricool-v2.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -394,7 +395,10 @@ async function sendReportEmail(sections: BrandEmailSection[], monthLabel: string
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────
-serve(async () => {
+serve(async (req) => {
+  const auth = await checkCronAuth(req, 'monthly-performance-pull')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const errors: string[] = []
   const notes: string[] = []

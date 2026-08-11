@@ -38,6 +38,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { fetchPosts, fetchTimeline, fetchFollowers, MetricoolNoConnectionError } from '../_shared/metricool-v2.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -231,6 +232,9 @@ serve(async (req) => {
   const json = (b: unknown, s = 200) =>
     new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } })
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
+
+  const auth = await checkCronAuth(req, 'metricool-weekly-pull')
+  if (!auth.authorised) return auth.response!
 
   const startedAt = Date.now()
 

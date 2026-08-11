@@ -43,6 +43,7 @@ import { generateReviewedPost } from '../_shared/review.ts'
 import { generatePostImage } from '../_shared/image.ts'
 import { latestOptimisationNotes } from '../_shared/optimisation.ts'
 import { recentRejectionFeedback } from '../_shared/rejectionFeedback.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -220,7 +221,10 @@ async function nextAvailableSlot(admin: Admin, client: Record<string, any>, plat
   return { slot: null, reason: 'no_slot_in_walk' }
 }
 
-serve(async () => {
+serve(async (req) => {
+  const auth = await checkCronAuth(req, 'crhq-nightly-content')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const errors: string[] = []
   const notes: string[] = []

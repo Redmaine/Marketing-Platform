@@ -11,6 +11,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { callAnthropicStructured } from '../_shared/generate.ts'
 import { buildSystemPrompt } from '../_shared/prompts.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' }
 
@@ -30,9 +31,8 @@ serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } })
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
-  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
-  let role = ''; try { role = JSON.parse(atob(bearer.split('.')[1] || '')).role || '' } catch { /* */ }
-  if (role !== 'service_role') return json({ error: 'Not authorised' }, 401)
+  const auth = await checkCronAuth(req, 'generate-graphics')
+  if (!auth.authorised) return auth.response!
 
   let body: Record<string, unknown> = {}
   try { body = await req.json() } catch { /* */ }

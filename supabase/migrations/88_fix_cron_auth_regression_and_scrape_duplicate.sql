@@ -1,0 +1,64 @@
+-- =============================================================================
+-- 88_fix_cron_auth_regression_and_scrape_duplicate.sql
+--
+-- ROOT CAUSE of migration 85's regression (see that file's own header for
+-- the original incident): 85 was committed 2026-08-07, and its live fix
+-- correctly copied the then-current, then-genuinely-working service_role
+-- key (a legacy JWT-format value, confirmed by fingerprint at the time) into
+-- 5 cron.job rows. It was not overwritten or reverted by anything in this
+-- repo. It regressed because Supabase's own service_role key changed
+-- REPRESENTATION (legacy JWT -> new opaque format) at the platform level
+-- sometime between 2026-08-07 and 2026-08-10 (see yca-platform's
+-- "Trigger rebuild to pick up new-format service_role key" commit,
+-- 2026-08-10 19:39 UTC) — an event entirely outside this repo's control.
+-- Every cron.job row with a hardcoded copy of the old value went stale the
+-- moment that happened, silently, because a 401 at Supabase's own gateway
+-- never reaches this project's own logging (mkt_cron_log/edge_function_errors).
+--
+-- Confirmed 9 other jobs shared the exact same now-stale legacy JWT that
+-- migration 85 copied into the first 5 — total 14 jobs, all silently
+-- broken by the same external event: morning-digest, midnight-content-
+-- generation, pull-gbp-reviews, check-client-news, weekly-brief-0800/0900,
+-- graphic-copy-0600/0700, rejected-digest-0600/0700, monthly-performance-
+-- pull, weekly-content-prompt, crhq-nightly-content, weekly-competitor-
+-- search. metricool-weekly-pull used a different, newer sb_secret_ key but
+-- its own function code performed no comparison against it at all — a
+-- separate, equally real hole (any valid Supabase JWT, including the
+-- public anon key, could trigger it and burn real Metricool/API spend).
+--
+-- FIX — durable this time, not a third hardcoded copy: added
+-- supabase/functions/_shared/cronAuth.ts (mirrors yca-platform's own
+-- helper of the same name, same shared Supabase project) — accepts either
+-- x-cron-secret matching the CRON_SECRET project secret, or a bearer equal
+-- to the current service_role key. CRON_SECRET is a value we set and
+-- rotate ourselves, independent of Supabase's own key-format management —
+-- pairs the two so a future service-role format change degrades to "one
+-- working path" instead of "everything silently breaks again". Adopted
+-- everywhere the old broken pattern existed: the 8 functions with no auth
+-- check at all (free-for-anyone-with-the-anon-key to trigger real spend),
+-- the 3 with a decode-only check (reads the JWT's role claim without ever
+-- verifying its signature, so a forged JWT-shaped string would pass), and
+-- the 3 that already did a correct exact-match against the live
+-- service-role key (send-digest, pull-gbp-reviews, generate-daily-status —
+-- upgraded for the CRON_SECRET fallback, same resilience reasoning above).
+--
+-- Every cron.job row below re-pointed to send BOTH a valid Authorization
+-- bearer (anon key — satisfies Supabase's own platform JWT gate, which is
+-- separate from and in addition to this project's own checkCronAuth) and
+-- x-cron-secret (satisfies checkCronAuth). The actual CRON_SECRET value is
+-- NOT recorded here, for the same reason 11_cron_jobs.sql's own header
+-- gives — this file is committed to git. Applied live via cron.alter_job,
+-- one call per job, from a local script — not repeated here.
+--
+-- Verify no job still carries the old broken pattern:
+--   select jobid, jobname, command like '%x-cron-secret%' as fixed
+--   from cron.job where jobid in (4,6,7,13,15,16,18,19,21,22,28,29,30,31,35);
+--
+-- ALSO — item 5, confirmed live: scrape-crhq-content's own 22:00 cron job
+-- (jobid 24, jobname 'scrape-crhq-content') was still active and firing
+-- every night alongside crhq-nightly-content (jobid 30, also 22:00), which
+-- migration 56 already explicitly says should have replaced it (that
+-- function now does its own fresh scrape as step 1). Unscheduled via
+-- cron.unschedule(24) — the function itself is untouched and still
+-- deployed for genuine manual/on-demand use, per its own file header.
+-- =============================================================================

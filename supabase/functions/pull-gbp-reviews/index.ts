@@ -13,6 +13,7 @@
 // Secrets (Supabase vault): GOOGLE_MY_BUSINESS_API_KEY, ANTHROPIC_API_KEY
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 const MODEL = 'claude-haiku-4-5-20251001'
 const STAR = { STAR_RATING_UNSPECIFIED: 0, ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 }
@@ -39,11 +40,11 @@ async function draftResponse(client: Record<string, unknown>, rating: number, bo
 serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
 
-  const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-  const bearer = (req.headers.get('Authorization') ?? '').replace('Bearer ', '')
-  if (bearer !== SERVICE_ROLE_KEY) return json({ error: 'Not authorised' }, 401)
+  const auth = await checkCronAuth(req, 'pull-gbp-reviews')
+  if (!auth.authorised) return auth.response!
 
   try {
+    const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, SERVICE_ROLE_KEY)
     const gbpKey = Deno.env.get('GOOGLE_MY_BUSINESS_API_KEY')
     if (!gbpKey) return json({ error: 'GOOGLE_MY_BUSINESS_API_KEY not configured' }, 500)

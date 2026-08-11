@@ -20,8 +20,12 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { scrapeCrhqContent } from '../_shared/crhqScrape.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
-serve(async () => {
+serve(async (req) => {
+  const auth = await checkCronAuth(req, 'scrape-crhq-content')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const scraped_at = new Date().toISOString()
 
