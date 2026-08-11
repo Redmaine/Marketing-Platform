@@ -75,20 +75,26 @@ const SAFETY_MAX_DAYS_WALKED = 21
 // simply skipped for the night, rather than reaching further into the
 // future.
 //
-// Second incident fix — 48h was too tight for CRHQ's own cadence and
-// started causing the opposite failure ("no available slot found"). Both
-// platforms' schedules have a genuine 3-day gap between consecutive
-// posting days (facebook Sat->Tue, instagram Fri->Mon) — confirmed live:
-// on 5 August 22:00 (a Wednesday-night run), facebook's very next posting
-// day (Thursday 6 August) was already filled by a real, already-scheduled
-// post (metricool_post_id set, not stale/orphaned — mkt_content_schedule
-// itself has no per-slot reservation state to audit, it's just a
-// recurring weekly template), so the walk correctly moved on to Saturday
-// 8 August — a legitimate 3-day-out slot that a 48h window can never
-// reach. 96h covers that worst-case single-skip gap with margin for both
-// platforms while staying well short of the 5-7-day-out incident this
-// constant exists to prevent.
-const MAX_LOOKAHEAD_MS = 96 * 60 * 60 * 1000
+// Reverted to 48h (2026-08-10) — CRHQ content must never be scheduled more
+// than 48 hours out, full stop; it needs to stay tied to what Craig has
+// actually posted on YouTube recently, and the 96h widening below let real
+// posts get approved and scheduled up to 96.5 hours ahead.
+//
+// The 96h widening was a response to a real but differently-shaped problem:
+// both platforms' schedules have a genuine 3-day gap between consecutive
+// posting days (facebook Sat->Tue, instagram Fri->Mon) — confirmed live: on
+// 5 August 22:00 (a Wednesday-night run), facebook's very next posting day
+// (Thursday 6 August) was already filled by a real, already-scheduled post,
+// so the walk correctly moved on to Saturday 8 August — a legitimate
+// 3-day-out slot a 48h window can never reach, which then surfaced as an
+// alarming "no available slot found" entry in the errors array on those
+// nights. That's expected, correct behaviour for this cadence, not a fault
+// — widening the window was the wrong fix, since it also let genuinely
+// time-sensitive content drift up to 96.5h out. The actual fix is
+// classifying that specific outcome correctly: nextAvailableSlot now
+// reports WHY it returned no slot, and "the only slot is beyond the window"
+// is logged as a note, not an error — see the call site below.
+const MAX_LOOKAHEAD_MS = 48 * 60 * 60 * 1000
 
 // Facebook images alternate: one post with an image, the next without, and so
 // on. Instagram is unaffected — every Instagram post still gets one.
@@ -175,15 +181,24 @@ async function countQueued(admin: Admin, clientId: string, platform: string): Pr
   return count ?? 0
 }
 
+// Why nextAvailableSlot found no usable slot — the caller treats these very
+// differently. 'beyond_window' is CRHQ's normal cadence doing exactly what
+// it should (see MAX_LOOKAHEAD_MS) and must never read as an error; the
+// other two are genuine problems (a missing schedule config, or 21 days
+// with no free day at all) and should still surface as one.
+type NoSlotReason = 'no_schedule' | 'beyond_window' | 'no_slot_in_walk'
+type SlotResult = { slot: Date; reason?: undefined } | { slot: null; reason: NoSlotReason }
+
 // Walks forward from tomorrow to the first day matching this platform's
 // posting schedule that doesn't already have a post queued for it — one post
 // per platform per day, the same rule fillClientGap enforces elsewhere.
-// Returns null if CRHQ has no active schedule rows for this platform (a
-// misconfiguration — see 55_crhq_content_config.sql) or none free within the
-// safety bound.
-async function nextAvailableSlot(admin: Admin, client: Record<string, any>, platform: string): Promise<Date | null> {
+// slot=null if CRHQ has no active schedule rows for this platform (a
+// misconfiguration — see 55_crhq_content_config.sql), none free within the
+// safety bound, or the only free day falls beyond the 48h window — reason
+// distinguishes which, for the caller's errors-vs-notes classification.
+async function nextAvailableSlot(admin: Admin, client: Record<string, any>, platform: string): Promise<SlotResult> {
   const schedule = await platformSchedule(admin, client, platform)
-  if (!schedule) return null
+  if (!schedule) return { slot: null, reason: 'no_schedule' }
 
   const cutoff = Date.now() + MAX_LOOKAHEAD_MS
   let day = addDays(new Date(), 1)
@@ -195,13 +210,14 @@ async function nextAvailableSlot(admin: Admin, client: Record<string, any>, plat
       // The walk moves strictly forward in time, so the moment a candidate
       // slot exceeds the 48h window every later candidate would too — no
       // slot available within the window this run, rather than reaching
-      // for a date further out (see MAX_LOOKAHEAD_MS above).
-      if (slot.getTime() > cutoff) return null
-      return slot
+      // for a date further out (see MAX_LOOKAHEAD_MS above). Expected,
+      // recurring behaviour given CRHQ's own posting cadence — not an error.
+      if (slot.getTime() > cutoff) return { slot: null, reason: 'beyond_window' }
+      return { slot }
     }
     day = addDays(day, 1)
   }
-  return null
+  return { slot: null, reason: 'no_slot_in_walk' }
 }
 
 serve(async () => {
@@ -280,11 +296,19 @@ serve(async () => {
 
         // Find the slot before spending an LLM call on a post that has nowhere
         // to go (e.g. a misconfigured/missing schedule).
-        const slot = await nextAvailableSlot(admin, client, platform)
-        if (!slot) {
-          errors.push(`${platform}: no available slot found in the next ${SAFETY_MAX_DAYS_WALKED} days — check mkt_content_schedule`)
+        const slotResult = await nextAvailableSlot(admin, client, platform)
+        if (!slotResult.slot) {
+          if (slotResult.reason === 'beyond_window') {
+            // CRHQ's own cadence (e.g. Facebook's 3-day Sat->Tue gap) — the
+            // only free slot exists, it's just further out than content this
+            // time-sensitive should ever be queued. Expected, not a fault.
+            notes.push(`${platform}: next slot beyond 48h window, skipping until content can stay current`)
+          } else {
+            errors.push(`${platform}: no available slot found in the next ${SAFETY_MAX_DAYS_WALKED} days — check mkt_content_schedule`)
+          }
           continue
         }
+        const slot = slotResult.slot
 
         // Decided before the insert, deliberately — see facebookWantsImage.
         // Instagram always gets an image; Facebook gets one on alternate posts.
