@@ -7,7 +7,7 @@
 //      statistics) — done by Anthropic with a structured tool response.
 // The first failure wins and returns the spec's exact reason string.
 import { callAnthropicStructured, generatePost } from './generate.ts'
-import { BLOG_REFERENCE_KEYWORDS } from './prompts.ts'
+import { BLOG_REFERENCE_KEYWORDS, wordCountRange } from './prompts.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -160,6 +160,25 @@ export function contentRuleViolation(body: string): string | null {
   return null
 }
 
+// ── Layer 1: word count against the platform-appropriate target ─────────────
+// The review step checked markdown/bullet formatting but never actually
+// counted words against the range every post is instructed to hit (see
+// prompts.ts's lengthInstruction/wordCountRange) — at least 15 posts across
+// multiple brands went out over 250 words with nothing catching it. Applies
+// to every brand and platform via the same wordCountRange() the generation
+// prompt itself uses, so the two can never drift apart. Simple whitespace
+// split — good enough for a target this wide (a 150-250 word range doesn't
+// need exact editorial word-counting rules, just to catch posts that are
+// dramatically outside it).
+function wordCountViolation(body: string, platform: string): string | null {
+  const count = body.trim().split(/\s+/).filter(Boolean).length
+  const { min, max } = wordCountRange(platform)
+  if (count < min || count > max) {
+    return `word count ${count} outside the ${min}-${max} word target for ${platform}`
+  }
+  return null
+}
+
 // ── Layer 1: required disclaimers (brand-specific) ───────────────────────────
 function disclaimerViolation(client: Record<string, any>, body: string): string | null {
   const name = String(client.name || '').toLowerCase()
@@ -212,11 +231,15 @@ export interface ReviewResult {
 }
 
 // Full review of one social post for one client. `admin` is used to load the
-// brand's recent published topics for the repeat-topic check.
-export async function reviewPost(admin: Admin, client: Record<string, any>, body: string): Promise<ReviewResult> {
+// brand's recent published topics for the repeat-topic check. `platform`
+// determines which word count target applies (see wordCountViolation).
+export async function reviewPost(admin: Admin, client: Record<string, any>, body: string, platform: string): Promise<ReviewResult> {
   // Layer 1 — deterministic, first.
   const ruleBroken = contentRuleViolation(body)
   if (ruleBroken) return { pass: false, reason: `content rule violation: ${ruleBroken}` }
+
+  const wordCount = wordCountViolation(body, platform)
+  if (wordCount) return { pass: false, reason: wordCount }
 
   const missingDisclaimer = disclaimerViolation(client, body)
   if (missingDisclaimer) return { pass: false, reason: `missing disclaimer: ${missingDisclaimer}` }
@@ -341,7 +364,7 @@ export async function generateReviewedPost(
     }
     if (!body) { lastReason = 'empty AI response'; continue }
     lastBody = body
-    const { pass, reason } = await reviewPost(admin, client, body)
+    const { pass, reason } = await reviewPost(admin, client, body, platform)
     if (pass) return { ok: true, body, reviewedAt: new Date().toISOString(), reason: null, attempts: attempt }
     lastReason = reason || 'failed review'
   }

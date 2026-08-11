@@ -189,14 +189,21 @@ function isCrhq(client: Record<string, any>): boolean {
   return slug === 'crhq' || name.includes('combat ready')
 }
 
+// Platform-aware target word count — single source of truth for both the
+// generation instruction below and review.ts's word count check, so the two
+// can never silently drift apart.
+export function wordCountRange(platform: string): { min: number; max: number } {
+  if (String(platform).toLowerCase() === 'instagram') return { min: 20, max: 40 }
+  return { min: 150, max: 250 }
+}
+
 // Platform-aware length instruction. Instagram is a genuinely different
 // format and cannot share the long-form word count that every post
 // previously received regardless of platform.
 function lengthInstruction(platform: string): string {
-  if (String(platform).toLowerCase() === 'instagram') {
-    return '20-40 words maximum. Return only the post copy — no preamble, no label.'
-  }
-  return '150-250 words. Return only the post copy — no preamble, no label.'
+  const { min, max } = wordCountRange(platform)
+  const suffix = String(platform).toLowerCase() === 'instagram' ? ' maximum' : ''
+  return `${min}-${max} words${suffix}. Return only the post copy — no preamble, no label.`
 }
 
 // Builds the full system prompt for a client. Order matters: the
