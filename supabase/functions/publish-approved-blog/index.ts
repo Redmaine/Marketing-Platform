@@ -327,14 +327,15 @@ function schemaScriptTag(data: Record<string, unknown>): string {
 const VERIFY_ATTEMPTS = 8
 const VERIFY_DELAY_MS = 7000
 
-async function pollForTitle(url: string, expectedTitle: string): Promise<{ verified: boolean; lastStatus?: number; lastError?: string }> {
-  // escAttr, not esc — the template renderer substitutes {{TITLE}} with
-  // escAttr(blog.title) everywhere it appears (text nodes and attributes
-  // alike, since renderTemplate does one blind replaceAll per token), so a
-  // title containing an apostrophe or quote renders as &#39;/&quot; even
-  // inside a plain text node like <h1>. Matching with plain esc() would
-  // silently fail to match on any such title and always report unverified.
-  const needle = escAttr(expectedTitle)
+// Shared poller: fetch `url` up to VERIFY_ATTEMPTS times, succeeding once
+// the body is 200 and contains `needle`. `describeMismatch` builds the
+// human-readable reason for a 200-but-wrong-content result (the two
+// call sites — post page vs listing page — mean different things by that).
+async function pollForNeedle(
+  url: string,
+  needle: string,
+  describeMismatch: (status: number) => string,
+): Promise<{ verified: boolean; lastStatus?: number; lastError?: string }> {
   let lastStatus: number | undefined
   let lastError: string | undefined
   for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++) {
@@ -345,7 +346,7 @@ async function pollForTitle(url: string, expectedTitle: string): Promise<{ verif
       if (res.ok) {
         const body = await res.text()
         if (body.includes(needle)) return { verified: true, lastStatus }
-        lastError = `HTTP ${res.status} but the page did not contain the post title — likely a catch-all/redirect serving a different page instead of the real post`
+        lastError = describeMismatch(res.status)
       } else {
         lastError = `HTTP ${res.status}`
       }
@@ -354,6 +355,38 @@ async function pollForTitle(url: string, expectedTitle: string): Promise<{ verif
     }
   }
   return { verified: false, lastStatus, lastError }
+}
+
+async function pollForTitle(url: string, expectedTitle: string): Promise<{ verified: boolean; lastStatus?: number; lastError?: string }> {
+  // escAttr, not esc — the template renderer substitutes {{TITLE}} with
+  // escAttr(blog.title) everywhere it appears (text nodes and attributes
+  // alike, since renderTemplate does one blind replaceAll per token), so a
+  // title containing an apostrophe or quote renders as &#39;/&quot; even
+  // inside a plain text node like <h1>. Matching with plain esc() would
+  // silently fail to match on any such title and always report unverified.
+  return pollForNeedle(
+    url,
+    escAttr(expectedTitle),
+    (status) => `HTTP ${status} but the page did not contain the post title — likely a catch-all/redirect serving a different page instead of the real post`,
+  )
+}
+
+// The post page and its listing card are two separate commits (see the
+// "Listing card — best-effort" comment below) — a post can go fully live
+// while its card insertion silently never ran or never deployed. Checked
+// live 12 Aug 2026: this hadn't actually happened for any of the 7 posts
+// already fixed (all 7 cards were present and correct once the underlying
+// deploy-trigger bug was fixed — the listing commit itself was never the
+// problem), but the two are still independently verified here rather than
+// assumed, since nothing stops it happening on some future post. Matches
+// insertCard's own idempotency check (`/blog/${slug}"`), so "does this
+// listing reference this slug" is judged the same way in both places.
+async function pollForListingEntry(listingUrl: string, slug: string): Promise<{ verified: boolean; lastStatus?: number; lastError?: string }> {
+  return pollForNeedle(
+    listingUrl,
+    `/blog/${slug}"`,
+    (status) => `HTTP ${status} but the listing page had no card linking to /blog/${slug}`,
+  )
 }
 
 // Best-effort only — see the comment above for why a plain reachability
@@ -540,10 +573,28 @@ serve(async (req) => {
       if (ghBrand.format === 'html') {
         // Real, gating check — see the pollForTitle comment for why this is
         // achievable (and required) for the static-HTML sites specifically.
-        const result = await pollForTitle(liveUrl, blog.title)
-        verified = result.verified
+        // Two independent things are verified, not one: the post page itself
+        // AND its listing card. They're committed separately (the listing
+        // update above is explicitly best-effort and must not fail the
+        // publish), so a post can go fully live while its card silently
+        // never lands — checking only the post page would miss that.
+        const postResult = await pollForTitle(liveUrl, blog.title)
+        verified = postResult.verified
         if (!verified) {
-          verifyNote = `Committed to GitHub, but the post wasn't confirmed live at ${liveUrl} after ${VERIFY_ATTEMPTS} checks (${Math.round(VERIFY_ATTEMPTS * VERIFY_DELAY_MS / 1000)}s): ${result.lastError || `last status ${result.lastStatus}`}. This usually means the site's Netlify deploy didn't trigger on this push.`
+          verifyNote = `Committed to GitHub, but the post wasn't confirmed live at ${liveUrl} after ${VERIFY_ATTEMPTS} checks (${Math.round(VERIFY_ATTEMPTS * VERIFY_DELAY_MS / 1000)}s): ${postResult.lastError || `last status ${postResult.lastStatus}`}. This usually means the site's Netlify deploy didn't trigger on this push.`
+        }
+
+        if (ghBrand.listingPath) {
+          const listingUrl = `${ghBrand.siteUrl}/${ghBrand.listingPath.replace(/index\.html$/, '')}`
+          const listingResult = await pollForListingEntry(listingUrl, slug)
+          if (!listingResult.verified) {
+            verified = false
+            const listingNote = `The post page ${postResult.verified ? 'is live, but' : 'itself also wasn\'t confirmed, and'} its listing card wasn't confirmed at ${listingUrl} after ${VERIFY_ATTEMPTS} checks: ${listingResult.lastError || `last status ${listingResult.lastStatus}`}.`
+            verifyNote = verifyNote ? `${verifyNote} Additionally: ${listingNote}` : `Committed to GitHub. ${listingNote}`
+          }
+        }
+
+        if (!verified) {
           console.error(`[publish-approved-blog] ${verifyNote}`)
           try {
             await admin.from('edge_function_errors').insert({ function_name: 'publish-approved-blog', error_message: verifyNote })
