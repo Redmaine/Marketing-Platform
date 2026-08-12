@@ -70,6 +70,12 @@ export function Blog() {
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(blobUrl)
       setNotice(`Marked published — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing yet, so the HTML downloaded for you to upload manually.`)
+    } else if (pubData.verified === false) {
+      // Committed to GitHub successfully, but the live-URL check (added
+      // 12 Aug 2026 — see publish-approved-blog's pollForTitle) couldn't
+      // confirm the post actually rendered. Left as 'publish_unverified',
+      // not 'published' — this is a genuine distinct outcome, not a failure.
+      setNotice(pubData.warning || `Committed, but couldn't confirm ${pubData.liveUrl} is live yet.`)
     } else {
       setNotice(`Published — live at ${pubData.liveUrl}`)
     }
@@ -164,10 +170,10 @@ export function Blog() {
                   </div>
                 </div>
                 <span className="pill" style={{
-                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'published' ? '#D1FAE5' : blog.status === 'publish_failed' ? '#FEE2E2' : blog.status === 'rejected' ? '#FEE2E2' : 'var(--chalk)',
-                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'published' ? '#065F46' : blog.status === 'publish_failed' ? '#991B1B' : blog.status === 'rejected' ? '#991B1B' : 'var(--steel)',
+                  background: blog.status === 'draft' ? '#FEF3C7' : blog.status === 'published' ? '#D1FAE5' : blog.status === 'publish_failed' ? '#FEE2E2' : blog.status === 'publish_unverified' ? '#FEF3C7' : blog.status === 'rejected' ? '#FEE2E2' : 'var(--chalk)',
+                  color: blog.status === 'draft' ? '#92400E' : blog.status === 'published' ? '#065F46' : blog.status === 'publish_failed' ? '#991B1B' : blog.status === 'publish_unverified' ? '#92400E' : blog.status === 'rejected' ? '#991B1B' : 'var(--steel)',
                   flexShrink: 0,
-                }}>{blog.status === 'publish_failed' ? 'publish failed' : blog.status}</span>
+                }}>{blog.status === 'publish_failed' ? 'publish failed' : blog.status === 'publish_unverified' ? 'not confirmed live' : blog.status}</span>
               </div>
               <h3 style={{ fontSize: 17, marginBottom: 6 }}>{blog.title}</h3>
               <p style={{ fontSize: 12, color: 'var(--mist)', marginBottom: 10 }}>{blog.meta_description}</p>
@@ -192,14 +198,20 @@ export function Blog() {
                   {' — '}{blog.rejection_reason || 'No reason given.'}
                 </p>
               ) : (
-                // 'publish_failed' or a rare stuck 'approved' — already
-                // approved (socials generated), so retry only the publish half.
+                // 'publish_failed', 'publish_unverified', or a rare stuck
+                // 'approved' — already approved (socials generated), so
+                // retry only the publish half.
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <button className="btn btn-primary btn-sm" disabled={busyDraftId === blog.id} onClick={() => retryPublish(blog)}>
-                    {busyDraftId === blog.id ? 'Publishing…' : 'Retry publish'}
+                    {busyDraftId === blog.id ? 'Publishing…' : blog.status === 'publish_unverified' ? 'Recheck / retry' : 'Retry publish'}
                   </button>
                   {blog.status === 'publish_failed' && (
                     <span style={{ fontSize: 12, color: '#991B1B' }}>Last publish failed — check the error log.</span>
+                  )}
+                  {blog.status === 'publish_unverified' && (
+                    <span style={{ fontSize: 12, color: '#92400E' }}>
+                      Committed to GitHub, but not yet confirmed live{blog.live_url ? ` at ${blog.live_url}` : ''} — check the site's Netlify deploy, then retry.
+                    </span>
                   )}
                 </div>
               )}

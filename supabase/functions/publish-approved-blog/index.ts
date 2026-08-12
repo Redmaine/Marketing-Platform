@@ -291,6 +291,85 @@ function schemaScriptTag(data: Record<string, unknown>): string {
   return `<script type="application/ld+json">${JSON.stringify(data)}</script>`
 }
 
+// ── Post-publish verification ───────────────────────────────────────────
+// Previously this function asserted status='published' the instant a GitHub
+// commit succeeded — a commit landing in git is not the same thing as the
+// site actually serving the post. Investigated live 12 Aug 2026: yca, ps and
+// quill (the three format:'html' static sites) are connected to Netlify via
+// a deploy-key-only git integration with no GitHub webhook configured (the
+// three format:'markdown' sites use a real Netlify GitHub App installation
+// instead, which doesn't have this gap) — so pushes to those three repos
+// never triggered a deploy at all. Quill and PS both had posts sitting in
+// the database as 'published' for days that were never live.
+//
+// A bare HTTP 200 on the live_url is not sufficient proof either — confirmed
+// live: yourcompanyai.co.uk, problemsolution.co.uk, hormonely.co.uk,
+// neurodecoded.co.uk and onceuponayou.co.uk all return 200 for a
+// *nonexistent* slug (a catch-all/SPA-shell redirect), so "200" alone would
+// have passed the exact PS failure this was built to catch. Real
+// verification requires the response body to actually contain the post's
+// own title.
+//
+// That content check only works for the format:'html' sites, though — the
+// format:'markdown' sites (Hormonely, Neuro Decoded, OUAY) are unprerendered
+// Vite/React SPAs (the same "empty HTML shell" problem scoped earlier this
+// session, Tier-1-fixed for Hormonely via react-snap but not yet working);
+// their raw server-fetched HTML is an near-identical empty shell for every
+// route regardless of whether the post exists, so no fetch-based check can
+// tell a real post apart from a 404 there. Verifying against a signal that's
+// proven to pass for a fake slug would be worse than not verifying at all —
+// false confidence. So: format:'html' gets a real, gating check (publish
+// only proceeds to 'published' once the title is actually confirmed live;
+// otherwise 'publish_unverified'); format:'markdown' and Steady get a
+// best-effort, non-gating reachability poll purely to catch a totally dead
+// site, logged but never blocking status='published', with this limitation
+// documented rather than silently pretended away.
+const VERIFY_ATTEMPTS = 8
+const VERIFY_DELAY_MS = 7000
+
+async function pollForTitle(url: string, expectedTitle: string): Promise<{ verified: boolean; lastStatus?: number; lastError?: string }> {
+  // escAttr, not esc — the template renderer substitutes {{TITLE}} with
+  // escAttr(blog.title) everywhere it appears (text nodes and attributes
+  // alike, since renderTemplate does one blind replaceAll per token), so a
+  // title containing an apostrophe or quote renders as &#39;/&quot; even
+  // inside a plain text node like <h1>. Matching with plain esc() would
+  // silently fail to match on any such title and always report unverified.
+  const needle = escAttr(expectedTitle)
+  let lastStatus: number | undefined
+  let lastError: string | undefined
+  for (let attempt = 0; attempt < VERIFY_ATTEMPTS; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, VERIFY_DELAY_MS))
+    try {
+      const res = await fetch(url, { headers: { 'cache-control': 'no-cache' } })
+      lastStatus = res.status
+      if (res.ok) {
+        const body = await res.text()
+        if (body.includes(needle)) return { verified: true, lastStatus }
+        lastError = `HTTP ${res.status} but the page did not contain the post title — likely a catch-all/redirect serving a different page instead of the real post`
+      } else {
+        lastError = `HTTP ${res.status}`
+      }
+    } catch (e) {
+      lastError = String((e as Error)?.message ?? e)
+    }
+  }
+  return { verified: false, lastStatus, lastError }
+}
+
+// Best-effort only — see the comment above for why a plain reachability
+// check can't prove a specific post is live on an unprerendered SPA. Never
+// throws; a failure here is logged, not surfaced as a publish failure.
+async function pollReachableBestEffort(url: string): Promise<{ reachable: boolean; lastStatus?: number; lastError?: string }> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 4000))
+    try {
+      const res = await fetch(url, { headers: { 'cache-control': 'no-cache' } })
+      if (res.ok) return { reachable: true, lastStatus: res.status }
+    } catch { /* retried below */ }
+  }
+  return { reachable: false }
+}
+
 function buildStandaloneHtml(post: Record<string, any>, schemaScripts: string): string {
   return `<!doctype html>
 <html lang="en">
@@ -455,10 +534,41 @@ serve(async (req) => {
       }
 
       const liveUrl = `${ghBrand.siteUrl}/blog/${slug}`
-      const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
+
+      let verified = true
+      let verifyNote: string | undefined
+      if (ghBrand.format === 'html') {
+        // Real, gating check — see the pollForTitle comment for why this is
+        // achievable (and required) for the static-HTML sites specifically.
+        const result = await pollForTitle(liveUrl, blog.title)
+        verified = result.verified
+        if (!verified) {
+          verifyNote = `Committed to GitHub, but the post wasn't confirmed live at ${liveUrl} after ${VERIFY_ATTEMPTS} checks (${Math.round(VERIFY_ATTEMPTS * VERIFY_DELAY_MS / 1000)}s): ${result.lastError || `last status ${result.lastStatus}`}. This usually means the site's Netlify deploy didn't trigger on this push.`
+          console.error(`[publish-approved-blog] ${verifyNote}`)
+          try {
+            await admin.from('edge_function_errors').insert({ function_name: 'publish-approved-blog', error_message: verifyNote })
+          } catch { /* logging the log failure helps nobody */ }
+        }
+      } else {
+        // format === 'markdown' — best-effort only, see comment above.
+        const result = await pollReachableBestEffort(liveUrl)
+        if (!result.reachable) {
+          const msg = `Post committed to GitHub (${ghBrand.repo}), but ${liveUrl} was unreachable on a best-effort check. Not blocking publish — this brand's site can't be content-verified server-side (unprerendered SPA), so this only catches the site being fully down, not whether this specific post rendered.`
+          console.error(`[publish-approved-blog] ${msg}`)
+          try {
+            await admin.from('edge_function_errors').insert({ function_name: 'publish-approved-blog', error_message: msg })
+          } catch { /* logging the log failure helps nobody */ }
+        }
+      }
+
+      const finalStatus = verified ? 'published' : 'publish_unverified'
+      const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: finalStatus, published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Committed to GitHub, but could not update status: ${updErr.message}` }, 500)
 
-      return json({ ok: true, method: 'github', format: ghBrand.format, liveUrl, listing_updated: listingUpdated, published_at: now })
+      return json({
+        ok: true, method: 'github', format: ghBrand.format, liveUrl, listing_updated: listingUpdated,
+        published_at: now, verified, ...(verifyNote ? { warning: verifyNote } : {}),
+      })
     }
 
     // ── Branch 2: Steady (its own, separate Supabase project) ─────────────────
@@ -501,6 +611,14 @@ serve(async (req) => {
       // liveUrl will 404 ("This article doesn't exist") until that
       // mismatch is fixed on Steady's side — ArticlesIndex.jsx (the list
       // page) may or may not share the same issue; not checked.
+      //
+      // Deliberately NOT running the new post-publish verification poll here
+      // (added 12 Aug 2026, see pollForTitle/pollReachableBestEffort above) —
+      // liveUrl is already known to 404 every time because of the bug
+      // documented directly above, so polling it would only ever restate
+      // that same known issue as noise on every single Steady publish, not
+      // surface anything new. The database write itself (the actual thing
+      // this branch does) is genuinely correct and verified by insErr above.
       const liveUrl = `${STEADY_SITE_URL}/articles/${slug}`
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Published to Steady, but could not update status here: ${updErr.message}` }, 500)
