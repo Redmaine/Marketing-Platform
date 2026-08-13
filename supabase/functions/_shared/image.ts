@@ -14,7 +14,39 @@
 // "Image missing — add manually".
 
 import { callAnthropic } from './generate.ts'
-import { Image } from 'https://deno.land/x/imagescript@1.2.15/mod.ts'
+// Bug fix (13 Aug 2026) — every wasm/*.js loader inside imagescript@1.2.15
+// (gif.js, and it turns out png.js/font.js/jpeg.js/svg.js/tiff.js/zlib.js
+// too) fetches its .wasm binary from deno.land/x at module-top-level via a
+// top-level `await` — meaning it runs the instant this file is imported,
+// before any handler code (including this function's own try/catch) ever
+// runs. That fetch started failing on Supabase's Edge Runtime with
+// "TypeError: brotli error", an uncaught event-loop error that crashes the
+// whole function with a bare 500 before a single log line of its own can be
+// written — confirmed via crhq-nightly-content's real function_logs (missed
+// the 12 Aug 22:00 run silently; reproduced on a manual trigger).
+//
+// Root cause, confirmed directly: deno.land's CDN serves every one of these
+// .wasm assets with a `Content-Encoding: br` header, but the response BODY
+// is already plain, uncompressed WASM (verified — every asset's raw bytes
+// start with the `\0asm` magic number even when fetched with
+// `Accept-Encoding: identity`). Any client that honours the (wrong) header
+// and tries to brotli-decode already-plain bytes fails exactly like this —
+// a CDN-side header/body mismatch, not a Deno version or code issue.
+// (A version bump to 1.4.0 was tried first — it restructures gif.js to a
+// native `import ... from './gif.wasm'`, which ALSO failed, as a 503
+// BOOT_ERROR instead: Supabase pins Deno 1.46, and full native-WASM-import
+// support only landed in Deno 2.1, so that path isn't viable here either.)
+//
+// Fix: vendor imagescript's full source + WASM tree locally instead of
+// depending on deno.land/x's CDN. Not a rewrite — the library's own loaders
+// already special-case this: `new URL(import.meta.url.replace('.js',
+// '.wasm'))` resolves to a `file:` URL when the .js file itself was loaded
+// from the local filesystem (as it now is, one deploy bundle), and every
+// loader already does `'file:' === path.protocol ? Deno.readFile(path) :
+// fetch(...)` — so importing the identical, unmodified source locally
+// makes it take the Deno.readFile branch automatically, with zero code
+// changes to imagescript itself. See _shared/vendor/imagescript/README.md.
+import { Image } from './vendor/imagescript/mod.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
