@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import supabase from '../lib/supabase'
+import { applyAwaitingApprovalFilter } from '../lib/awaitingApproval'
 import { GeneratePostModal } from '../components/GeneratePostModal'
 import { PostsTodayModal } from '../components/PostsTodayModal'
 
@@ -48,8 +49,15 @@ export function Dashboard() {
     const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
     const [c, approval, today, failed, blogs] = await Promise.all([
       supabase.from('mkt_clients').select('*').eq('active', true).order('name'),
-      supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true })
-        .eq('status', 'draft').or('review_status.eq.passed,review_status.is.null'),
+      // Canonical "awaiting approval" — see src/lib/awaitingApproval.js. This
+      // previously filtered to review_status passed/null, which silently
+      // dropped every needs_attention post out of the count: a post that
+      // FAILED review is exactly the kind that needs a human, and it was the
+      // one kind the headline number never mentioned. ContentQueue's own
+      // pending list is built from the same helper so the two can't drift.
+      applyAwaitingApprovalFilter(
+        supabase.from('mkt_content_queue').select('id', { count: 'exact', head: true }),
+      ),
       supabase.from('mkt_content_queue')
         .select('id, client_id, body, status, platform, scheduled_for, metricool_post_id')
         .gte('scheduled_for', todayStart.toISOString())

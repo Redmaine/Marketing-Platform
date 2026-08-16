@@ -41,8 +41,21 @@ serve(async (req) => {
       // Every post awaiting approval across all brands, soonest-scheduled
       // first — not just today's slice. Posts with no scheduled_for sort
       // last (nullsFirst: false) rather than disappearing from the digest.
+      //
+      // CANONICAL DEFINITION: status IN ('draft','pending'), with no
+      // review_status filter and no date filter. This was the most complete
+      // of the three definitions that used to exist, and it is now the one
+      // Dashboard.jsx and ContentQueue.jsx use as well, via the shared helper
+      // in src/lib/awaitingApproval.js — see that file for the full rationale.
+      // A post that failed review, or whose slot has passed, still needs a
+      // human decision and must stay in this count.
+      //
+      // This function is a Deno edge function and cannot import across the
+      // src/ boundary through its own bundler, so the status list below is a
+      // deliberate mirror of AWAITING_APPROVAL_STATUSES rather than an import.
+      // If that constant changes, change this line with it.
       admin.from('mkt_content_queue')
-        .select('id, platform, body, status, scheduled_for, is_manual, client:mkt_clients(short_name,name,brand_primary_color)')
+        .select('id, platform, body, status, review_status, scheduled_for, is_manual, client:mkt_clients(short_name,name,brand_primary_color)')
         .in('status', ['draft', 'pending'])
         .order('scheduled_for', { ascending: true, nullsFirst: false }),
       isMondayUK
@@ -77,10 +90,27 @@ serve(async (req) => {
           ? new Date(p.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
           : 'no date set'
         html += `<div style="border-left:4px solid ${colour};background:#F7F9FA;border-radius:8px;padding:10px 12px;margin-top:10px">`
-        const cadenceLabel = p.is_manual
+        // This badge reflects ORIGIN, not approval state: is_manual means a
+        // human wrote the post, !is_manual means the generation pipeline did.
+        // It was previously labelled "scheduled", which read as "already
+        // approved and queued to Metricool" — the exact opposite of the truth
+        // for a post sitting in a list titled "awaiting approval". Every
+        // unreviewed auto-generated draft in this digest carried it, so the
+        // reader was told the thing needing a decision had already been dealt
+        // with. "auto-generated" is what the flag actually means.
+        const originLabel = p.is_manual
           ? `<span style="background:#EDE9FE;color:#5B21B6;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">manual</span>`
-          : `<span style="background:#F1F5F9;color:#475569;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">scheduled</span>`
-        html += `<div style="font-weight:700;font-size:13px">${nameOf(p)} <span style="color:#8FA3B1;font-weight:400">· ${p.platform} · ${when}</span>${cadenceLabel}</div>`
+          : `<span style="background:#F1F5F9;color:#475569;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">auto-generated</span>`
+        // Review state is a separate axis from origin, and the one that
+        // actually changes what the reader should do. Previously absent
+        // entirely: a post that failed automated review appeared in this list
+        // looking identical to a clean one.
+        const reviewLabel = p.review_status === 'needs_attention'
+          ? `<span style="background:#FEE2E2;color:#991B1B;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">failed review</span>`
+          : p.review_status === 'blog_dependent'
+            ? `<span style="background:#FEF3C7;color:#92400E;border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:6px">waiting on blog</span>`
+            : ''
+        html += `<div style="font-weight:700;font-size:13px">${nameOf(p)} <span style="color:#8FA3B1;font-weight:400">· ${p.platform} · ${when}</span>${originLabel}${reviewLabel}</div>`
         html += `<div style="font-size:13px;color:#2E4057;margin:6px 0 8px">${preview}</div>`
         html += `<a href="${OPS_URL}/content?status=draft" style="background:${colour};color:#fff;text-decoration:none;padding:6px 12px;border-radius:6px;font-size:13px;font-weight:700">Review</a>`
         html += `</div>`

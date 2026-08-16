@@ -1,9 +1,22 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import supabase from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { awaitingBucket, partitionAwaiting } from '../lib/awaitingApproval'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
+
+// Section headings for the approval queue's labelled groups. Every awaiting
+// post lands in exactly one of these and they always sum back to the headline
+// total — the point of the grouping is that a post can be visually separated
+// (because it needs different handling) without being quietly dropped from the
+// count, which is what previously made three screens disagree.
+const AWAITING_SECTION_META = {
+  ready: { label: 'Ready to review', hint: 'Passed automated review and still in date.' },
+  needs_attention: { label: 'Failed automated review', hint: 'Flagged by content review — read before approving or rejecting.' },
+  blog_dependent: { label: 'Waiting on a blog post', hint: 'Blocked until the blog they reference is published.' },
+  stale: { label: 'Past their scheduled slot', hint: 'The scheduled date has already passed — reschedule or reject.' },
+}
 
 // Platform labels/colours for the queue's platform badge — every value ever
 // written to mkt_content_queue.platform must have an entry here (falls back
@@ -128,22 +141,27 @@ export function ContentQueue() {
   }
   useEffect(() => { load() }, [])
 
-  // The approval queue only ever surfaces posts that passed automated review
-  // (or predate the review step, review_status null). needs_attention and
-  // blog_dependent posts still exist in the DB and are counted/logged
-  // elsewhere (mkt_cron_log, edge_function_errors, generate-daily-status) —
-  // they are just never rendered here for a human to act on directly.
+  // Canonical "awaiting approval" — see src/lib/awaitingApproval.js, which
+  // Dashboard's headline count is built from too, so the two can no longer
+  // disagree about what the same words mean.
   //
-  // Fix 2 — a post whose scheduled_for has already passed is stale by the
-  // time anyone would approve it (its slot is gone); it must never sit in
-  // the approval queue waiting for a click that can no longer make sense.
-  // Compared by calendar day (not exact time) so a post scheduled earlier
-  // today still shows — only genuinely past dates are excluded. A post
-  // with no scheduled_for at all still shows (nothing to compare against).
-  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
-  const pending = items.filter((i) => i.status === 'draft' && (i.review_status === 'passed' || !i.review_status)
-    && (!i.scheduled_for || new Date(i.scheduled_for) >= startOfToday))
+  // This list previously applied two silent exclusions on top of the
+  // canonical definition: needs_attention/blog_dependent posts (never
+  // rendered at all), and anything whose scheduled_for had already passed.
+  // Both are still separated out — they genuinely warrant different visual
+  // treatment — but as labelled sections WITHIN the same total rather than
+  // as subtractions from it. A stale or failed post has not been dealt with;
+  // dropping it from the count only made the work invisible.
   const now = new Date()
+  const awaiting = partitionAwaiting(items, now)
+  // The full canonical set, ordered so the actionable ones lead: clean posts
+  // first, then ones that failed review, then blog-blocked, then stale.
+  const pending = [
+    ...awaiting.ready,
+    ...awaiting.needsAttention,
+    ...awaiting.blogDependent,
+    ...awaiting.stale,
+  ]
   // Was scoped to only overdue rows (scheduled_for < now). Scheduling to
   // Metricool happens once, synchronously, at the moment a post is approved
   // — there is no later cron sweep that retries it — so an approved post
@@ -156,22 +174,24 @@ export function ContentQueue() {
   // regardless of date, for every brand.
   const failed = items.filter((i) => i.status === 'approved' && !i.metricool_post_id)
   const rejected = items.filter((i) => i.status === 'rejected')
-  const needsAttention = pending.filter((i) => i.review_status === 'needs_attention')
+  // Sourced from the shared partition rather than re-filtered locally. Note
+  // this bucket was previously always empty — `pending` excluded
+  // needs_attention entirely, so the "Reject all failed" toolbar button that
+  // reads it could never render. Now that the canonical list includes them,
+  // that button works as originally intended.
+  const needsAttention = awaiting.needsAttention
   // Rejected posts must never clutter the main queue — they get their own
   // tab (below), not a spot in the default "Posts" list.
   const visibleItems = items.filter((i) => i.status !== 'rejected')
 
-  // Hidden posts — needs_attention and blog_dependent drafts, sourced from
-  // `items` directly (NOT `pending`, which already excludes both of these —
-  // that's exactly why they had no UI path to action them before this
-  // section existed). Deliberately kept separate from `needsAttention`
-  // above rather than fixing it in place, so the main approval queue's
-  // existing "Reject all failed" toolbar button — which reads
-  // `needsAttention` and has therefore never actually rendered — is left
-  // byte-for-byte unchanged.
-  const hiddenNeedsAttention = items.filter((i) => i.status === 'draft' && i.review_status === 'needs_attention')
-  const hiddenBlogDependent = items.filter((i) => i.status === 'draft' && i.review_status === 'blog_dependent')
-  const hiddenCount = hiddenNeedsAttention.length + hiddenBlogDependent.length
+  // These drive the collapsible "Hidden posts" panel on the FULL queue view
+  // (/content), where the main list is every non-rejected post and this panel
+  // is the only place these two states get their own approve/reject controls.
+  // They are no longer used on the approval queue view — there, the same posts
+  // now appear inline as labelled sections of the canonical total, so keeping
+  // the panel as well would render each of them twice on one screen.
+  const hiddenNeedsAttention = awaiting.needsAttention
+  const hiddenBlogDependent = awaiting.blogDependent
 
   // Find the blog a post depends on: the explicitly linked one (blog_id) if
   // present, otherwise the client's most recent not-yet-published blog (the
@@ -560,8 +580,27 @@ export function ContentQueue() {
             </div>
 
             <div style={{ marginTop: 12 }}>
-              {pending.map((item) => { const blk = blogBlockState(item); return (
-                <div key={item.id} className="card" style={{ marginBottom: 12, display: 'flex', gap: 10 }}>
+              {pending.map((item, idx) => {
+                const blk = blogBlockState(item)
+                // `pending` is pre-sorted by bucket (see partitionAwaiting
+                // above), so a change of bucket between consecutive items is
+                // exactly a section boundary — no separate grouping pass and
+                // no second source of truth about which section an item is in.
+                const bucket = awaitingBucket(item, now)
+                const showHeader = idx === 0 || bucket !== awaitingBucket(pending[idx - 1], now)
+                const meta = AWAITING_SECTION_META[bucket]
+                const bucketCount = pending.filter((p) => awaitingBucket(p, now) === bucket).length
+                return (
+                <Fragment key={item.id}>
+                {showHeader && meta && (
+                  <div style={{ marginTop: idx === 0 ? 0 : 22, marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>
+                      {meta.label} <span style={{ fontWeight: 500, color: 'var(--muted)' }}>({bucketCount})</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{meta.hint}</div>
+                  </div>
+                )}
+                <div className="card" style={{ marginBottom: 12, display: 'flex', gap: 10 }}>
                   <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} style={{ marginTop: 4 }} />
                   {/* minWidth: 0 overrides the flex item's default auto min-width
                       (which otherwise floors at the content's un-wrapped intrinsic
@@ -677,16 +716,19 @@ export function ContentQueue() {
                     )}
                   </div>
                 </div>
+                </Fragment>
               ) })}
             </div>
           </>
         )}
 
-        <HiddenPostsSection
-          expanded={hiddenExpanded} onToggle={() => setHiddenExpanded((e) => !e)}
-          needsAttention={hiddenNeedsAttention} blogDependent={hiddenBlogDependent}
-          relatedBlog={relatedBlog} onApprove={approve} onReject={reject}
-        />
+        {/* The "Hidden posts" panel deliberately isn't rendered here any more:
+            needs_attention and blog_dependent posts are now part of the
+            canonical awaiting-approval list above, each under its own labelled
+            section, so this panel would show every one of them a second time
+            on the same screen. It still renders on the full queue view
+            (/content), where it remains the only place those posts get their
+            own approve/reject controls. */}
 
         <RejectModal item={rejectingItem} reason={rejectReasonInput} setReason={setRejectReasonInput}
           onCancel={() => setRejectingItem(null)} onSubmit={submitReject} />
