@@ -31,9 +31,17 @@ const METRICOOL_USER_ID = '4984082'
 // generated image. Deliberately plain and factual: CRHQ is a defence and
 // current-affairs commentary account, so the disclosure has to read as a
 // straight statement of fact rather than a marketing flourish or an apology.
-// Short enough (20 characters) not to meaningfully eat caption space on
+// "Illustration" rather than "Image" because that is what these actually are
+// — they accompany the commentary, they are not documentary evidence of it,
+// and on a defence account that distinction is worth drawing explicitly.
+// Short enough (27 characters) not to meaningfully eat caption space on
 // either network.
-const AI_IMAGE_DISCLOSURE = 'Image: AI-generated.'
+//
+// Scope: CRHQ captions only, for now. The provenance metadata marker in
+// _shared/image.ts is separate and applies portfolio-wide — every generated
+// image carries it, whatever the brand. Whether the other brands should also
+// carry a visible caption line is open, and deliberately left open.
+const AI_IMAGE_DISCLOSURE = 'Illustration: AI-generated.'
 
 const PLATFORM_MAP: Record<string, string> = {
   facebook:  'facebook',
