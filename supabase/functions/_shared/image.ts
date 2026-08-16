@@ -13,7 +13,7 @@
 // (the column's default), which the approval queue UI reads as
 // "Image missing — add manually".
 
-import { callAnthropic } from './generate.ts'
+import { callAnthropic, callAnthropicVision } from './generate.ts'
 // Bug fix (13 Aug 2026) — every wasm/*.js loader inside imagescript@1.2.15
 // (gif.js, and it turns out png.js/font.js/jpeg.js/svg.js/tiff.js/zlib.js
 // too) fetches its .wasm binary from deno.land/x at module-top-level via a
@@ -100,7 +100,18 @@ const DEFAULT_CONCEPT_SYSTEM = 'You turn a social media post into a short, concr
 // visual_style rule + a Stability negative prompt downstream weren't
 // reliably able to override. This attacks the root cause instead: steer the
 // CONCEPT itself away from portraiture, not just the finishing style.
-const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it in an editorial ink-wash illustration style — never photorealistic. Describe ONE clear setting, composition and mood that captures what the post is about, drawing from a wide range of possible settings (coastal and maritime, government or parliamentary buildings, outdoor and field locations, city streets, courtrooms, transport and infrastructure, or an interior only when it is genuinely the best fit) — do not default to an office, briefing room, or security operations centre unless the story is unambiguously about that exact thing. Critically: never describe a person\'s face, expression, or a close-up or portrait of a person — no "a man reading," no "an official looking concerned," nothing that puts a human face in frame. If a human presence belongs in the scene, describe it only as a distant figure, a silhouette, hands, or a figure seen from behind — never facial detail. Prefer scenes built around objects, architecture, landscape or symbolic detail over scenes built around a person. Never describe any text, quotes, numbers or words that should appear in the image. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+// Updated 16 Aug 2026 alongside the move to photoreal Tri-X documentary
+// styling: this previously specified "editorial ink-wash illustration —
+// never photorealistic", which would now actively fight the visual_style it
+// gets concatenated with. The anti-portraiture and anti-text steering is
+// unchanged and still doing the same job — it is the aesthetic half that
+// flipped, not the safety half.
+//
+// The added "unmarked surfaces" clause is new: with Flux there is no negative
+// prompt to lean on, and rendered hull numbers were the single most common
+// review rejection, so the concept itself now avoids proposing scenes built
+// around markable surfaces in the first place.
+const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph. Describe ONE clear setting, composition and mood that captures what the post is about, drawing from a wide range of possible settings (coastal and maritime, government or parliamentary buildings, outdoor and field locations, city streets, courtrooms, transport and infrastructure, or an interior only when it is genuinely the best fit) — do not default to an office, briefing room, or security operations centre unless the story is unambiguously about that exact thing. Critically: never describe a person\'s face, expression, or a close-up or portrait of a person — no "a man reading," no "an official looking concerned," nothing that puts a human face in frame. If a human presence belongs in the scene, describe it only as a distant figure, a silhouette, or a figure seen from behind — never facial detail. Strongly prefer scenes built around objects, architecture, landscape or symbolic detail over scenes built around a person. Describe surfaces as blank and unmarked — never mention hull numbers, registrations, signage, badges, insignia or any lettering, and avoid making a marked surface the subject of the shot. Never describe any text, quotes, numbers or words that should appear in the image. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
 async function summariseToVisualConcept(postBody: string, systemPrompt: string = DEFAULT_CONCEPT_SYSTEM): Promise<string> {
   const body = String(postBody || '').replace(/\s+/g, ' ').trim()
@@ -377,6 +388,241 @@ async function disableImageGenForPlatform(admin: Admin, client: Record<string, a
   }
 }
 
+// ── Flux (Replicate) — CRHQ's provider ───────────────────────────────────────
+// CRHQ moved off Stability to Flux 1.1 Pro (16 Aug 2026) after client feedback
+// that the ink-wash illustration output read as obviously AI-generated. Every
+// other client is untouched and still goes through Stability below.
+//
+// The catch this introduces, and the reason the review backstop further down
+// exists: flux-1.1-pro has NO negative-prompt parameter. Stability's
+// CRHQ_NEGATIVE_PROMPT (weight -1) was the mechanism actually holding the
+// no-faces rule, and it has no Flux equivalent — exclusions can only be
+// written as prose in the positive prompt, which the code comment above
+// CRHQ_NEGATIVE_PROMPT already records as having failed once. Prose rules are
+// still sent (belt), but the backstop is what enforces them (braces).
+const FLUX_MODEL_URL = 'https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions'
+const FLUX_POLL_TIMEOUT_MS = 180_000
+
+function usesFluxProvider(client: Record<string, any>): boolean {
+  return client?.slug === 'crhq'
+}
+
+async function callFlux(prompt: string, token: string): Promise<Uint8Array> {
+  const submit = await fetch(FLUX_MODEL_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: { prompt, aspect_ratio: '1:1', output_format: 'png', safety_tolerance: 2, prompt_upsampling: false },
+    }),
+  })
+  if (!submit.ok) throw new Error(`Replicate submit ${submit.status}: ${(await submit.text()).slice(0, 300)}`)
+  const prediction = await submit.json()
+  const id = prediction?.id
+  if (!id) throw new Error('Replicate returned no prediction id')
+
+  const deadline = Date.now() + FLUX_POLL_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000))
+    const res = await fetch(`https://api.replicate.com/v1/predictions/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) throw new Error(`Replicate poll ${res.status}`)
+    const p = await res.json()
+    if (p.status === 'succeeded') {
+      const out = p.output
+      const url = Array.isArray(out) ? out[0] : out
+      if (!url) throw new Error('Replicate succeeded but returned no image URL')
+      const img = await fetch(url)
+      if (!img.ok) throw new Error(`Replicate image fetch ${img.status}`)
+      return new Uint8Array(await img.arrayBuffer())
+    }
+    if (p.status === 'failed' || p.status === 'canceled') {
+      throw new Error(`Replicate ${p.status}: ${String(p.error ?? 'unknown').slice(0, 200)}`)
+    }
+  }
+  throw new Error(`Replicate prediction timed out after ${FLUX_POLL_TIMEOUT_MS / 1000}s`)
+}
+
+// ── Generated-image safety backstop ──────────────────────────────────────────
+// One mechanism covering BOTH faces and legible text/markings, because both
+// failed the same way: prose suppression in the prompt is advisory, and an
+// image that breaches either rule must not be publishable regardless of what
+// the prompt asked for.
+//
+// Split deliberately into measure -> judge. The vision model only MEASURES
+// (how confident, how large, which features resolve, how legible); every
+// accept/reject decision is the pure threshold function below. That keeps
+// verdicts deterministic for a given measurement, auditable after the fact,
+// and tunable without touching the model prompt.
+//
+// Thresholds approved 16 Aug 2026, calibrated against five real test images —
+// see IMAGE_REVIEW_THRESHOLDS for the reasoning behind each number.
+export const IMAGE_REVIEW_THRESHOLDS = {
+  face: {
+    // Below this, treat the detection as noise rather than a face.
+    minConfidence: 0.50,
+    // >=0.8% of frame area counts as prominent. Set deliberately BELOW the
+    // 1.20% measured on the calibration image so prominence is not what
+    // carries that image through — the landmark axis does that work — while
+    // still catching a crisp face too small to clear a higher bar.
+    prominenceAreaFraction: 0.008,
+    // Of eyes/nose/mouth, how many must be individually resolvable. 0 = dark
+    // mass, 1 = mostly obscured (the approved boundary case), 2-3 = genuinely
+    // identifiable.
+    minResolvableLandmarks: 2,
+    // Eyes are disproportionately identifying — a face whose eyes resolve is
+    // identifiable even with nose and mouth lost to shadow. Verified to change
+    // no verdict on the calibration set, so it is free protection.
+    eyesAloneCount: true,
+  },
+  text: {
+    // Between garbled background lettering (measured 0.30-0.35, allowed) and a
+    // rendered hull number (measured 0.55, rejected). Going lower would also
+    // reject realistic map labels on otherwise-clean still lifes — an accepted
+    // trade-off, signed off 16 Aug 2026.
+    minLegibility: 0.40,
+  },
+}
+
+const IMAGE_REVIEW_SYSTEM = `You are a measurement instrument for an image review pipeline. You do not make decisions and you never say whether an image passes or fails — you report only what is observably present, as precisely as you can.
+
+Return ONLY a JSON object, no preamble, no code fence:
+
+{
+  "faces": [
+    {
+      "confidence": 0.0-1.0,
+      "area_fraction": 0.0-1.0,
+      "resolvable_landmarks": ["eyes","nose","mouth"],
+      "lighting": "well_lit" | "dim" | "silhouette",
+      "orientation": "frontal" | "three_quarter" | "profile" | "away_from_camera",
+      "note": "one short phrase"
+    }
+  ],
+  "text_findings": [
+    { "content": "verbatim", "legibility": 0.0-1.0, "kind": "hull_number" | "unit_marking" | "registration" | "signage" | "label" | "watermark" | "other", "note": "where" }
+  ]
+}
+
+area_fraction is the face bounding box area as a fraction of the FULL image area — a face filling a quarter of the frame is ~0.06. Be numerically careful; it drives a threshold.
+resolvable_landmarks includes ONLY features whose shape you can individually make out. A dark or blurred mass you infer is a face but cannot resolve = empty array.
+Report EVERY face including small, distant, dark or partly hidden ones, and EVERY instance of letters, digits or identifying markings including partial, stylised or garbled ones — garbled lettering still counts as text. Empty arrays are correct when there is genuinely nothing.
+
+text_findings means GLYPHS ONLY: letters, digits, words, or identifying markings made of them. Do NOT report non-glyph graphics as text — map grid lines, contour lines, coastlines, hatching, scale bars, compass rose points, tally marks, dials without numerals, textures and patterns are all NOT text, however map-like or chart-like they appear. Report a clock or compass dial only if actual numerals are rendered on it.`
+
+interface ImageMeasurement {
+  faces?: Array<Record<string, unknown>>
+  text_findings?: Array<Record<string, unknown>>
+}
+
+// Pure threshold application. Same measurement always yields the same verdict.
+export function judgeImageMeasurement(
+  measurement: ImageMeasurement,
+  thresholds = IMAGE_REVIEW_THRESHOLDS,
+): { verdict: 'pass' | 'reject'; reasons: string[] } {
+  const reasons: string[] = []
+
+  for (const f of measurement.faces ?? []) {
+    const conf = Number(f.confidence ?? 0)
+    if (conf < thresholds.face.minConfidence) continue
+    const area = Number(f.area_fraction ?? 0)
+    const names = (Array.isArray(f.resolvable_landmarks) ? f.resolvable_landmarks : []).map((s) => String(s).toLowerCase())
+
+    const prominent = area >= thresholds.face.prominenceAreaFraction
+    const resolvable = names.length >= thresholds.face.minResolvableLandmarks
+      || (thresholds.face.eyesAloneCount && names.includes('eyes'))
+
+    // AND, deliberately — a large dark mass with no resolvable features is
+    // acceptable, and so is a crisp face too small to identify. Rejecting on
+    // detection alone is the blunt behaviour this replaces.
+    if (prominent && resolvable) {
+      reasons.push(
+        `FACE: area ${(area * 100).toFixed(1)}% of frame (>=${(thresholds.face.prominenceAreaFraction * 100).toFixed(1)}%) ` +
+        `AND ${names.length} resolvable landmark(s) [${names.join('/')}] — conf ${conf.toFixed(2)}, ${f.lighting}, ${f.orientation}`,
+      )
+    }
+  }
+
+  for (const t of measurement.text_findings ?? []) {
+    const legibility = Number(t.legibility ?? 0)
+    if (legibility >= thresholds.text.minLegibility) {
+      reasons.push(`TEXT: "${String(t.content ?? '').slice(0, 60)}" (${t.kind}) legibility ${legibility.toFixed(2)} (>=${thresholds.text.minLegibility})`)
+    }
+  }
+
+  return { verdict: reasons.length ? 'reject' : 'pass', reasons }
+}
+
+// Measure + judge in one call. Exported so the backstop can be exercised
+// against real generated bytes without going through a whole post-generation
+// run — the verification harness uses exactly this, so what gets tested is
+// the shipped code path rather than a parallel copy of it.
+export async function reviewGeneratedImage(
+  bytes: Uint8Array,
+): Promise<{ verdict: 'pass' | 'reject'; reasons: string[]; measurement: ImageMeasurement }> {
+  const measurement = await measureImage(bytes)
+  return { ...judgeImageMeasurement(measurement), measurement }
+}
+
+// Exported for the same reason — the harness generates with identical
+// parameters to production rather than approximating them.
+export async function generateWithFlux(prompt: string, token: string): Promise<Uint8Array> {
+  return await callFlux(prompt, token)
+}
+
+async function measureImage(bytes: Uint8Array): Promise<ImageMeasurement> {
+  // Chunked base64 — a spread/apply over a ~1.5MB image blows the call stack.
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  const b64 = btoa(binary)
+
+  const raw = await callAnthropicVision(IMAGE_REVIEW_SYSTEM, b64, 'Measure this image.', 1500)
+  const match = raw.match(/\{[\s\S]*\}/)
+  if (!match) throw new Error(`image review returned no JSON: ${raw.slice(0, 200)}`)
+  return JSON.parse(match[0]) as ImageMeasurement
+}
+
+// Durable record of every review attempt — see migration 101. Best-effort:
+// losing a log row must never cost an otherwise-good image.
+async function logImageReview(
+  admin: Admin,
+  client: Record<string, any>,
+  contentQueueId: string,
+  platform: string,
+  attempt: number,
+  verdict: 'pass' | 'reject' | 'error' | 'exhausted',
+  reasons: string[],
+  measurement: ImageMeasurement | null,
+): Promise<void> {
+  try {
+    const { error } = await admin.from('image_review_events').insert({
+      content_queue_id: contentQueueId,
+      client_id: client?.id ?? null,
+      client_name: client?.name ?? null,
+      platform,
+      attempt,
+      verdict,
+      reasons,
+      measurement,
+    })
+    if (error) console.error(`[image] image_review_events insert failed: ${error.message}`)
+  } catch (e) {
+    console.error(`[image] image_review_events insert threw: ${String((e as Error)?.message ?? e)}`)
+  }
+}
+
+// Escalating pressure on the rule that actually failed. Regenerating with an
+// identical prompt is just another roll of the same dice.
+const REVIEW_ESCALATION = {
+  text: 'CRITICAL: the previous attempt rendered legible lettering. Every painted, printed or stencilled surface must be completely blank — plain unmarked metal, plain unmarked paper, plain unmarked fabric. Remove or turn away any hull, plate, sign or chart that could carry markings.',
+  face: 'CRITICAL: the previous attempt rendered an identifiable face. Remove people from the frame entirely — this is an environmental or still-life photograph with no human figures at all.',
+}
+
+const IMAGE_REVIEW_MAX_ATTEMPTS = 3
+
 interface StabilityArtifact { base64: string; finishReason: string }
 
 async function callStabilityAI(prompt: string, apiKey: string, negativePrompt?: string): Promise<Uint8Array> {
@@ -454,9 +700,11 @@ export async function generatePostImage(
     return
   }
 
-  const apiKey = Deno.env.get('STABILITY_AI_API_KEY')
+  // Provider split: CRHQ on Flux (Replicate), everyone else on Stability.
+  const useFlux = usesFluxProvider(client)
+  const apiKey = useFlux ? Deno.env.get('REPLICATE_API_TOKEN') : Deno.env.get('STABILITY_AI_API_KEY')
   if (!apiKey) {
-    console.error(`[image] ${client.name}: STABILITY_AI_API_KEY not set — skipping image for ${contentQueueId}`)
+    console.error(`[image] ${client.name}: ${useFlux ? 'REPLICATE_API_TOKEN' : 'STABILITY_AI_API_KEY'} not set — skipping image for ${contentQueueId}`)
     return
   }
 
@@ -473,8 +721,68 @@ export async function generatePostImage(
   }
 
   try {
-    const negativePrompt = wantsHeadlineOverlay(client) ? CRHQ_NEGATIVE_PROMPT : undefined
-    const rawBytes = await callStabilityAI(prompt, apiKey, negativePrompt)
+    let rawBytes: Uint8Array
+    if (useFlux) {
+      // Generate -> measure -> judge -> regenerate. The backstop is the gate:
+      // an image is only used if it clears BOTH the face and text thresholds,
+      // regardless of what the prose rules in the prompt asked for.
+      //
+      // Every attempt is logged to image_review_events, passes included — a
+      // rejection count with no denominator cannot tell "nothing is being
+      // caught" apart from "the reviewer is erroring out and defaulting open".
+      const escalations: string[] = []
+      let accepted: Uint8Array | null = null
+      let lastBytes: Uint8Array | null = null
+
+      for (let attempt = 1; attempt <= IMAGE_REVIEW_MAX_ATTEMPTS; attempt++) {
+        const attemptPrompt = escalations.length ? `${prompt}\n\n${escalations.join('\n')}` : prompt
+        const candidate = await callFlux(attemptPrompt, apiKey)
+        lastBytes = candidate
+
+        let measurement: ImageMeasurement
+        try {
+          measurement = await measureImage(candidate)
+        } catch (e) {
+          // A reviewer failure must not silently publish an unreviewed image,
+          // but it must also not cost the post its image entirely. Logged as
+          // 'error' so these are visible and countable rather than invisible.
+          const msg = String((e as Error)?.message ?? e)
+          console.error(`[image] ${client.name}: review measurement failed on attempt ${attempt} — ${msg}`)
+          await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [msg], null)
+          continue
+        }
+
+        const { verdict, reasons } = judgeImageMeasurement(measurement)
+        await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement)
+
+        if (verdict === 'pass') {
+          accepted = candidate
+          if (attempt > 1) console.log(`[image] ${client.name}: image accepted on attempt ${attempt} for ${contentQueueId}`)
+          break
+        }
+
+        console.error(`[image] ${client.name}: attempt ${attempt} rejected for ${contentQueueId} — ${reasons.join('; ')}`)
+        escalations.length = 0
+        if (reasons.some((r) => r.startsWith('TEXT'))) escalations.push(REVIEW_ESCALATION.text)
+        if (reasons.some((r) => r.startsWith('FACE'))) escalations.push(REVIEW_ESCALATION.face)
+      }
+
+      if (!accepted) {
+        // Every attempt breached a threshold. Publishing the last one anyway
+        // would defeat the point of the backstop, so this post goes out
+        // text-only — the same outcome as any other image failure in this
+        // file, and strictly better than shipping a face or a hull number.
+        await logImageReview(admin, client, contentQueueId, platform, IMAGE_REVIEW_MAX_ATTEMPTS, 'exhausted',
+          [`no attempt passed review after ${IMAGE_REVIEW_MAX_ATTEMPTS} tries — no image attached`], null)
+        console.error(`[image] ${client.name}: all ${IMAGE_REVIEW_MAX_ATTEMPTS} attempts failed review for ${contentQueueId} — posting without an image`)
+        return
+      }
+      rawBytes = accepted
+      void lastBytes
+    } else {
+      const negativePrompt = wantsHeadlineOverlay(client) ? CRHQ_NEGATIVE_PROMPT : undefined
+      rawBytes = await callStabilityAI(prompt, apiKey, negativePrompt)
+    }
     let bytes = await resizeForPlatform(rawBytes, platform)
 
     // CRHQ-only (see wantsHeadlineOverlay): force a deliberate B&W treatment

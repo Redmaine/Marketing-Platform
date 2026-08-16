@@ -96,6 +96,32 @@ export async function callAnthropic(system: string, userMessage: string, maxToke
   return ai?.content?.[0]?.text?.trim() ?? ''
 }
 
+// Same as callAnthropic but with an image attached, for the generated-image
+// safety backstop in image.ts. Kept here so every Anthropic call in this
+// project still goes through the one anthropicRequest wrapper (retries, key
+// handling, error shape) rather than a second bespoke fetch.
+export async function callAnthropicVision(
+  system: string,
+  imageBase64: string,
+  userMessage: string,
+  maxTokens = 1500,
+  mediaType = 'image/png',
+): Promise<string> {
+  const ai = await anthropicRequest({
+    model: MODEL,
+    max_tokens: maxTokens,
+    system,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: mediaType, data: imageBase64 } },
+        { type: 'text', text: userMessage },
+      ],
+    }],
+  })
+  return ai?.content?.[0]?.text?.trim() ?? ''
+}
+
 // Calls Anthropic with a forced tool-use call so the response is structured
 // JSON validated against `schema`, rather than free text we'd have to parse.
 export async function callAnthropicStructured(
