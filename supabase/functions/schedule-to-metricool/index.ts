@@ -27,6 +27,14 @@ const DOW = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Frida
 
 const METRICOOL_USER_ID = '4984082'
 
+// The standing AI-image disclosure line appended to CRHQ posts that carry a
+// generated image. Deliberately plain and factual: CRHQ is a defence and
+// current-affairs commentary account, so the disclosure has to read as a
+// straight statement of fact rather than a marketing flourish or an apology.
+// Short enough (20 characters) not to meaningfully eat caption space on
+// either network.
+const AI_IMAGE_DISCLOSURE = 'Image: AI-generated.'
+
 const PLATFORM_MAP: Record<string, string> = {
   facebook:  'facebook',
   instagram: 'instagram',
@@ -174,7 +182,33 @@ serve(async (req) => {
     // actually reach Facebook. Scoped by slug so the text-only rule still
     // stands for every other brand.
     const facebookTextOnly = item.platform === 'facebook' && client?.slug !== 'crhq' && client?.slug !== 'quill'
-    if (item.image_url && !facebookTextOnly) requestBody.media = [item.image_url]
+    const attachingImage = !!item.image_url && !facebookTextOnly
+    if (attachingImage) requestBody.media = [item.image_url]
+
+    // ── AI disclosure ────────────────────────────────────────────────────────
+    // Meta requires organic posts carrying photorealistic AI-generated imagery
+    // to disclose it. Metricool's own AI toggle cannot do this for us here:
+    // it is a composer-UI feature, it is unavailable for Facebook entirely,
+    // and its scheduler API exposes no disclosure parameter. Self-disclosure
+    // in the caption is the only route that works on both networks with no
+    // manual step, which is what this is.
+    //
+    // Appended HERE, at post time, rather than baked into the body at
+    // generation time. Three reasons: it applies to posts already sitting in
+    // the queue without regenerating them; the stored content stays clean, so
+    // the copy the reviewer approved is the copy they wrote; and the wording
+    // can be changed or withdrawn in one place without touching history.
+    //
+    // Gated on an image ACTUALLY being attached — a CRHQ Facebook post on the
+    // no-image half of its alternation would otherwise announce an AI image
+    // that isn't there, which is its own kind of inaccuracy.
+    //
+    // Idempotent: PATCH re-sends the whole body for an existing post, so
+    // without the includes() guard a rescheduled post would accumulate the
+    // line twice.
+    if (attachingImage && client?.slug === 'crhq' && !String(item.body ?? '').includes(AI_IMAGE_DISCLOSURE)) {
+      requestBody.text = `${item.body}\n\n${AI_IMAGE_DISCLOSURE}`
+    }
 
     // Issue 8: if metricool_post_id already exists, PATCH the existing post
     // rather than creating a duplicate.

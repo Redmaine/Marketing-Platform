@@ -623,6 +623,149 @@ const REVIEW_ESCALATION = {
 
 const IMAGE_REVIEW_MAX_ATTEMPTS = 3
 
+// ── AI provenance marker ─────────────────────────────────────────────────────
+// Meta requires photorealistic AI-generated organic posts to carry an AI
+// disclosure, and its automatic detection keys off industry provenance
+// signals. Flux DOES emit those: every flux-1.1-pro PNG ships a signed C2PA
+// manifest (a caBX chunk) asserting IPTC digitalSourceType
+// trainedAlgorithmicMedia. Our own pipeline was destroying it — verified, not
+// assumed: a probe PNG carrying a real 21,330-byte caBX chunk came back from
+// both resizeForPlatform and the forced-B&W step with only IHDR/IDAT/IEND.
+// ImageScript decodes to raw pixels and re-encodes; ancillary chunks do not
+// survive, and it exposes no API to carry them through.
+//
+// The obvious fix — re-attach the original caBX after processing — is WRONG,
+// and this is the important part. That manifest contains a c2pa.hash.data
+// assertion: a sha256 hard binding over the whole file, excluding only the
+// manifest's own byte range. Recolouring to B&W and compositing a headline
+// changes IDAT, so the stored hash no longer matches. Re-attaching it would
+// produce a manifest that FAILS validation — a validator reads that as
+// "this asset has been tampered with", which is a worse signal than carrying
+// no manifest at all. Emitting a knowingly-broken cryptographic claim is not
+// a disclosure.
+//
+// Signing a fresh C2PA manifest for the derived image (the correct C2PA
+// answer, with the original as a declared ingredient) needs a signing
+// certificate and a C2PA library, neither of which this project has.
+//
+// So we write the same industry signal in the form that is legitimately ours
+// to assert: an XMP packet carrying IPTC DigitalSourceType
+// trainedAlgorithmicMedia. It is not cryptographically bound, so it survives
+// our processing honestly rather than by pretending nothing changed, and it
+// is a true statement about the derived asset — which is still AI-generated,
+// just also edited by us.
+const XMP_KEYWORD = 'XML:com.adobe.xmp'
+const IPTC_TRAINED_ALGORITHMIC_MEDIA = 'http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia'
+
+function xmpPacket(): string {
+  return `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/">
+   <Iptc4xmpExt:DigitalSourceType>${IPTC_TRAINED_ALGORITHMIC_MEDIA}</Iptc4xmpExt:DigitalSourceType>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`
+}
+
+// CRC32 as PNG specifies it, for the chunk we synthesise.
+function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff
+  for (let i = 0; i < bytes.length; i++) {
+    c ^= bytes[i]
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1))
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+
+// Inserts (or replaces) an uncompressed iTXt XMP chunk carrying the IPTC
+// digital-source-type marker, positioned before the first IDAT as the PNG
+// spec requires for metadata that describes the image.
+export function withAiProvenance(png: Uint8Array): Uint8Array {
+  const SIG = 8
+  if (png.length < SIG) return png
+  const dv = new DataView(png.buffer, png.byteOffset, png.byteLength)
+
+  // Build the iTXt payload:
+  //   keyword \0 compressionFlag compressionMethod langTag \0 translatedKeyword \0 text
+  const enc = new TextEncoder()
+  const kw = enc.encode(XMP_KEYWORD)
+  const text = enc.encode(xmpPacket())
+  const payload = new Uint8Array(kw.length + 1 + 1 + 1 + 1 + 1 + text.length)
+  let o = 0
+  payload.set(kw, o); o += kw.length
+  payload[o++] = 0 // keyword terminator
+  payload[o++] = 0 // compression flag: uncompressed
+  payload[o++] = 0 // compression method
+  payload[o++] = 0 // empty language tag
+  payload[o++] = 0 // empty translated keyword
+  payload.set(text, o)
+
+  const typeAndData = new Uint8Array(4 + payload.length)
+  typeAndData.set(enc.encode('iTXt'), 0)
+  typeAndData.set(payload, 4)
+
+  const chunk = new Uint8Array(4 + typeAndData.length + 4)
+  new DataView(chunk.buffer).setUint32(0, payload.length)
+  chunk.set(typeAndData, 4)
+  new DataView(chunk.buffer).setUint32(4 + typeAndData.length, crc32(typeAndData))
+
+  // Walk to the first IDAT, dropping any pre-existing XMP iTXt so repeated
+  // passes cannot stack duplicate packets.
+  const head: Uint8Array[] = [png.subarray(0, SIG)]
+  let pos = SIG
+  let inserted = false
+  const out: Uint8Array[] = head
+  while (pos + 8 <= png.length) {
+    const len = dv.getUint32(pos)
+    const typ = String.fromCharCode(png[pos + 4], png[pos + 5], png[pos + 6], png[pos + 7])
+    const whole = png.subarray(pos, pos + 12 + len)
+
+    if (typ === 'iTXt') {
+      const body = png.subarray(pos + 8, pos + 8 + len)
+      const nul = body.indexOf(0)
+      if (nul > 0 && new TextDecoder().decode(body.subarray(0, nul)) === XMP_KEYWORD) {
+        pos += 12 + len
+        continue // drop the old packet
+      }
+    }
+    if (!inserted && (typ === 'IDAT' || typ === 'IEND')) {
+      out.push(chunk)
+      inserted = true
+    }
+    out.push(whole)
+    pos += 12 + len
+    if (typ === 'IEND') break
+  }
+  if (!inserted) return png // not a PNG shape we recognise — leave it alone
+
+  const total = out.reduce((n, b) => n + b.length, 0)
+  const merged = new Uint8Array(total)
+  let off = 0
+  for (const b of out) { merged.set(b, off); off += b.length }
+  return merged
+}
+
+// Reads back the marker — used by the verification harness and safe to call
+// on any PNG.
+export function hasAiProvenance(png: Uint8Array): boolean {
+  const dv = new DataView(png.buffer, png.byteOffset, png.byteLength)
+  let pos = 8
+  while (pos + 8 <= png.length) {
+    const len = dv.getUint32(pos)
+    const typ = String.fromCharCode(png[pos + 4], png[pos + 5], png[pos + 6], png[pos + 7])
+    if (typ === 'iTXt') {
+      const body = new TextDecoder().decode(png.subarray(pos + 8, pos + 8 + len))
+      if (body.includes(XMP_KEYWORD) && body.includes(IPTC_TRAINED_ALGORITHMIC_MEDIA)) return true
+    }
+    pos += 12 + len
+    if (typ === 'IEND') break
+  }
+  return false
+}
+
 interface StabilityArtifact { base64: string; finishReason: string }
 
 async function callStabilityAI(prompt: string, apiKey: string, negativePrompt?: string): Promise<Uint8Array> {
@@ -802,6 +945,12 @@ export async function generatePostImage(
         console.error(`[image] ${client.name}: forced B&W/headline compositing failed, using plain image — ${String((e as Error)?.message ?? e)}`)
       }
     }
+
+    // LAST step before upload, deliberately: every ImageScript re-encode above
+    // strips ancillary chunks, so anything written earlier would not survive.
+    // Applied to every generated image, not just CRHQ — each one really is
+    // AI-generated, and a truthful marker costs nothing on the others.
+    bytes = withAiProvenance(bytes)
 
     const folder = client.slug || 'unknown-brand'
     const path = `${folder}/${contentQueueId}.png`
