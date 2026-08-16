@@ -56,6 +56,32 @@ You are NOT looking for:
 - UK SMEs to target as agency clients.
 Only businesses Adrian can build, market via Quill, and run hands-off.
 
+THE BUILDABILITY BAR — APPLY THIS FIRST, BEFORE ANY OTHER ANALYSIS
+
+Every single item you output, in every section, must first pass all three of these tests. This is a hard gate, not a preference. An item that is interesting, profitable, or well-researched but fails any one of these tests must be DROPPED, not included with a caveat. Surfacing fewer items — or none — is always the correct outcome when nothing clears this bar. Do not include anything for interest's sake.
+
+TEST 1 — Could Redmaine actually build this?
+It must be realistically buildable as a small SaaS product, web app, or digital product by a very small technical team. Drop it if it requires any of:
+- Significant physical infrastructure (warehousing, manufacturing, fleet, premises, physical stock at scale)
+- Regulated licensing or accreditation to operate (financial services licences, medical device approval, care/childcare registration, insurance underwriting, legal practice)
+- Meaningful headcount to deliver the core product (staffed support desks, human-delivered consulting, field engineers, clinicians, installers)
+- Proprietary IP, clinical validation, or long R&D before a first version can ship
+
+TEST 2 — Could Quill run 100% of the marketing?
+Once built, the entire go-to-market must be servable by content, organic social, SEO and email alone. Drop it if it needs:
+- A dedicated sales team, outbound SDRs, account managers, or human demos to close
+- Expensive paid acquisition to work at all, or a category where CAC is dominated by ad auctions
+- Enterprise procurement cycles, tenders, RFPs, or named-account relationship selling
+- Trade shows, field marketing, physical presence, or partner/reseller channels to reach buyers
+
+TEST 3 — Is there a specific, concrete "1% better" angle?
+There must be a named, articulable way this is better, cheaper, or faster than a specific named incumbent. "This market exists and makes money" is NOT an angle and is an automatic drop. The angle must be specific enough to state in one sentence, referencing what the incumbent actually does badly today — a concrete gap in their product, price, speed, or UX that you found evidence for during search.
+
+For every item you output, include a "buildability" object recording how it cleared this bar:
+"buildability": {"redmaine_can_build":"...why it's buildable without infrastructure/licensing/headcount...","quill_can_market":"...why content/social/email alone reaches these buyers...","one_percent_better":"...the specific angle over the specific named incumbent..."}
+
+If you cannot write a genuine, specific sentence for all three, the item has not passed. Drop it.
+
 Before scoring ANY opportunity, you must research its competitive landscape using web search. For each opportunity, identify:
 - The top 3 named competitors already operating in this space (real, named businesses — not vague categories).
 - An estimate of each competitor's revenue or scale: Small (under ~£1M), Medium (£1M–£10M), or Large (£10M+).
@@ -150,6 +176,7 @@ For each opportunity, identify the top 3 named competitors already operating (re
 PHASE 3 — OUTPUT
 
 For each opportunity provide IN THIS ORDER:
+- buildability: {"redmaine_can_build":"...","quill_can_market":"...","one_percent_better":"..."} — the three-test gate from your instructions. Only include opportunities that genuinely pass all three.
 - competitor_research: {"competitors": [{"name":"...","scale":"Small|Medium|Large","estimated_revenue":"...","backed":"VC|PE|Corporate|None"}], "white_label_or_commodity": true|false, "white_label_notes":"..."}
 - criteria_scores: {"laptop_remote":0,"recurring_revenue":0,"automatable":0,"uk_no_geo_barrier":0,"proven_demand":0,"fragmented_market":0,"margin_potential":0,"differentiation_barrier":0}
 - total_score: sum out of 80
@@ -163,13 +190,14 @@ For each opportunity provide IN THIS ORDER:
 - uk_readiness: whether UK-ready or needs adaptation
 - verdict: exactly one of "Strong", "Worth investigating", or "Pass"
 
-Output ONLY a JSON array wrapped in a \`\`\`json fenced block. Only include opportunities where passes_threshold is true. Zero is fine if nothing qualifies.
+Output ONLY a JSON array wrapped in a \`\`\`json fenced block. Only include opportunities where passes_threshold is true AND all three buildability tests pass. Zero is fine if nothing qualifies — and after applying the buildability bar, zero or one will often be the honest answer. Do not pad the list.
 
 ---
 
 BUSINESSES TO REPLICATE
 
-Find 3-5 real named businesses making money that could be replicated and improved. Requirements:
+Find real named businesses making money that could be replicated and improved. Return up to 5, but only ones that genuinely qualify — fewer is correct if fewer pass. Requirements:
+- Must pass all three buildability tests from your instructions (Redmaine can build it, Quill can market it alone, specific 1% better angle). A business that is clearly profitable but needs premises, licensing, headcount, or a sales team to replicate must be DROPPED — this is the most common reason to reject an otherwise attractive business here.
 - Real companies with real URLs found via search today
 - Verifiable revenue evidence (reviews, rankings, community posts, estimated traffic)
 - UK businesses strongly preferred — only use US/AU if no UK equivalent found
@@ -188,6 +216,7 @@ For each include:
 - what_they_sell: what they sell and actual price point
 - vulnerability: specific weakness found
 - how_to_beat_them: concrete plan
+- buildability: {"redmaine_can_build":"...","quill_can_market":"...","one_percent_better":"..."}
 - effort: "Low", "Medium", or "High"
 - verdict: "CLONE IT", "WORTH STUDYING", or "LEAVE IT"
 
@@ -201,11 +230,30 @@ Before finalising output, check every business name against the exclusion list. 
 // Section B — YCA prospects (Companies House intelligence) + UK legislation
 // watch. Runs on even UTC days of the month. Its own intro, not reused from
 // Section A — Section A's intro specifically talks about "opportunities"
-// and "businesses to replicate", neither of which apply here. No exclusion
-// list or repeat-prevention block: prospects are deduped in code
-// (insertProspects' outreach_prospects lookup) and legislation items don't
-// have an equivalent "already featured" concept in this codebase.
-const RESEARCH_USER_B = `Your job today is to find SPECIFIC NAMED UK TRADE BUSINESSES with no proper business management software in place, and REAL UK LEGISLATION OR REGULATORY CHANGES that create new business opportunities — not categories, not vague trends. Every prospect and every legislative item must be real, found via search today, with a verifiable source.
+// and "businesses to replicate", neither of which apply here.
+//
+// Repeat prevention (fixed 15 Aug 2026): prospects were already deduped in
+// code (insertProspects' outreach_prospects lookup), but legislation had
+// none at all — items were never recorded after being emailed and never
+// checked before inclusion, so the same handful of major changes resurfaced
+// every run. Now a function rather than a const so the genuinely-sent
+// legislation titles from opportunity_scanner_seen_items can be injected as
+// a live exclusion list. That injection is the belt half of belt-and-braces:
+// it stops the model wasting searches re-researching known items, but the
+// authoritative filter is filterUnseenLegislation in code after parsing,
+// which does not trust the model to have honoured this list.
+function buildResearchUserB(recentLegislationTitles = []) {
+  const legislationExclusions = recentLegislationTitles.length
+    ? `
+ALREADY REPORTED — DO NOT RETURN THESE AGAIN
+The following legislation and regulatory items have already been sent in recent emails. Do not return them again, in any rewording, abbreviation, or partial form. If your search surfaces one of these, skip it and keep looking for something genuinely new:
+${recentLegislationTitles.map((t) => `- ${t}`).join('\n')}
+
+If, after excluding all of the above, you find no genuinely new legislation, return an empty legislation array. An empty array is the correct and expected answer on most days — major UK legislation does not change daily. Do not pad the list by re-reporting a known item under a different name, and do not substitute minor or speculative items to avoid returning nothing.
+`
+    : ''
+
+  return `Your job today is to find SPECIFIC NAMED UK TRADE BUSINESSES with no proper business management software in place, and REAL UK LEGISLATION OR REGULATORY CHANGES that create new business opportunities — not categories, not vague trends. Every prospect and every legislative item must be real, found via search today, with a verifiable source.
 
 UK COMPANIES HOUSE INTELLIGENCE
 
@@ -246,18 +294,27 @@ Search for UK legislation changes, regulatory announcements, and government cons
 - "Companies House reform 2026"
 - "UK employment law change 2026"
 - "Health and safety regulation UK 2026"
+${legislationExclusions}
+Split what you find into TWO distinct outputs, by whether it creates something Redmaine could actually build:
 
-For each relevant finding, identify:
-- What the legislation or regulation requires
-- When it comes into force
-- Which businesses are affected
-- What product or service gap it creates
-- Whether YCA, Quill, or PS could address it specifically
+OUTPUT 1 — REGULATORY-DRIVEN OPPORTUNITIES (\`\`\`json block)
+Where a legislation change creates a specific, buildable product opportunity, treat it as a scored opportunity, not a news item. It must pass all three buildability tests from your instructions and the full 8-criteria scoring process, exactly as a normal opportunity would — a compliance deadline alone is not an opportunity, and "businesses will need help with this" is not a product. There must be a specific tool someone would pay for.
+
+Score and output these using the SAME schema as a normal scored opportunity (buildability, competitor_research, criteria_scores, total_score, criteria_met_strongly, passes_threshold, name, what_it_is, proof_of_demand, margin_and_fulfilment, ai_angle, uk_readiness, verdict), plus one extra field:
+- regulatory_driver: the specific legislation or regulation driving it, and its in-force date
+
+Output as a JSON array in a \`\`\`json fenced block. Only include items where passes_threshold is true AND all three buildability tests pass. Most legislation does not clear this bar — an empty array here is normal and correct.
+
+OUTPUT 2 — LEGISLATION WATCH (\`\`\`legislation block)
+Genuinely new regulatory changes worth knowing about that did NOT become an opportunity above — the informational watch list. Do not duplicate anything you already returned in the \`\`\`json block.
+
+For each, identify what it requires, when it comes into force, who it affects, what gap it creates, and which brand it is relevant to.
 
 Output as a second JSON array in a \`\`\`legislation fenced block:
 [{"title":"...","summary":"...","in_force":"...","affects":"...","opportunity":"...","relevant_brand":"YCA|Quill|PS|All"}]
 
-Return 2-5 items. Only include genuine confirmed legislation or consultations found via search — never invent regulatory changes. If nothing relevant is found today, return an empty array.`
+Return up to 5 items. Only include genuine confirmed legislation or consultations found via search — never invent regulatory changes. If nothing genuinely new is found today, return an empty array; this is expected on most days and is always better than repeating something already reported.`
+}
 
 // ── Anthropic (with server-side web_search tool) ────────────────────────────
 // max_tokens/max_uses history from the Deno version this was ported from:
@@ -309,9 +366,194 @@ function sectionForDate(now) {
   return now.getUTCDate() % 2 === 1 ? 'A' : 'B'
 }
 
+// userPrompt is a builder rather than a string: Section B's prompt now embeds
+// the live already-sent legislation exclusion list (see buildResearchUserB),
+// so it can only be assembled once that list has been read from the database.
+// Section A's builder ignores its argument — its exclusion list is still the
+// hardcoded one in RESEARCH_USER_A (see the note in the handler).
+//
+// Section B raised from 8000/8 to 12000/10: it now has to score
+// regulatory-driven opportunities through the full 8-criteria process on top
+// of prospects and the watch list, which the old budget has no room for.
+// Truncating mid-response would leave an unclosed fenced block and silently
+// lose a whole section to a parse failure. Still far inside
+// RESEARCH_TIMEOUT_MS (720s) — Section A already does comparable scoring work
+// within budget.
 const SECTION_CONFIG = {
-  A: { userPrompt: RESEARCH_USER_A, maxTokens: 8000, maxUses: 8 },
-  B: { userPrompt: RESEARCH_USER_B, maxTokens: 8000, maxUses: 8 },
+  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 8000, maxUses: 8 },
+  B: { buildUserPrompt: buildResearchUserB, maxTokens: 12000, maxUses: 10 },
+}
+
+// ── Repeat prevention ───────────────────────────────────────────────────────
+// Backed by opportunity_scanner_seen_items (migration 100). See that
+// migration's header for why this had to be built from scratch rather than
+// extended: there was no exclusion table anywhere in this codebase.
+
+const SEEN_SECTION_LEGISLATION = 'legislation'
+// How far back to consider an item "already reported". Legislation has a long
+// shelf life — Making Tax Digital was announced years before its in-force
+// date — so a short window would let the same items cycle back round. A year
+// is long enough that anything genuinely still newsworthy has had its turn.
+const SEEN_LOOKBACK_DAYS = 365
+// How many titles to inject into the prompt. The database filter is the
+// authoritative one, so this only needs to cover enough recent history to
+// stop the model wasting searches; injecting all of them would bloat the
+// prompt for no extra protection.
+const SEEN_PROMPT_LIMIT = 40
+
+// Words that carry no distinguishing signal in a legislation title. Dropped
+// before comparison so "The Employment Rights Act 2026" and "Employment
+// Rights Act" collapse to the same key.
+const TITLE_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'at', 'by',
+  'from', 'with', 'new', 'uk', 'update', 'updates', 'change', 'changes',
+  'requirement', 'requirements', 'regulation', 'regulations', 'rule', 'rules',
+  'act', 'bill', 'reform', 'reforms', 'consultation', 'scheme', 'law', 'laws',
+])
+
+// UK regulatory acronyms expanded before tokenising. Without this, an
+// acronym and its expansion share literally zero tokens ("MTD" vs "Making
+// Tax Digital"), so no amount of token-overlap maths can connect them — and
+// the model swapping between the two forms across runs is one of the most
+// likely ways the same item comes back looking new. Deliberately a short,
+// explicit list of terms that actually recur in this domain rather than a
+// general abbreviation guesser, which would create false matches.
+const ACRONYM_EXPANSIONS = [
+  [/\bmtd\b/g, 'making tax digital'],
+  [/\bitsa\b/g, 'income tax self assessment'],
+  [/\bera\b/g, 'employment rights'],
+  [/\bcis\b/g, 'construction industry scheme'],
+  [/\briddor\b/g, 'reporting injuries diseases dangerous occurrences'],
+  [/\bcoshh\b/g, 'control substances hazardous health'],
+  [/\bhmrc\b/g, 'hm revenue customs'],
+  [/\bepc\b/g, 'energy performance certificate'],
+  [/\bvat\b/g, 'value added tax'],
+]
+
+// Normalised dedup key: lowercase, expand known acronyms, strip everything
+// non-alphanumeric, drop stopwords, sort the remaining tokens. Sorting means
+// word-order rewrites ("Companies House identity verification" vs "identity
+// verification at Companies House") produce the same key. This is the
+// exact-match half of the filter — titlesSimilar below catches restatements.
+export function normaliseKey(title) {
+  let text = String(title ?? '').toLowerCase()
+  for (const [pattern, expansion] of ACRONYM_EXPANSIONS) text = text.replace(pattern, expansion)
+  const tokens = text
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((t) => t && !TITLE_STOPWORDS.has(t))
+  return [...new Set(tokens)].sort().join(' ')
+}
+
+// Containment (overlap coefficient: shared / smaller set), NOT Jaccard.
+//
+// Jaccard was tried first and is wrong for this job: the real failure mode is
+// the same legislation restated with extra qualifiers bolted on ("Making Tax
+// Digital for Income Tax" vs "Making Tax Digital for Income Tax Self
+// Assessment April 2026"). Every added qualifier grows the union and pushes
+// the Jaccard score DOWN, so the more verbosely the model restates an item
+// the less likely Jaccard is to catch it — exactly backwards. Containment
+// asks the question that actually matters: is one title essentially wholly
+// contained in the other?
+//
+// 0.8 requires near-total containment. Two different changes to the same act
+// ("Building Safety Act" vs "Building Safety Act second staircase rule") do
+// collapse together under this, which is intended — they are the same
+// underlying item and the reader has already been told about it.
+const SIMILARITY_THRESHOLD = 0.8
+// Below this, a key is too short for containment to mean anything — a
+// two-token title would match almost any superset. Those fall back to exact
+// key matching only.
+const MIN_TOKENS_FOR_SIMILARITY = 2
+
+export function titlesSimilar(a, b) {
+  const setA = new Set(normaliseKey(a).split(' ').filter(Boolean))
+  const setB = new Set(normaliseKey(b).split(' ').filter(Boolean))
+  if (setA.size < MIN_TOKENS_FOR_SIMILARITY || setB.size < MIN_TOKENS_FOR_SIMILARITY) return false
+  let shared = 0
+  for (const t of setA) if (setB.has(t)) shared++
+  return shared / Math.min(setA.size, setB.size) >= SIMILARITY_THRESHOLD
+}
+
+// Best-effort by design: if this lookup fails, the run continues with an
+// empty seen-list rather than dying. A repeat item is a far better outcome
+// than a failed scan, and the failure is logged either way.
+async function loadSeenItems(admin, section) {
+  if (!admin) return []
+  const since = new Date(Date.now() - SEEN_LOOKBACK_DAYS * 86400_000).toISOString()
+  const { data, error } = await admin
+    .from('opportunity_scanner_seen_items')
+    .select('item_key, title, last_seen_at')
+    .eq('section', section)
+    .gte('last_seen_at', since)
+    .order('last_seen_at', { ascending: false })
+  if (error) {
+    console.error(`[opportunity-scanner-worker-background] seen-items lookup failed for "${section}": ${error.message}`)
+    return []
+  }
+  return data ?? []
+}
+
+// The authoritative filter — applied to parsed output, so it holds regardless
+// of whether the model honoured the exclusion list injected into its prompt.
+// Also dedups within the batch itself, since nothing stops the model
+// returning the same item twice in one response.
+export function filterUnseenLegislation(items, seen) {
+  const seenKeys = new Set(seen.map((s) => s.item_key))
+  const seenTitles = seen.map((s) => s.title)
+  const kept = []
+  const dropped = []
+
+  for (const item of items) {
+    const title = String(item?.title ?? '').trim()
+    if (!title) { dropped.push({ title: '(untitled)', reason: 'no title' }); continue }
+    const key = normaliseKey(title)
+    if (!key) { dropped.push({ title, reason: 'title normalised to empty' }); continue }
+
+    if (seenKeys.has(key)) { dropped.push({ title, reason: 'exact match with previously sent item' }); continue }
+    const near = seenTitles.find((t) => titlesSimilar(title, t))
+    if (near) { dropped.push({ title, reason: `near-duplicate of previously sent "${near}"` }); continue }
+    if (kept.some((k) => normaliseKey(k.title) === key || titlesSimilar(title, k.title))) {
+      dropped.push({ title, reason: 'duplicate within this same batch' }); continue
+    }
+
+    kept.push(item)
+  }
+
+  return { kept, dropped }
+}
+
+// Called ONLY after the email has actually been sent — see the handler. If
+// this ran before the send and the send then failed, these items would be
+// permanently suppressed having never once been seen by Adrian, which is the
+// one genuinely unrecoverable failure mode in this design.
+//
+// Upserts rather than inserts so an item resurfacing after its exclusion
+// window bumps last_seen_at/times_seen instead of erroring on the unique
+// index. Best-effort per row: one bad row never drops the rest.
+async function recordSeenItems(admin, section, items) {
+  if (!admin || !items.length) return { recorded: 0 }
+  let recorded = 0
+
+  for (const item of items) {
+    const title = String(item?.title ?? '').trim()
+    const itemKey = normaliseKey(title)
+    if (!title || !itemKey) continue
+
+    const { error } = await admin
+      .from('opportunity_scanner_seen_items')
+      .upsert(
+        { section, item_key: itemKey, title, last_seen_at: new Date().toISOString() },
+        { onConflict: 'section,item_key', ignoreDuplicates: false },
+      )
+    if (error) {
+      console.error(`[opportunity-scanner-worker-background] seen-item upsert failed for "${title}": ${error.message}`)
+      continue
+    }
+    recorded++
+  }
+
+  return { recorded }
 }
 
 // Streams the response instead of waiting for one final JSON blob, purely
@@ -675,14 +917,30 @@ function prospectCard(o, i) {
   </div>`
 }
 
-// ── Section B email — YCA prospects + UK legislation. Entirely separate from
-// buildEmail (Section A's opportunities/replicate email); the two sections
-// never share a run, so there's no case where both need rendering together.
-// Renders an explicit "nothing today" line per subsection (rather than
-// omitting it) so a quiet day still reads as "it ran and checked", matching
-// the brief's "send an email with that day's findings" for every run.
+// Regulatory-driven opportunity card — a legislation change that cleared the
+// full buildability bar and 8-criteria scoring, so it belongs with the scored
+// opportunities rather than in the informational watch list. Reuses Section
+// A's own `card()` renderer so a scored opportunity looks identical wherever
+// it appears, with the regulatory driver added above it as the thing that
+// makes this one different.
+function regulatoryOpportunityCard(o, i) {
+  const driver = o.regulatory_driver
+    ? `<div style="font-size:12px;color:#3730a3;background:#eef2ff;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-family:sans-serif">Regulatory driver: ${esc(o.regulatory_driver)}</div>`
+    : ''
+  return `${driver}${card(o, i)}`
+}
+
+// ── Section B email — YCA prospects + regulatory-driven opportunities + UK
+// legislation watch. Entirely separate from buildEmail (Section A's
+// opportunities/replicate email); the two sections never share a run, so
+// there's no case where both need rendering together.
+//
+// Prospects still render an explicit "nothing today" line when empty, so a
+// quiet day still reads as "it ran and checked". Legislation deliberately
+// does NOT: see the omission note on legislationSection below.
 function buildProspectsLegislationEmail(prospects, legislationItems, dateStr, opts = {}) {
   const banner = opts.partial ? partialResultsBanner('B', opts.elapsedMs) : ''
+  const regulatoryOpportunities = opts.regulatoryOpportunities ?? []
   const prospectsSection = prospects.length
     ? `
   <div style="margin-bottom:20px">
@@ -691,14 +949,36 @@ function buildProspectsLegislationEmail(prospects, legislationItems, dateStr, op
     ${prospects.map(prospectCard).join('')}
   </div>`
     : `<div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">No new YCA prospects found today.</div>`
+
+  // Scored opportunities that happen to be driven by a regulatory change.
+  // Omitted entirely when empty for the same reason as the watch list below —
+  // most days no legislation clears the buildability bar, and an empty
+  // "Scored Opportunities" heading would imply the scan found something.
+  const regulatorySection = regulatoryOpportunities.length
+    ? `
+  <div style="margin-top:8px;margin-bottom:20px;padding-top:28px;border-top:2px solid #e5e7eb">
+    <div style="font-size:20px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">Scored Opportunities</div>
+    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${regulatoryOpportunities.length} buildable opportunit${regulatoryOpportunities.length === 1 ? 'y' : 'ies'} created by a regulatory change</div>
+    ${regulatoryOpportunities.map(regulatoryOpportunityCard).join('')}
+  </div>`
+    : ''
+
+  // Omitted entirely when there's nothing new — NOT rendered as an empty or
+  // "nothing found today" section. Before repeat prevention existed this
+  // section repeated the same handful of major changes every run, which
+  // trained the reader to skip it; now that it only ever contains genuinely
+  // new items, its presence is the signal. An empty-state line would put a
+  // heading in front of the reader on most days for no reason and dilute
+  // that signal back to nothing. Prospects keep their empty-state line
+  // because "no new prospects today" is itself a meaningful daily datapoint.
   const legislationSection = legislationItems.length
     ? `
   <div style="margin-top:8px;margin-bottom:20px;padding-top:28px;border-top:2px solid #e5e7eb">
     <div style="font-size:20px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">UK Legislation Watch</div>
-    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${legislationItems.length} regulatory change${legislationItems.length === 1 ? '' : 's'} worth acting on</div>
+    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${legislationItems.length} new regulatory change${legislationItems.length === 1 ? '' : 's'} worth knowing about</div>
     ${legislationItems.map(legislationCard).join('')}
   </div>`
-    : `<div style="margin-top:8px;padding-top:28px;border-top:2px solid #e5e7eb;font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">No relevant UK legislation found today.</div>`
+    : ''
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f3f4f6">
@@ -709,6 +989,7 @@ function buildProspectsLegislationEmail(prospects, legislationItems, dateStr, op
   </div>
   ${banner}
   ${prospectsSection}
+  ${regulatorySection}
   ${legislationSection}
   <div style="border-top:1px solid #e5e7eb;margin-top:8px;padding-top:20px;font-size:11px;color:#9ca3af;font-family:sans-serif;line-height:1.6">
     Researched live by Claude (${MODEL}) with web search across Companies House filings and UK regulatory announcements. Sent automatically on alternating days.
@@ -873,6 +1154,12 @@ export async function handler(event) {
 
   const section = sectionForDate(new Date())
 
+  // Hoisted out of the try block so the partial-results recovery path in the
+  // catch can apply the same repeat filter. A partial run still sends a real
+  // email, so it must not be allowed to resend items the reader has already
+  // had — the timeout is not a reason to drop the guarantee.
+  let seenLegislation = []
+
   try {
     if (!admin) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_KEY not configured')
     if (!ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY not configured')
@@ -880,7 +1167,23 @@ export async function handler(event) {
 
     const config = SECTION_CONFIG[section]
     console.log(`[opportunity-scanner-worker-background] starting run ${dateStr} — section ${section}`)
-    const researchText = await fetchResearchText(ANTHROPIC_API_KEY, config.userPrompt, config.maxTokens, config.maxUses)
+
+    // Already-sent legislation, loaded BEFORE the research call so the titles
+    // can be injected into Section B's prompt as an exclusion list. Section A
+    // ignores this (its builder takes no argument) — its exclusion list is
+    // still the hardcoded one inside RESEARCH_USER_A, which is a separate,
+    // known limitation rather than something this fix changes.
+    seenLegislation = section === 'B'
+      ? await loadSeenItems(admin, SEEN_SECTION_LEGISLATION)
+      : []
+    if (section === 'B') {
+      console.log(`[opportunity-scanner-worker-background] ${seenLegislation.length} previously-sent legislation item(s) will be excluded`)
+    }
+    const userPrompt = config.buildUserPrompt(
+      seenLegislation.slice(0, SEEN_PROMPT_LIMIT).map((s) => s.title),
+    )
+
+    const researchText = await fetchResearchText(ANTHROPIC_API_KEY, userPrompt, config.maxTokens, config.maxUses)
     const prettyDate = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
 
     if (section === 'A') {
@@ -936,6 +1239,17 @@ export async function handler(event) {
       }
     }
 
+    // Regulatory-driven scored opportunities — Section B's ```json block.
+    // Best-effort like every other parse here: nothing else in this run
+    // depends on it.
+    let regulatoryOpportunities = []
+    try {
+      regulatoryOpportunities = parseOpportunities(researchText)
+      console.log(`[opportunity-scanner-worker-background] ${regulatoryOpportunities.length} regulatory-driven opportunit(ies) surfaced`)
+    } catch (e) {
+      console.error('[opportunity-scanner-worker-background] could not parse regulatory-driven opportunities:', String(e?.message ?? e))
+    }
+
     // Best-effort, same pattern as prospects above — a failure to parse the
     // "UK Legislation and Regulatory Intelligence" section must never affect
     // the prospects section.
@@ -947,13 +1261,37 @@ export async function handler(event) {
       console.error('[opportunity-scanner-worker-background] could not parse UK Legislation and Regulatory Intelligence section:', String(e?.message ?? e))
     }
 
+    // The authoritative repeat-prevention filter. Applied to parsed output,
+    // so it holds whether or not the model honoured the exclusion list it was
+    // given — the prompt injection is an optimisation, this is the guarantee.
+    const { kept: freshLegislation, dropped: repeatLegislation } =
+      filterUnseenLegislation(legislationItems, seenLegislation)
+    for (const d of repeatLegislation) {
+      console.log(`[opportunity-scanner-worker-background] legislation dropped as repeat — "${d.title}" (${d.reason})`)
+    }
+    console.log(`[opportunity-scanner-worker-background] legislation: ${freshLegislation.length} new, ${repeatLegislation.length} dropped as repeats`)
+
     const subject = `YCA prospects + legislation — ${dateStr}`
-    const html = buildProspectsLegislationEmail(prospects, legislationItems, prettyDate)
+    const html = buildProspectsLegislationEmail(prospects, freshLegislation, prettyDate, { regulatoryOpportunities })
     await sendEmail(resendKey, fromEmail, toEmail, subject, html)
 
-    await logRun(prospects.length + legislationItems.length, true, null)
+    // Recorded only AFTER the send has succeeded. If sendEmail throws, this
+    // never runs and these items stay eligible for tomorrow — the alternative
+    // (recording first) would permanently suppress items that were never
+    // actually delivered, which is the one failure here that can't be undone.
+    const { recorded } = await recordSeenItems(admin, SEEN_SECTION_LEGISLATION, freshLegislation)
+    console.log(`[opportunity-scanner-worker-background] recorded ${recorded} legislation item(s) as sent`)
+
+    await logRun(prospects.length + freshLegislation.length + regulatoryOpportunities.length, true, null)
     console.log('[opportunity-scanner-worker-background] section B: email sent, run logged')
-    return json(200, { ok: true, section, prospectsFound: prospects.length, legislationFound: legislationItems.length, emailSent: true })
+    return json(200, {
+      ok: true, section,
+      prospectsFound: prospects.length,
+      legislationFound: freshLegislation.length,
+      legislationDroppedAsRepeat: repeatLegislation.length,
+      regulatoryOpportunitiesFound: regulatoryOpportunities.length,
+      emailSent: true,
+    })
   } catch (e) {
     const errMsg = String(e?.message ?? e)
     console.error('[opportunity-scanner-worker-background] run failed:', errMsg)
@@ -992,21 +1330,36 @@ export async function handler(event) {
         } else {
           let prospects = []
           let legislationItems = []
+          let regulatoryOpportunities = []
           try { prospects = parseProspects(e.partialText) } catch { /* not recovered */ }
           try { legislationItems = parseLegislation(e.partialText) } catch { /* not recovered */ }
+          try { regulatoryOpportunities = parseOpportunities(e.partialText) } catch { /* not recovered */ }
           if (admin && prospects.length) {
             try { await insertProspects(admin, prospects) } catch (insErr) {
               console.error('[opportunity-scanner-worker-background] partial-recovery outreach_prospects insertion failed:', String(insErr?.message ?? insErr))
             }
           }
-          if (prospects.length || legislationItems.length) {
-            const html = buildProspectsLegislationEmail(prospects, legislationItems, prettyDate, { partial: true, elapsedMs: e.elapsedMs })
+          // Same authoritative filter as the normal path — a partial run must
+          // not become a loophole that resends already-reported legislation.
+          const { kept: freshLegislation, dropped: repeatLegislation } =
+            filterUnseenLegislation(legislationItems, seenLegislation)
+          if (repeatLegislation.length) {
+            console.log(`[opportunity-scanner-worker-background] partial-recovery dropped ${repeatLegislation.length} legislation item(s) as repeats`)
+          }
+          if (prospects.length || freshLegislation.length || regulatoryOpportunities.length) {
+            const html = buildProspectsLegislationEmail(prospects, freshLegislation, prettyDate, { partial: true, elapsedMs: e.elapsedMs, regulatoryOpportunities })
             if (resendKey) {
               await sendEmail(resendKey, fromEmail, toEmail, `YCA prospects + legislation (partial — cut off after ${Math.round(e.elapsedMs / 1000)}s) — ${dateStr}`, html)
               emailSent = true
             }
-            itemsFound = prospects.length + legislationItems.length
-            loggedError = `partial: aborted after ${Math.round(e.elapsedMs / 1000)}s during research — recovered ${prospects.length} prospect(s), ${legislationItems.length} legislation item(s)`
+            // Again, only after a successful send — and only if one actually
+            // happened, which on this path depends on resendKey being set.
+            if (emailSent) {
+              const { recorded } = await recordSeenItems(admin, SEEN_SECTION_LEGISLATION, freshLegislation)
+              console.log(`[opportunity-scanner-worker-background] partial-recovery recorded ${recorded} legislation item(s) as sent`)
+            }
+            itemsFound = prospects.length + freshLegislation.length + regulatoryOpportunities.length
+            loggedError = `partial: aborted after ${Math.round(e.elapsedMs / 1000)}s during research — recovered ${prospects.length} prospect(s), ${freshLegislation.length} new legislation item(s) (${repeatLegislation.length} dropped as repeats), ${regulatoryOpportunities.length} regulatory opportunit(ies)`
           }
         }
       } catch (recoveryErr) {
