@@ -127,7 +127,10 @@ HARD REQUIREMENTS FOR BOTH CATEGORIES
 - A completed competitor check. Before finalising any entry, establish who else already serves this need and confirm the gap survives that check. Record what you actually searched and what you found — including competitors you found and then judged not equivalent, and why they are not equivalent.
 - ONE IDEA, ONE ENTRY. If two candidate entries would lead to building the same underlying product, they are one finding aimed at two different incumbents. Keep the strongest and drop the other. Never use near-identical competitors to pad towards a quota.
 
-Returning one well-evidenced entry, or none at all, is the correct outcome on most days. A padded list of five is a worse result than an empty section, because it costs trust in the whole email.`
+DO THE WORK BEFORE YOU JUDGE
+These gates are a filter applied to real research, not a reason to skip the research. Run the discovery searches, find candidate businesses, and run the competitor checks on them. Only then apply the gates. Concluding "nothing qualifies" without having searched is not a strict answer, it is an empty one — and it is just as useless to Adrian as the padded list it replaced. Expect to examine several candidates and discard most of them.
+
+One rigorously evidenced entry beats three thin ones, and an honest empty section beats a padded list. But an empty section arrived at without searching is a failure, not a high standard.`
 
 // Section A — scored opportunities + businesses to replicate. Runs on odd
 // UTC days of the month. Everything below is Section A's own instructions
@@ -225,7 +228,9 @@ For each entry return:
 - effort: "Low", "Medium", or "High"
 - verdict: "CLONE IT", "WORTH STUDYING", or "LEAVE IT"
 
-Output as a second JSON array in a \`\`\`replicate fenced block. Maximum 3 entries — a ceiling, not a target. One or zero is the normal, correct result on most days.
+Before concluding this section, you must have actually searched: name at least the candidate businesses you considered and rejected, in competitor_check.found or in your working, so it is visible that the search happened. An empty section with no evidence of searching is a failed run, not a strict one.
+
+Output as a second JSON array in a \`\`\`replicate fenced block. Maximum 3 entries — a ceiling, not a target. Aim to surface the one or two strongest that genuinely clear the bar.
 
 ---
 
@@ -773,13 +778,30 @@ export function filterReplicateBusinesses(entries) {
 }
 
 export function parseReplicateBusinesses(text) {
+  // Cleared before any throw path below. Netlify reuses warm containers, so
+  // without this a parse failure would leave the PREVIOUS invocation's audit
+  // in place and the run log would attribute it to this run.
+  lastReplicateAudit = { kept: 0, dropped: [] }
+
   let jsonStr = null
   const fenced = [...text.matchAll(/```replicate\s*([\s\S]*?)```/g)]
   if (fenced.length) jsonStr = fenced[fenced.length - 1][1].trim()
-  if (!jsonStr) throw new Error('No ```replicate block found in the model response')
+  if (!jsonStr) {
+    // Recorded, not just thrown. An empty section has three quite different
+    // causes — the model returned no block, it returned an empty array, or the
+    // filter rejected everything — and they call for opposite responses
+    // (the prompt is broken / the bar is too high / the bar is working).
+    // Collapsing them all into "0" is what made the first live check ambiguous.
+    lastReplicateAudit = { kept: 0, dropped: [{ name: '(none)', reasons: ['model returned no ```replicate block at all'] }] }
+    throw new Error('No ```replicate block found in the model response')
+  }
 
   const parsed = JSON.parse(jsonStr)
   if (!Array.isArray(parsed)) throw new Error('Businesses-to-replicate JSON was not an array')
+  if (!parsed.length) {
+    lastReplicateAudit = { kept: 0, dropped: [{ name: '(none)', reasons: ['model returned an empty replicate array — it found nothing it judged to qualify'] }] }
+    return []
+  }
 
   const { kept, dropped } = filterReplicateBusinesses(parsed)
   for (const d of dropped) {
@@ -1335,6 +1357,11 @@ export async function handler(event) {
   }
 
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
+
+  // Same warm-container concern as in parseReplicateBusinesses, from the other
+  // direction: Section B never parses a replicate block, so on a reused
+  // container its run log would otherwise inherit Section A's audit.
+  takeReplicateAudit()
 
   const section = sectionForDate(new Date())
 
