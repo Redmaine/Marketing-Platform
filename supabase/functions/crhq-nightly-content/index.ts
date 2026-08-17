@@ -110,11 +110,16 @@ const MAX_LOOKAHEAD_MS = 48 * 60 * 60 * 1000
 // further into the future than every existing one, so after insertion it would
 // be its own "most recent" row — with a null image_url — and the answer would
 // be true every single time.
+//
+// Rejected posts are excluded because they never reach Facebook, so they
+// cannot be half of an alternation of what people actually saw. Counting one
+// inverts the toggle for the next real post.
 async function facebookWantsImage(admin: Admin, clientId: string): Promise<boolean> {
   const { data, error } = await admin
     .from('mkt_content_queue')
     .select('image_url')
     .eq('client_id', clientId).eq('platform', 'facebook').eq('content_type', 'post')
+    .neq('status', 'rejected')
     .order('scheduled_for', { ascending: false })
     .limit(1)
   if (error) {

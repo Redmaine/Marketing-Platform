@@ -199,12 +199,18 @@ function isQuillAlternatingStream(client: Record<string, any>, platform: string)
 // calls this AFTER the new row is already inserted (with image_url still
 // null), so without excluding contentQueueId itself, the query would find
 // its own row as "most recent" and always answer true.
+//
+// Rejected posts are excluded because they never reach the platform, so they
+// cannot be half of a 50/50 split of what people actually saw. Counting one
+// inverts the toggle for the next real post — and rejections cluster on
+// image posts, so the error is not evenly distributed.
 async function quillAlternatingStreamWantsImage(admin: Admin, clientId: string, platform: string, excludeId: string): Promise<boolean> {
   const { data, error } = await admin
     .from('mkt_content_queue')
     .select('image_url')
     .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
     .neq('id', excludeId)
+    .neq('status', 'rejected')
     .order('scheduled_for', { ascending: false })
     .limit(1)
   if (error) {
