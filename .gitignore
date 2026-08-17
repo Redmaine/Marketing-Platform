@@ -8,3 +8,8 @@ supabase/.DS_Store
 # Local Netlify folder
 .netlify
 deno.lock
+
+# Supabase CLI local state — machine-specific, re-created on every CLI run
+# and re-dirties itself whenever the CLI notices a newer version. Untracked
+# here to match yca-platform, which made the same call in 68f7bbf.
+supabase/.temp/
