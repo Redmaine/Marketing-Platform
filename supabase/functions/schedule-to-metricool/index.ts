@@ -17,6 +17,7 @@
 // Secrets (Supabase vault): METRICOOL_API_KEY
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -81,6 +82,85 @@ function nextSlot(postDays: string[], postTime: string | null): Date {
   const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh, mm || 0, 0, 0); return d
 }
 
+// ── Metricool call with retry ────────────────────────────────────────────────
+// Built after a real incident (17 Aug 2026): a single failed Metricool call
+// left a post at status='approved'/metricool_post_id=null with ZERO trace
+// anywhere — edge_function_errors had no row for this function at all, despite
+// the code already calling logEdgeError on every OTHER failure branch in this
+// file (missing brand id, unsupported platform, past slot, missing API key).
+// The one call that was never retried or reliably logged was the actual
+// network call to Metricool — a fetch with no timeout of its own, relying
+// entirely on Supabase's platform-level function budget to eventually kill it.
+// If Metricool hangs rather than erroring cleanly, that outer kill terminates
+// the whole process BEFORE the existing try/catch below it ever runs — no
+// catch block fires, nothing gets logged, the row is left exactly as it
+// started. That silent-hang shape is what this replaces.
+//
+// MAX_ATTEMPTS/ATTEMPT_TIMEOUT_MS/BACKOFF_MS chosen so the worst case
+// (3 full timeouts + both backoffs) is ~82s — comfortably inside Supabase's
+// edge function budget, so this function's OWN try/catch/logging always gets
+// to run instead of being preempted by the platform the way the original bug
+// was.
+const MAX_ATTEMPTS = 3
+const ATTEMPT_TIMEOUT_MS = 20_000
+const BACKOFF_MS = [2_000, 5_000] // between attempt 1→2 and 2→3
+
+export type MetricoolCallResult =
+  | { ok: true; data: unknown; raw: string; attempts: number }
+  | { ok: false; lastError: string; attempts: number }
+
+// Exported so the retry/backoff/per-attempt-logging behaviour is directly
+// unit-testable against a mocked fetch, rather than only provable by risking
+// a real call to Adrian's live Metricool account.
+export async function callMetricoolWithRetry(
+  admin: ReturnType<typeof createClient>,
+  url: string,
+  method: string,
+  apiKey: string,
+  requestBody: Record<string, unknown>,
+  ctx: { postId: string; clientName: string; platform: string },
+): Promise<MetricoolCallResult> {
+  let lastError = 'unknown error'
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS)
+    try {
+      const mRes = await fetch(url, {
+        method,
+        headers: { 'X-Mc-Auth': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      })
+      const mRaw = await mRes.text()
+      let mData: unknown
+      try { mData = JSON.parse(mRaw) } catch { mData = mRaw }
+      console.log(`[schedule-to-metricool] attempt ${attempt}/${MAX_ATTEMPTS} — Metricool response ${mRes.status}:`, JSON.stringify(mData))
+      if (mRes.ok) return { ok: true, data: mData, raw: mRaw, attempts: attempt }
+      const detailStr = typeof mData === 'string' ? mData : JSON.stringify(mData)
+      lastError = `Metricool rejected the post (${mRes.status}): ${detailStr}`.slice(0, 500)
+    } catch (e) {
+      const isTimeout = (e as Error)?.name === 'AbortError'
+      lastError = isTimeout
+        ? `Metricool call timed out after ${ATTEMPT_TIMEOUT_MS / 1000}s (attempt aborted client-side, not a Metricool response)`
+        : `Network error calling Metricool: ${String((e as Error)?.message ?? e)}`
+    } finally {
+      clearTimeout(timeoutId)
+    }
+
+    // Logged for EVERY failed attempt, whether or not a later attempt goes on
+    // to succeed — a post that failed twice and recovered on attempt 3 is
+    // exactly the early warning of Metricool flakiness that should be visible
+    // before it becomes a full outage, not just when it finally exhausts
+    // every attempt.
+    await logEdgeError(
+      admin,
+      `Post ${ctx.postId} ("${ctx.clientName}", ${ctx.platform}) — attempt ${attempt}/${MAX_ATTEMPTS} failed: ${lastError}`,
+    )
+    if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]))
+  }
+  return { ok: false, lastError, attempts: MAX_ATTEMPTS }
+}
+
 serve(async (req) => {
   const json = (b: unknown, s = 200) =>
     new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } })
@@ -88,11 +168,19 @@ serve(async (req) => {
 
   try {
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
+    // Auth: either a signed-in admin (the normal dashboard "Approve" click),
+    // OR cron/service auth (the sweep-stuck-metricool-posts job re-invoking
+    // this exact endpoint for a post whose inline retries all failed). Cron
+    // auth is only consulted when the JWT path doesn't already clear it, so
+    // the common human path costs nothing extra.
     const userClient = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY')!, {
       global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } },
     })
     const { data: isAdmin } = await userClient.rpc('mkt_is_admin')
-    if (isAdmin !== true) return json({ error: 'Not authorised' }, 403)
+    if (isAdmin !== true) {
+      const cronAuth = await checkCronAuth(req, 'schedule-to-metricool')
+      if (!cronAuth.authorised) return json({ error: 'Not authorised' }, 403)
+    }
 
     const { content_queue_id, scheduled_for } = await req.json()
     if (!content_queue_id) return json({ error: 'content_queue_id required' }, 400)
@@ -150,6 +238,39 @@ serve(async (req) => {
       await markFailed(admin, item.id, msg)
       await logEdgeError(admin, msg)
       return json({ error: msg }, 422)
+    }
+
+    // Slot-collision guard (added 17 Aug 2026, same incident as the retry
+    // hardening above). mkt_content_queue has a partial unique index —
+    // mkt_content_queue_one_auto_post_per_slot, on (client_id, platform,
+    // scheduled_for) for content_type='post', status<>'rejected',
+    // generated_by in ('ai','cron') — meant to guarantee one post per slot.
+    // It only protects OUR OWN bookkeeping though: nothing previously
+    // checked it before calling Metricool, only after, when writing the
+    // result back. Proven live: a stuck row whose computed nextSlot()
+    // collided with an already-scheduled post called Metricool successfully
+    // (creating a second, real, live duplicate post) and only THEN hit the
+    // index violation on the write-back — silently, via a bare
+    // console.error, never surfaced anywhere, leaving the row looking
+    // exactly as stuck as before while a duplicate sat live on Metricool.
+    // Checking here, before ever calling Metricool, turns that into a clean
+    // refusal instead of a duplicate.
+    const { data: collision } = await admin
+      .from('mkt_content_queue')
+      .select('id')
+      .eq('client_id', item.client_id)
+      .eq('platform', item.platform)
+      .eq('scheduled_for', slot.toISOString())
+      .eq('content_type', 'post')
+      .neq('status', 'rejected')
+      .in('generated_by', ['ai', 'cron'])
+      .neq('id', item.id)
+      .maybeSingle()
+    if (collision) {
+      const msg = `Slot already occupied by another post (${collision.id}) for this client/platform/time — refusing rather than creating a duplicate on Metricool. Reschedule this post to a different slot.`
+      await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
+      return json({ error: msg }, 409)
     }
 
     const apiKey = Deno.env.get('METRICOOL_API_KEY')
@@ -233,36 +354,33 @@ serve(async (req) => {
     console.log('  Headers: { X-Mc-Auth: <masked>, Content-Type: application/json }')
     console.log('  Body:', JSON.stringify(requestBody))
 
-    // Issue 2: wrap the fetch in its own try/catch so the response is always
-    // logged before the function exits, even on network-level failures.
-    let mRes: Response
-    let mRaw: string
-    let mData: unknown
-    try {
-      mRes = await fetch(url, {
-        method,
-        headers: { 'X-Mc-Auth': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      })
-      mRaw = await mRes.text()
-      try { mData = JSON.parse(mRaw) } catch { mData = mRaw }
-      console.log(`[schedule-to-metricool] Metricool response ${mRes.status}:`, JSON.stringify(mData))
-    } catch (fetchErr) {
-      const msg = String((fetchErr as Error)?.message ?? fetchErr)
-      console.error('[schedule-to-metricool] Network error calling Metricool:', msg)
-      await markFailed(admin, item.id, 'Network error calling Metricool: ' + msg)
-      await logEdgeError(admin, 'Network error calling Metricool: ' + msg)
-      return json({ error: 'Network error calling Metricool: ' + msg }, 502)
+    // Issue 2 (retry-hardened, 17 Aug 2026): up to MAX_ATTEMPTS calls to
+    // Metricool, each with its own timeout, backing off between attempts, and
+    // logging every failed attempt as it happens — see callMetricoolWithRetry
+    // above for why the original single, un-timed-out fetch could fail
+    // completely silently.
+    const result = await callMetricoolWithRetry(admin, url, method, apiKey, requestBody, {
+      postId: item.id, clientName: client?.name ?? 'Unknown', platform: item.platform,
+    })
+
+    if (!result.ok) {
+      console.error(`[schedule-to-metricool] gave up after ${result.attempts} attempt(s) for "${client?.name}" (${item.platform}): ${result.lastError}`)
+      const msg = `Metricool scheduling failed after ${result.attempts} attempt(s): ${result.lastError}`
+      // Per-attempt failures are already logged inside callMetricoolWithRetry —
+      // this is the distinct "gave up entirely" signal, easy to grep for
+      // separately from a transient blip that a later attempt recovered from.
+      // Status/metricool_post_id are deliberately left untouched here: the row
+      // stays exactly as it was (status='approved' with metricool_post_id
+      // still null for a first attempt, or unchanged for a reschedule PATCH),
+      // which is what the dashboard's "Failed to schedule" count and manual
+      // retry button already key off — see ContentQueue.jsx's retry().
+      await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, `GIVING UP — ${msg}`)
+      return json({ error: msg }, 502)
     }
 
-    if (!mRes.ok) {
-      console.error(`[schedule-to-metricool] Metricool ${mRes.status} rejected post for "${client?.name}" (${item.platform})`)
-      const detailStr = typeof mData === 'string' ? mData : JSON.stringify(mData)
-      const msg = `Metricool rejected the post (${mRes.status}): ${detailStr}`.slice(0, 500)
-      await markFailed(admin, item.id, msg)
-      await logEdgeError(admin, msg)
-      return json({ error: 'Metricool rejected the post.', status: mRes.status, detail: mData }, 502)
-    }
+    const { data: mData, raw: mRaw } = result
+    console.log(`[schedule-to-metricool] succeeded on attempt ${result.attempts}/${MAX_ATTEMPTS}`)
 
     // Issue 9: the previous top-level-only `.id ?? .postId` lookup was always
     // coming up empty (every one of the 27 historically "scheduled" rows has
@@ -279,11 +397,24 @@ serve(async (req) => {
       console.error('[schedule-to-metricool] Metricool returned 2xx but no post id could be extracted. Response keys:', bodyObj ? Object.keys(bodyObj) : typeof mData, 'Full body:', mRaw.slice(0, 1000))
     }
 
-    // Issue 1: log any DB update failures rather than silently ignoring them.
+    // Issue 1 (hardened 17 Aug 2026): a failure here is now logged to
+    // edge_function_errors, not just console.error. This is the exact gap
+    // that let a real, successful Metricool post (id captured below) go
+    // completely untracked — Metricool had genuinely scheduled it, but our
+    // own row was left looking exactly as stuck as before, invisible
+    // anywhere except a console line nobody was watching. The slot-collision
+    // guard above should make this rare now, but a write failure AFTER a
+    // real Metricool call has already happened is the single most important
+    // case in this whole file to never lose silently — the alternative is
+    // reconciling by hand against Metricool's dashboard.
     const { error: updateErr } = await admin.from('mkt_content_queue')
       .update({ status: 'scheduled', scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId, error_message: null })
       .eq('id', item.id)
-    if (updateErr) console.error('[schedule-to-metricool] Failed to update mkt_content_queue:', updateErr.message)
+    if (updateErr) {
+      const msg = `Metricool post ${metricoolPostId} was created successfully, but recording it against ${item.id} failed: ${updateErr.message} — this post now exists on Metricool with NOTHING in our own records pointing at it.`
+      console.error(`[schedule-to-metricool] ${msg}`)
+      await logEdgeError(admin, msg)
+    }
 
     // Upsert to mkt_scheduled_posts to avoid duplicate-key errors on retry.
     const { error: upsertErr } = await admin.from('mkt_scheduled_posts').upsert({
@@ -305,7 +436,17 @@ serve(async (req) => {
       content_pillar: item.pillar ?? null, post_copy: item.body,
       metricool_post_id: metricoolPostId, content_queue_id: item.id,
     }, { onConflict: 'content_queue_id' })
-    if (pubErr) console.error('[schedule-to-metricool] Failed to upsert published_posts:', pubErr.message)
+    if (pubErr) {
+      // Was previously silently swallowed by a schema mismatch — see the
+      // 20260817_published_posts_plain_unique_content_queue_id migration —
+      // where this upsert failed on EVERY call, always via a bare
+      // console.error, for as long as this table has existed with that
+      // partial index. Logged properly now that the underlying bug is fixed,
+      // so a genuinely new failure here doesn't fall back into the same hole.
+      const msg = `Failed to upsert published_posts for ${item.id} (Metricool post ${metricoolPostId}): ${pubErr.message}`
+      console.error(`[schedule-to-metricool] ${msg}`)
+      await logEdgeError(admin, msg)
+    }
 
     return json({ scheduled_for: slot.toISOString(), metricool_post_id: metricoolPostId })
   } catch (e) {
