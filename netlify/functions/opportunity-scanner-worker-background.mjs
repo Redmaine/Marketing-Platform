@@ -117,14 +117,14 @@ CATEGORY A — a foreign business with proven demand and no UK equivalent
 A real, named, currently-trading business operating in another market (US, Australia, Canada, elsewhere) with hard evidence of traction, AND no meaningful UK-native equivalent serving the same need.
 The UK-competitor check is a gate you run BEFORE deciding to include it, not a sentence you write afterwards to justify a decision you already made. Search explicitly for UK players in that exact space: the obvious UK brand names, "UK alternative to [name]", the category plus "UK". If the space is already served in the UK by anyone credible, DROP the entry. Do not include it anyway with a note acknowledging some UK competition exists — that is precisely the failure this section keeps producing.
 
-CATEGORY B — a UK business with proven demand and one specific fixable weakness
-A real, named, currently-trading UK business with hard evidence of demand, where you can point to ONE narrow, specific weak point and say what fixing only that part would look like.
-"Their product could be better", "the UX is dated", "no AI integration" are NOT weak points — they are the absence of one. A qualifying weak point is a concrete, evidenced defect: a specific feature people are repeatedly asking for and not getting, a specific pricing problem, a specific complaint that recurs in real reviews. You must be able to say where you saw it. If the best you can manage is that the whole offering is mediocre, drop it.
+CATEGORY B — a UK business with proven demand and a specific, defensible edge
+A real, named, currently-trading UK business with hard evidence of demand, where you can state a SPECIFIC, evidenced edge over what already exists: cheaper (name the actual price gap), faster (name what's slow about the alternative), or better (name the specific missing or weak feature).
+A crowded market is not a reason to drop this. Adrian does not require an empty space — good, well-reviewed competitors existing is fine and expected. What is NOT fine is an edge that can't survive contact with those competitors: "their product could be better", "the UX is dated", "no AI integration", "more modern", "more UK-focused" are not edges, they are the absence of one. A real edge is stated specifically enough that a competitor could be shown it and would have to concede the point — a named price, a named missing feature, a named speed difference — not a vibe. If the best you can manage after finding the real competitors is that the whole space feels a bit tired, drop it.
 
 HARD REQUIREMENTS FOR BOTH CATEGORIES
 - A named, real, currently-operating business with a working URL you found via search. Never a category, never a whole market — "CV builders are weak" is not a finding — and never a hypothetical.
 - Evidence for the demand claim, cited. State the actual metric and where it came from: monthly traffic estimate, review count, funding raised, app-store rating with volume, published or reported revenue. Asserting something is "clearly popular" with nothing behind it does not qualify.
-- A completed competitor check. Before finalising any entry, establish who else already serves this need and confirm the gap survives that check. Record what you actually searched and what you found — including competitors you found and then judged not equivalent, and why they are not equivalent.
+- A competitor check that searches the SOLUTION, not just the subject. Before naming any specific competitor to rule in or out, search broadly for what the finding actually proposes solving or building — the problem category itself ("UK allergen labelling software", "UK recipe costing app", "UK CV builder"), not just obvious rivals of the one business you already have in mind. Naming two or three competitors you already knew about and moving on is a spot-check, not a search, and it is exactly how this scanner has missed real matches before (see the worked rejection below). Only once that broader search is done do you name specific competitors, engage with the closest matches directly, and decide whether the gap or the edge survives.
 - ONE IDEA, ONE ENTRY. If two candidate entries would lead to building the same underlying product, they are one finding aimed at two different incumbents. Keep the strongest and drop the other. Never use near-identical competitors to pad towards a quota.
 
 DO THE WORK BEFORE YOU JUDGE
@@ -203,13 +203,14 @@ Output ONLY a JSON array wrapped in a \`\`\`json fenced block. Only include oppo
 
 BUSINESSES TO REPLICATE
 
-Apply the two-category rule from your instructions. Every entry is either Category A (foreign, proven demand, no UK equivalent) or Category B (UK, proven demand, one specific fixable weakness). Anything fitting neither is dropped, not softened into one of them.
+Apply the two-category rule from your instructions. Every entry is either Category A (foreign, proven demand, no UK equivalent) or Category B (UK, proven demand, a specific evidenced edge). Anything fitting neither is dropped, not softened into one of them.
 
 WORKED REJECTIONS — real output from this scanner that should never have shipped. Do not reproduce these, or anything shaped like them:
 - "CVwizard" and "Kickresume" — rejected twice over. First, the claim that no UK-specific CV builder exists is simply false: StandOut CV, ApplyArc and Reed's own CV builder all operate in the UK today, so the Category A gap does not survive a competitor check. Second, the two entries are the same underlying idea — an AI CV builder — aimed at two different incumbents, which is exactly the padding the one-idea-one-entry rule forbids.
 - "LawDepot UK" — rejected because the competitor check was never really run. Rocket Lawyer UK has traded in the UK since 2012 with real traction. Any finding that treats UK online legal documents as an open space has not searched the space at all.
+- "Meez" — the failure this section's search rule exists to stop. The entry proposed allergen-compliant labelling generated from recipe data as a novel UK angle, and its competitor check named Jelly, RecipeCostCalculator.net and Ratatool, ruled all three out, and declared the gap survived. FoodCore, MenuIQ and MenuSano all already do exactly that, all UK-built and UK-priced, and none of the three was even looked at. The check never failed on judgement — it failed because it only ever spot-checked competitors of the named business instead of searching for the SOLUTION ("UK allergen labelling software", "generate allergen labels from recipes UK"), which would have returned all three immediately.
 
-The lesson in both is the same: the competitor check IS the work, not a formality to complete after choosing. Run it before you commit to an entry, and let it kill entries.
+The lesson across all three is the same: the competitor check IS the work, not a formality to complete after choosing. Search the solution category first, engage with whatever the real search turns up, and let it kill entries.
 
 Still applies to every entry here: all three buildability tests from your instructions, the exclusion list above, and Adrian's existing portfolio spaces above. A business that is clearly profitable but needs premises, licensing, headcount or a sales team to replicate must be DROPPED.
 
@@ -220,15 +221,17 @@ For each entry return:
 - url: real URL verified via search today
 - what_they_sell: what it is, and the actual price point
 - demand_evidence: {"metric":"what you measured — monthly visits / review count / funding raised / app rating and volume / reported revenue","value":"the actual figure","source":"where it came from, with URL"}
-- competitor_check: {"searched":["the actual searches you ran"],"found":[{"name":"...","url":"...","why_not_equivalent":"..."}],"gap_survives":true|false,"reasoning":"..."}
+- competitor_check: {"solution_searches":["the broad searches you ran for the SOLUTION category itself, before naming anyone — e.g. \\"UK allergen labelling software\\", \\"UK recipe costing app\\""],"searched":["every other search you ran, including the named-competitor ones"],"found":[{"name":"...","url":"...","why_not_equivalent":"..."}],"gap_survives":true|false,"reasoning":"..."}
+    solution_searches must be genuinely about the thing being built, not about the named business or its obvious rivals, and it must come FIRST. found must include whatever those searches actually returned — including close matches, especially close matches. Ruling out three names you already had in mind is not a competitor check.
     Category A: gap_survives MUST be true. If a credible UK equivalent exists, drop the entry rather than output it with gap_survives false.
-    Category B: this records who else serves these customers and why the weak point is still worth attacking.
-- weak_point: CATEGORY B ONLY — {"what":"the one narrow defect","evidence":"the real complaint, missing feature or pricing problem, and where you saw it","fix":"what fixing only this part looks like"}. Omit entirely for Category A.
+    Category B: gap_survives may be false — a crowded market is fine. What is recorded here is who genuinely serves these customers, found by real search, so the edge below can be stated against them rather than against a straw man.
+- edge: CATEGORY B ONLY — {"type":"cheaper" | "faster" | "better","what":"the edge in one specific, checkable sentence","evidence":"the real price, the real complaint, the real missing feature, and where you saw it","versus":"the closest real competitors this edge is claimed against, by name — the ones your solution_searches actually surfaced, not weaker ones you picked because they are easier to beat"}. Omit entirely for Category A.
+    "cheaper" must name the actual price gap. "faster" must name what is slow about the alternative. "better" must name the specific missing or weak feature. "more modern", "more UK-focused", "better UX" and "AI-powered" are not edges and will be rejected. If, once the real competitors are on the table, you cannot state an edge that survives being shown to them, drop the entry — that is the correct outcome, not a failure of the run.
 - buildability: {"redmaine_can_build":"...","quill_can_market":"...","one_percent_better":"..."}
 - effort: "Low", "Medium", or "High"
 - verdict: "CLONE IT", "WORTH STUDYING", or "LEAVE IT"
 
-Before concluding this section, you must have actually searched: name at least the candidate businesses you considered and rejected, in competitor_check.found or in your working, so it is visible that the search happened. An empty section with no evidence of searching is a failed run, not a strict one.
+Before concluding this section, you must have actually searched: run the solution-category searches first, then name at least the candidate businesses you considered and rejected, in competitor_check.found or in your working, so it is visible that the search happened. An empty section with no evidence of searching is a failed run, not a strict one.
 
 Output as a second JSON array in a \`\`\`replicate fenced block. Maximum 3 entries — a ceiling, not a target. Aim to surface the one or two strongest that genuinely clear the bar.
 
@@ -745,6 +748,15 @@ const isUrl = (v) => isStr(v) && /^https?:\/\/[^\s]+\.[^\s]+/i.test(v.trim())
 // can know whether the model recorded searching, what it found, and whether it
 // concluded the gap survived. That is the measure-then-judge split used for the
 // image backstop: the model measures, fixed rules decide.
+const EDGE_TYPES = new Set(['cheaper', 'faster', 'better'])
+
+// The phrases that, on their own, mean an edge was never actually found — the
+// vocabulary a finding reaches for when the honest answer is "it feels a bit
+// tired". Deliberately matches only when the phrase IS essentially the whole
+// claim, so "cheaper because FoodCore starts at £99/mo and this is £29" is not
+// caught by "more modern" appearing later in the sentence.
+const VAGUE_EDGE = /^(?:it(?:'s| is)\s+|a\s+|more\s+)?(?:more\s+)?(?:modern|modernised|up[- ]to[- ]date|uk[- ]focused|uk[- ]first|user[- ]friendly|intuitive|streamlined|simpler|slicker|cleaner|ai[- ]powered|ai[- ]driven|better\s+ux|better\s+ui|better\s+design|better\s+experience)\b[\s.!]*$/i
+
 export function replicateRejectionReasons(o) {
   if (!o || typeof o !== 'object') return ['not an object']
   const reasons = []
@@ -769,6 +781,13 @@ export function replicateRejectionReasons(o) {
     if (!Array.isArray(c.searched) || !c.searched.some(isStr)) {
       reasons.push('competitor_check.searched is empty — the check was not actually run')
     }
+    // The Meez failure: a competitor check made entirely of named spot-checks
+    // never searches the solution category, so the three real UK matches were
+    // never seen at all. Code cannot tell a good search from a bad one, but it
+    // can tell whether the broad search was recorded as having happened.
+    if (!Array.isArray(c.solution_searches) || !c.solution_searches.some(isStr)) {
+      reasons.push('competitor_check.solution_searches is empty — the solution category itself was never searched, only named competitors spot-checked')
+    }
     if (!isStr(c.reasoning)) reasons.push('competitor_check.reasoning missing')
     // The LawDepot UK / CVwizard failure in one line: a Category A entry whose
     // own competitor check says the UK gap does not survive is self-refuting,
@@ -778,13 +797,24 @@ export function replicateRejectionReasons(o) {
     }
   }
 
+  // Category B's bar is no longer "the market is empty" — a crowded market is
+  // fine. It is "the edge is specific enough to state against the real
+  // competitors". So the code checks the shape that specificity has to take:
+  // a named axis, a named piece of evidence, and named rivals it holds against.
   if (cat === 'B') {
-    const w = o.weak_point
-    if (!w || typeof w !== 'object') reasons.push('Category B with no weak_point — "could be better" is not a finding')
+    const e = o.edge
+    if (!e || typeof e !== 'object') reasons.push('Category B with no edge — "could be better" is not a finding')
     else {
-      if (!isStr(w.what)) reasons.push('weak_point.what missing')
-      if (!isStr(w.evidence)) reasons.push('weak_point.evidence missing — the weakness is asserted, not evidenced')
-      if (!isStr(w.fix)) reasons.push('weak_point.fix missing — no description of fixing just that part')
+      const type = String(e.type ?? '').trim().toLowerCase()
+      if (!EDGE_TYPES.has(type)) {
+        reasons.push(`edge.type must be one of ${[...EDGE_TYPES].join('/')}, got ${JSON.stringify(e.type ?? null)}`)
+      }
+      if (!isStr(e.what)) reasons.push('edge.what missing')
+      if (!isStr(e.evidence)) reasons.push('edge.evidence missing — the edge is asserted, not evidenced')
+      if (!isStr(e.versus)) reasons.push('edge.versus missing — an edge stated against nobody in particular is not an edge')
+      if (isStr(e.what) && VAGUE_EDGE.test(e.what)) {
+        reasons.push(`edge.what is a vague claim, not a specific edge: "${e.what}"`)
+      }
     }
   }
 
@@ -1094,17 +1124,24 @@ function replicateCard(o, i) {
     ? field('Evidence of demand', `${d.value ?? ''} — ${d.metric ?? ''} (${d.source ?? 'no source given'})`)
     : ''
 
-  const w = o.weak_point
-  const weakHtml = w && typeof w === 'object'
-    ? field('The one weak point', `${w.what ?? ''} — ${w.evidence ?? ''}`) + field('What fixing just that looks like', w.fix ?? '')
+  const e = o.edge
+  const edgeHtml = e && typeof e === 'object'
+    ? field(`The edge — ${String(e.type ?? '').toLowerCase()}`, `${e.what ?? ''} — ${e.evidence ?? ''}`) + field('Held against', e.versus ?? '')
     : ''
 
   const c = o.competitor_check
   const rivals = c && Array.isArray(c.found) && c.found.length
     ? c.found.map((f) => f?.name).filter(Boolean).join(', ')
     : 'none found'
+  // The solution-category searches are surfaced in the email, not just recorded
+  // in the JSON, so a check made of nothing but named spot-checks is visible on
+  // the page rather than only inside a field nobody reads.
+  const solutionSearches = c && Array.isArray(c.solution_searches)
+    ? c.solution_searches.filter((s) => typeof s === 'string' && s.trim()).join('; ')
+    : ''
   const competitorHtml = c && typeof c === 'object'
-    ? field('Competitor check', `${c.reasoning ?? ''} (checked: ${rivals})`)
+    ? field('Competitor check', `${c.reasoning ?? ''} (found: ${rivals})`) +
+      (solutionSearches ? field('Searched the category for', solutionSearches) : '')
     : ''
 
   return `
@@ -1117,7 +1154,7 @@ function replicateCard(o, i) {
     ${o.url ? `<div style="font-size:12px;color:#6b7280;font-family:sans-serif;margin-bottom:12px;word-break:break-all">${esc(o.url)}</div>` : ''}
     ${field('What they sell', o.what_they_sell)}
     ${demandHtml}
-    ${weakHtml}
+    ${edgeHtml}
     ${competitorHtml}
     ${o.buildability?.one_percent_better ? field('Your angle', o.buildability.one_percent_better) : ''}
     ${field('Effort to replicate', o.effort)}
