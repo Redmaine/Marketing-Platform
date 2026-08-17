@@ -402,7 +402,15 @@ export const SECTION_CONFIG = {
   // returned an empty replicate array in 51s and 74s — consistent with a
   // model that cannot afford the checks it is now required to run, and so
   // declines rather than half-doing them.
-  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 8000, maxUses: 16 },
+  // maxTokens raised 8000 -> 12000, matching Section B. The 50.9s run on
+  // 17 Aug returned NO ```replicate block at all — the signature of an answer
+  // truncated before it got that far, since the replicate array is emitted
+  // last. Section A now carries a full opportunity analysis (buildability,
+  // competitor research, 8 criteria scores per opportunity) AND a replicate
+  // section with a mandatory competitor check per entry, on the same 8000 it
+  // had before any of that existed. stop_reason is now logged, so if this is
+  // still being hit it will say so instead of silently losing a section.
+  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 12000, maxUses: 16 },
   B: { buildUserPrompt: buildResearchUserB, maxTokens: 12000, maxUses: 10 },
 }
 
@@ -591,6 +599,18 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
   const timeoutId = setTimeout(() => controller.abort(), RESEARCH_TIMEOUT_MS)
 
   let accumulated = ''
+  let webSearches = 0
+  let stopReason = null
+  // Written even on the timeout/abort path, so a partial run still reports how
+  // much searching it had done before it ran out of time.
+  const publish = () => {
+    lastResearchTelemetry = {
+      research_ms: Date.now() - startedAt,
+      research_chars: accumulated.length,
+      web_searches: webSearches,
+      stop_reason: stopReason,
+    }
+  }
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -615,12 +635,21 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
       throw new Error(`Anthropic API ${res.status}: ${errBody.slice(0, 500)}`)
     }
 
-    // Server-sent events — one JSON event per "data: " line. Only
-    // content_block_delta events carrying a text_delta contribute to the
-    // final answer text; everything else (message_start,
-    // content_block_start for server_tool_use/web_search_tool_result,
-    // ping, message_delta, message_stop) is irrelevant here — we only need
-    // the model's eventual text, not the search mechanics.
+    // Server-sent events — one JSON event per "data: " line.
+    //
+    // text_delta events build the answer. TWO other event types are no longer
+    // discarded, because without them "the model searched hard and honestly
+    // found nothing" and "the model declined without searching" produce an
+    // identical empty section:
+    //   server_tool_use  — one per web_search the model actually issues. This
+    //                      is the direct evidence of effort. Zero or one
+    //                      search behind an empty result is a bail; a dozen is
+    //                      a real negative finding.
+    //   message_delta    — carries stop_reason. 'max_tokens' means the answer
+    //                      was TRUNCATED, which silently destroys whichever
+    //                      fenced block had not been emitted yet — the exact
+    //                      signature of the 50.9s run that produced no
+    //                      ```replicate block at all.
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -637,6 +666,10 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
         try { evt = JSON.parse(line.slice(6)) } catch { continue }
         if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
           accumulated += evt.delta.text
+        } else if (evt.type === 'content_block_start' && evt.content_block?.type === 'server_tool_use') {
+          webSearches += 1
+        } else if (evt.type === 'message_delta' && evt.delta?.stop_reason) {
+          stopReason = evt.delta.stop_reason
         }
       }
     }
@@ -651,9 +684,21 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
     throw e
   } finally {
     clearTimeout(timeoutId)
+    publish()
   }
 
+  console.log(`[opportunity-scanner-worker-background] research: ${webSearches} web search(es), ${accumulated.length} chars, stop_reason=${stopReason}, ${Date.now() - startedAt}ms`)
   return accumulated
+}
+
+// Same take-once pattern as takeReplicateAudit — see its note on why this is
+// module-level rather than threaded through the return value (fetchResearchText
+// has a timeout/partial-recovery path that must keep its current shape).
+let lastResearchTelemetry = { research_ms: null, research_chars: null, web_searches: null, stop_reason: null }
+export function takeResearchTelemetry() {
+  const t = lastResearchTelemetry
+  lastResearchTelemetry = { research_ms: null, research_chars: null, web_searches: null, stop_reason: null }
+  return t
 }
 
 export function parseOpportunities(text) {
@@ -1353,6 +1398,11 @@ export async function handler(event) {
     // are distinguishable after the fact — see the migration note on these
     // columns for why a bare opportunities_found of 0 was ambiguous.
     const audit = takeReplicateAudit()
+    // Research telemetry, so "searched hard and found nothing" is
+    // distinguishable from "declined without searching" on any given day
+    // WITHOUT having to fire synthetic runs to find out. web_searches is the
+    // one that actually settles it.
+    const t = takeResearchTelemetry()
     const { error: logErr } = await admin.from('opportunity_scanner_runs')
       .insert({
         opportunities_found: itemsFound,
@@ -1360,6 +1410,10 @@ export async function handler(event) {
         error,
         replicate_kept: audit.kept,
         replicate_dropped: audit.dropped.length ? audit.dropped : null,
+        research_ms: t.research_ms,
+        research_chars: t.research_chars,
+        web_searches: t.web_searches,
+        stop_reason: t.stop_reason,
       })
     if (logErr) console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
   }
