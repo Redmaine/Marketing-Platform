@@ -2,7 +2,7 @@
 //
 // STRICT DESIGN RULE: this function is 100% read-only against every table
 // it touches (outreach_daily_log, mkt_cron_log, invoice_chaser_log,
-// contacts, edge_function_errors). It performs zero INSERT/UPDATE/DELETE
+// contacts, edge_function_errors, voice_quote_costs). It performs zero INSERT/UPDATE/DELETE
 // anywhere, and calls no other function, sends no email, fixes nothing.
 // It only queries, compares, and returns a JSON report of what it found.
 // Deliberately does NOT self-log a row to mkt_cron_log — the durable record
@@ -51,6 +51,10 @@
 //   5. edge_function_errors on the target date (the same calendar day as
 //      every other check, not a rolling 24h window), grouped by
 //      function_name.
+//   6. Total voice-to-quote spend on the target date, from yca-platform's
+//      voice_quote_costs ledger (same shared database), flagged only when it
+//      crosses a daily threshold. Reported either way so a normal day's cost
+//      is visible for context rather than only appearing when it is a problem.
 //
 // Deploy: supabase functions deploy daily-ops-check
 // Schedule: 30 10 * * * (30 min after cron-healthcheck's own 10:00 UTC run)
@@ -219,6 +223,65 @@ serve(async (req) => {
     // Full detail capped to keep the response reasonable — count above is
     // the real total regardless of how many are shown here.
     recent: (errorRows ?? []).slice(0, 20),
+  }
+
+  // ── 6. Voice-to-quote spend on the target date ──────────────────
+  // yca-platform's voice-to-quote feature bills per minute of audio (OpenAI)
+  // and per token (Anthropic) on every use. voice_quote_costs is its ledger,
+  // written by the two edge functions in that repo; this reads it and nothing
+  // else, in keeping with this function's read-only rule.
+  //
+  // Lives here rather than in a separate monitor because the two projects
+  // share one Supabase database and Adrian already reads exactly one ops
+  // email a day — a second daily email for one feature's spend would be a
+  // worse signal, not a better one.
+  //
+  // The per-ACCOUNT daily cap (10 recordings + 10 drafts, enforced in
+  // yca-platform) already bounds any single account. What it cannot bound is
+  // the total across every account at once, which is what this threshold
+  // watches. Set at £5/day: comfortably above a normal day even with several
+  // accounts working hard, low enough that a runaway loop shows up the next
+  // morning rather than at the end of the month.
+  const VOICE_QUOTE_DAILY_THRESHOLD_PENCE = 500
+
+  const { data: voiceCostRows } = await admin
+    .from('voice_quote_costs')
+    .select('account_id, kind, cost_pence, created_at')
+    .gte('created_at', windowStart)
+    .lte('created_at', windowEnd)
+
+  let voiceTotalPence = 0
+  const voiceByAccount: Record<string, number> = {}
+  const voiceByKind: Record<string, number> = {}
+  for (const r of voiceCostRows ?? []) {
+    const pence = Number(r.cost_pence ?? 0)
+    if (!Number.isFinite(pence)) continue
+    voiceTotalPence += pence
+    const acct = (r.account_id as string) ?? '(unknown)'
+    voiceByAccount[acct] = (voiceByAccount[acct] ?? 0) + pence
+    const kind = (r.kind as string) ?? '(unknown)'
+    voiceByKind[kind] = (voiceByKind[kind] ?? 0) + pence
+  }
+  const round2 = (p: number) => Math.round(p * 100) / 100
+  const voiceOverThreshold = voiceTotalPence > VOICE_QUOTE_DAILY_THRESHOLD_PENCE
+  if (voiceOverThreshold) anyFlag = true
+  report.voice_quote_spend = {
+    date_checked: targetDate,
+    window: [windowStart, windowEnd],
+    calls: (voiceCostRows ?? []).length,
+    total_pence: round2(voiceTotalPence),
+    threshold_pence: VOICE_QUOTE_DAILY_THRESHOLD_PENCE,
+    // Only flagged when the threshold is actually crossed — a normal day's
+    // spend is reported for context, not treated as an issue to act on.
+    flagged_over_threshold: voiceOverThreshold,
+    by_kind: Object.fromEntries(Object.entries(voiceByKind).map(([k, v]) => [k, round2(v)])),
+    // Accounts, biggest spender first — when the threshold does fire, the
+    // useful next question is always "which account", so the answer is in
+    // the report rather than requiring a follow-up query.
+    by_account: Object.entries(voiceByAccount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([account_id, pence]) => ({ account_id, pence: round2(pence) })),
   }
 
   return new Response(JSON.stringify({ ok: true, checked_at: new Date().toISOString(), any_flag: anyFlag, report }), {

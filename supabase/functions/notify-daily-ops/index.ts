@@ -84,6 +84,20 @@ serve(async (req) => {
     const byFn = Object.entries(report.edge_function_errors_window.by_function ?? {}).map(([fn, n]) => `${fn} (${n})`).join(', ')
     issues.push(`${report.edge_function_errors_window.total} edge function error(s) in the window: ${byFn}`)
   }
+  if (report.voice_quote_spend?.flagged_over_threshold) {
+    const v = report.voice_quote_spend
+    const gbp = (p: number) => `£${(p / 100).toFixed(2)}`
+    // Names the top account inline: when this fires the question is always
+    // "which account", and the answer belongs in the sentence rather than a
+    // follow-up query against a table Adrian would have to go and find.
+    const top = (v.by_account ?? []).slice(0, 3)
+      .map((a: { account_id: string; pence: number }) => `${a.account_id} (${gbp(a.pence)})`)
+      .join(', ')
+    issues.push(
+      `Voice-to-quote spend ${gbp(v.total_pence)} on ${v.date_checked}, over the ${gbp(v.threshold_pence)} daily threshold ` +
+      `(${v.calls} call(s))${top ? ` — biggest: ${top}` : ''}`,
+    )
+  }
 
   // Structural safeguard, not a habit to remember: the real daily cron run
   // always calls with an empty body (no date override), so it always gets
@@ -108,7 +122,9 @@ serve(async (req) => {
     : `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1C1C2E">
         ${testBanner}
         <h2 style="color:#2E7D32">🟢 Daily Ops Check — ${dateLabel}</h2>
-        <p>All 5 checks came back clean — outreach volume, cron-healthcheck, invoice-chase evidence, contact emails, and edge function errors.</p>
+        <p>All 6 checks came back clean — outreach volume, cron-healthcheck, invoice-chase evidence, contact emails, edge function errors, and voice-to-quote spend${
+          report.voice_quote_spend ? ` (£${((report.voice_quote_spend.total_pence ?? 0) / 100).toFixed(2)} across ${report.voice_quote_spend.calls ?? 0} call(s))` : ''
+        }.</p>
       </div>`
 
   const resendKey = Deno.env.get('RESEND_API_KEY')
