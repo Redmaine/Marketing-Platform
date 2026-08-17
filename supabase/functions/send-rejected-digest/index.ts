@@ -10,12 +10,12 @@
 // section to an email that was already going out on the 24h trigger above —
 // it does not change whether the digest sends.
 //
-// Each flagged pattern also surfaces mkt_content_queue.rejection_feedback_used
-// — the actual rejection-feedback text that was fed into generation for those
-// specific posts (see _shared/rejectionFeedback.ts) — as evidence of whether
-// the content-quality feedback loop had already told the model to avoid this
-// exact problem before it kept recurring anyway, or whether it hadn't caught
-// it yet.
+// The detection itself (grouping, threshold, the GENERIC_REASON exclusion,
+// and surfacing mkt_content_queue.rejection_feedback_used as evidence of
+// whether the content-quality feedback loop had already caught this exact
+// problem) lives in _shared/recurringRejectionPatterns.ts, shared with
+// generate-daily-status — the same analysis appears in the dashboard JSON
+// as recurring_rejection_patterns, not just this standalone email.
 //
 // Body params (all optional):
 //   { force: true }   -> bypass the London-07:00 check (manual/test runs).
@@ -31,6 +31,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+import { findRecurringRejectionPatterns, PATTERN_LOOKBACK_DAYS, PATTERN_THRESHOLD } from '../_shared/recurringRejectionPatterns.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -39,17 +40,6 @@ const cors = {
 }
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const TO = 'hello@yourcompanyai.co.uk'
-
-// Recurring-pattern detection — a separate, wider lookback from the 24h
-// digest body below. Exact-match only (case-insensitive, trimmed): this pass
-// deliberately does NOT attempt semantic clustering of similarly-worded but
-// non-identical reasons ("dated wrong" vs "wrong date") — that's out of
-// scope. Mirrors the GENERIC_REASON exclusion in
-// _shared/rejectionFeedback.ts's content-quality feedback loop: a one-tap
-// reject carries no learnable signal and must never count toward a pattern.
-const PATTERN_LOOKBACK_DAYS = 30
-const PATTERN_THRESHOLD = 3
-const GENERIC_REASON = 'Rejected by Adrian'
 
 function dateLabel(d: Date): string {
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -104,38 +94,15 @@ serve(async (req) => {
       .not('rejection_reason', 'is', null)
     if (patternError) console.error(`[send-rejected-digest] 30-day pattern query failed: ${patternError.message}`)
 
-    // rejection_feedback_used (text, mkt_content_queue) holds the exact
-    // rejection-feedback string that was fed into THAT post's own prompt at
-    // generation time, or null if there was none. Collecting the distinct
-    // non-null values per pattern shows whether the feedback loop had
-    // already told the model about this exact problem before it kept
-    // recurring anyway — the evidence this section exists to surface.
-    const patternCounts = new Map<string, { brand: string; reason: string; n: number; feedbackSeen: Set<string> }>()
-    for (const row of recent30d ?? []) {
-      const reason = String(row.rejection_reason ?? '').trim()
-      if (!reason || reason === GENERIC_REASON) continue
-      const brand = row.client?.short_name || row.client?.name || 'Unknown brand'
-      const key = `${brand.toLowerCase()}::${reason.toLowerCase()}`
-      const feedback = row.rejection_feedback_used ? String(row.rejection_feedback_used).trim() : null
-      const existing = patternCounts.get(key)
-      if (existing) {
-        existing.n++
-        if (feedback) existing.feedbackSeen.add(feedback)
-      } else {
-        patternCounts.set(key, { brand, reason, n: 1, feedbackSeen: feedback ? new Set([feedback]) : new Set() })
-      }
-    }
-    const patterns = [...patternCounts.values()]
-      .filter((p) => p.n >= PATTERN_THRESHOLD)
-      .sort((a, b) => b.n - a.n)
+    const patterns = findRecurringRejectionPatterns(recent30d ?? [])
     const patternSection = patterns.length
       ? `${'='.repeat(60)}\n⚠ RECURRING PATTERN — same rejection reason ${PATTERN_THRESHOLD}+ times in the last ${PATTERN_LOOKBACK_DAYS} days\n${'='.repeat(60)}\n` +
         patterns.map((p) => {
-          const header = `${p.brand}: "${p.reason}" — rejected ${p.n}× in the last ${PATTERN_LOOKBACK_DAYS} days`
-          if (p.feedbackSeen.size === 0) {
+          const header = `${p.brand}: "${p.reason}" — rejected ${p.count}× in the last ${PATTERN_LOOKBACK_DAYS} days`
+          if (!p.rejection_feedback_used) {
             return `${header}\n  No prior rejection feedback was fed into generation for any of these — the feedback loop hadn't caught this yet.`
           }
-          const evidence = [...p.feedbackSeen].map((f) => `  Already told to avoid this, fed into generation, still recurred: "${f}"`).join('\n')
+          const evidence = p.feedback_examples.map((f) => `  Already told to avoid this, fed into generation, still recurred: "${f}"`).join('\n')
           return `${header}\n${evidence}`
         }).join('\n\n') +
         `\n${'='.repeat(60)}\n\n`

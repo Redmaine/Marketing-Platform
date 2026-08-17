@@ -32,6 +32,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { callAnthropic } from '../_shared/generate.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+import { findRecurringRejectionPatterns, PATTERN_LOOKBACK_DAYS } from '../_shared/recurringRejectionPatterns.ts'
 
 const BUCKET = 'ops-exports'
 const FILE = 'daily-status.json'
@@ -143,6 +144,10 @@ serve(async (req) => {
     const last24hStart = new Date(now.getTime() - 24 * 3600_000)
     const last7dStart = new Date(now.getTime() - 7 * 24 * 3600_000)
     const last30dStart = new Date(now.getTime() - 30 * 24 * 3600_000)
+    // Tied to the shared module's own constant (currently also 30 days, same
+    // as last30dStart above) rather than assumed equal to it — so this stays
+    // correct even if PATTERN_LOOKBACK_DAYS ever changes independently.
+    const patternSince = new Date(now.getTime() - PATTERN_LOOKBACK_DAYS * 24 * 3600_000)
 
     // "Last month" relative to now, in the same YYYY-MM form
     // monthly-performance-pull writes month_year in.
@@ -152,6 +157,7 @@ serve(async (req) => {
     const [
       clientsRes, scheduledWeekRes, pendingRes, rejectedWeekRes, errorsRes, crhqScrapeRes, monthlyReportsRes,
       blogsPendingRes, blogsPublishedRes, blogBlockedRes, approvedLast30dRes, rejectedLast30dRes, crhqCronLogRes,
+      recurringPatternRes,
     ] = await Promise.all([
       admin.from('mkt_clients').select('id, name, short_name').eq('active', true),
       // "Genuinely on the calendar" (approved/scheduled/published) within
@@ -244,6 +250,18 @@ serve(async (req) => {
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle(),
+      // Recurring-pattern scan — same query send-rejected-digest runs (see
+      // _shared/recurringRejectionPatterns.ts), reused directly rather than
+      // rewritten. Deliberately NOT filtered by POST_TYPE_FILTER, matching
+      // the original: a recurring rejection reason on an ad or review-response
+      // is just as real a pattern as one on a post, and narrowing this query
+      // would make it disagree with what the standalone email reports for the
+      // same window.
+      admin.from('mkt_content_queue')
+        .select('rejection_reason, rejection_feedback_used, client:mkt_clients(name, short_name)')
+        .eq('status', 'rejected')
+        .gte('rejected_at', patternSince.toISOString())
+        .not('rejection_reason', 'is', null),
     ])
 
     const clients = clientsRes.data || []
@@ -323,6 +341,8 @@ serve(async (req) => {
       }
     })
 
+    const recurring_rejection_patterns = findRecurringRejectionPatterns(recurringPatternRes.data ?? [])
+
     // posts_generated on the most recent crhq-nightly-content cron_log row is
     // always scrape-driven — that function has no pillar-fallback path, it
     // skips generation entirely when the scrape finds nothing fresh — so it's
@@ -372,6 +392,11 @@ serve(async (req) => {
       blogs_published_last_7d,
       blog_dependent_posts_blocked,
       content_quality,
+      // Same analysis send-rejected-digest's email prepends as a "RECURRING
+      // PATTERN" section — see _shared/recurringRejectionPatterns.ts. Present
+      // here too so it's visible from the dashboard JSON without needing the
+      // standalone email as well.
+      recurring_rejection_patterns,
       crhq_scrape_status,
       brands_with_no_content_this_week,
       summary: null as string | null,
@@ -414,7 +439,7 @@ serve(async (req) => {
       return json({ error: uploadErr.message }, 500)
     }
 
-    console.log(`[generate-daily-status] wrote ${FILE} — ${status.scheduled_today.length} today, ${status.pending_approval.length} pending, ${status.rejected_last_24h.length} rejected(24h), ${status.edge_function_errors_last_24h.length} error(s), ${status.blogs_pending_approval.length} blog draft(s), summary ${status.summary ? 'ok' : 'failed'}`)
+    console.log(`[generate-daily-status] wrote ${FILE} — ${status.scheduled_today.length} today, ${status.pending_approval.length} pending, ${status.rejected_last_24h.length} rejected(24h), ${status.recurring_rejection_patterns.length} recurring pattern(s), ${status.edge_function_errors_last_24h.length} error(s), ${status.blogs_pending_approval.length} blog draft(s), summary ${status.summary ? 'ok' : 'failed'}`)
     return json({ ok: true, generated_at: status.generated_at })
   } catch (e) {
     console.error(`[generate-daily-status] fatal: ${String((e as Error)?.message ?? e)}`)
