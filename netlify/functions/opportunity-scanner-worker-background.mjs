@@ -394,7 +394,15 @@ function sectionForDate(now) {
 // check what the model actually returns without sending an email or writing
 // to the database.
 export const SECTION_CONFIG = {
-  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 8000, maxUses: 8 },
+  // maxUses raised 8 -> 16 for Section A alongside the two-category rewrite.
+  // Those 8 searches were always shared between the scored-opportunity
+  // analysis AND the replicate section; the rewrite added a mandatory
+  // per-entry competitor check on top, so the evidence burden went up while
+  // the search budget stayed put. First two live runs under the new rules
+  // returned an empty replicate array in 51s and 74s — consistent with a
+  // model that cannot afford the checks it is now required to run, and so
+  // declines rather than half-doing them.
+  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 8000, maxUses: 16 },
   B: { buildUserPrompt: buildResearchUserB, maxTokens: 12000, maxUses: 10 },
 }
 
