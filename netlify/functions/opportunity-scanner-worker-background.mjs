@@ -788,7 +788,22 @@ export function parseReplicateBusinesses(text) {
   if (parsed.length && !kept.length) {
     console.log(`[opportunity-scanner-worker-background] all ${parsed.length} replicate entr${parsed.length === 1 ? 'y' : 'ies'} failed the evidence bar — section will be omitted`)
   }
+  // Handed to the run log so the outcome survives the request. Console output
+  // from a background function is not reliably retrievable afterwards, and
+  // "what did the filter refuse, and why" is the question worth being able to
+  // answer about this section on any given day.
+  lastReplicateAudit = { kept: kept.length, dropped }
   return kept
+}
+
+// Module-level rather than a return value because parseReplicateBusinesses is
+// called inside a try/catch whose failure path must not change, and threading a
+// second value through it would ripple into the partial-recovery path too.
+let lastReplicateAudit = { kept: 0, dropped: [] }
+export function takeReplicateAudit() {
+  const audit = lastReplicateAudit
+  lastReplicateAudit = { kept: 0, dropped: [] }
+  return audit
 }
 
 // Parses the "UK COMPANIES HOUSE INTELLIGENCE" section — a distinctly fenced
@@ -1304,8 +1319,18 @@ export async function handler(event) {
 
   const logRun = async (itemsFound, emailSent, error) => {
     if (!admin) return
+    // Replicate outcome recorded alongside the opportunity count so the two
+    // are distinguishable after the fact — see the migration note on these
+    // columns for why a bare opportunities_found of 0 was ambiguous.
+    const audit = takeReplicateAudit()
     const { error: logErr } = await admin.from('opportunity_scanner_runs')
-      .insert({ opportunities_found: itemsFound, email_sent: emailSent, error })
+      .insert({
+        opportunities_found: itemsFound,
+        email_sent: emailSent,
+        error,
+        replicate_kept: audit.kept,
+        replicate_dropped: audit.dropped.length ? audit.dropped : null,
+      })
     if (logErr) console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
   }
 
