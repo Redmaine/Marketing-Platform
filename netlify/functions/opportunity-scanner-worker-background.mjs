@@ -111,19 +111,23 @@ Then analyse everything against the competitor-research-and-scoring process abov
 
 After your opportunity analysis, add a separate section titled "BUSINESSES TO REPLICATE".
 
-Use web search to find 3–5 real, profitable online businesses that could be replicated and improved. Look for businesses that are:
-- Clearly making money (high review counts, strong search presence, obvious demand)
-- Charging a premium that leaves room to undercut
-- Running on outdated technology, poor UX, or no AI integration
-- Succeeding in the US, Australia or Canada but not yet dominant in the UK
+This section has exactly TWO valid shapes. Every entry must fit cleanly into one of them. If a finding fits neither — or you have to stretch it to make it fit — drop it. There is no third category, and "interesting business" is not a category.
 
-For each business include:
-- Business name and URL
-- What they sell and rough price point
-- Why they're vulnerable (overpriced, bad UX, no AI, no UK presence, weak branding)
-- How to replicate and beat them: cheaper, faster, AI-enhanced, or better designed
-- Effort to replicate: Low / Medium / High
-- One-line verdict: CLONE IT / WORTH STUDYING / LEAVE IT`
+CATEGORY A — a foreign business with proven demand and no UK equivalent
+A real, named, currently-trading business operating in another market (US, Australia, Canada, elsewhere) with hard evidence of traction, AND no meaningful UK-native equivalent serving the same need.
+The UK-competitor check is a gate you run BEFORE deciding to include it, not a sentence you write afterwards to justify a decision you already made. Search explicitly for UK players in that exact space: the obvious UK brand names, "UK alternative to [name]", the category plus "UK". If the space is already served in the UK by anyone credible, DROP the entry. Do not include it anyway with a note acknowledging some UK competition exists — that is precisely the failure this section keeps producing.
+
+CATEGORY B — a UK business with proven demand and one specific fixable weakness
+A real, named, currently-trading UK business with hard evidence of demand, where you can point to ONE narrow, specific weak point and say what fixing only that part would look like.
+"Their product could be better", "the UX is dated", "no AI integration" are NOT weak points — they are the absence of one. A qualifying weak point is a concrete, evidenced defect: a specific feature people are repeatedly asking for and not getting, a specific pricing problem, a specific complaint that recurs in real reviews. You must be able to say where you saw it. If the best you can manage is that the whole offering is mediocre, drop it.
+
+HARD REQUIREMENTS FOR BOTH CATEGORIES
+- A named, real, currently-operating business with a working URL you found via search. Never a category, never a whole market — "CV builders are weak" is not a finding — and never a hypothetical.
+- Evidence for the demand claim, cited. State the actual metric and where it came from: monthly traffic estimate, review count, funding raised, app-store rating with volume, published or reported revenue. Asserting something is "clearly popular" with nothing behind it does not qualify.
+- A completed competitor check. Before finalising any entry, establish who else already serves this need and confirm the gap survives that check. Record what you actually searched and what you found — including competitors you found and then judged not equivalent, and why they are not equivalent.
+- ONE IDEA, ONE ENTRY. If two candidate entries would lead to building the same underlying product, they are one finding aimed at two different incumbents. Keep the strongest and drop the other. Never use near-identical competitors to pad towards a quota.
+
+Returning one well-evidenced entry, or none at all, is the correct outcome on most days. A padded list of five is a worse result than an empty section, because it costs trust in the whole email.`
 
 // Section A — scored opportunities + businesses to replicate. Runs on odd
 // UTC days of the month. Everything below is Section A's own instructions
@@ -196,31 +200,32 @@ Output ONLY a JSON array wrapped in a \`\`\`json fenced block. Only include oppo
 
 BUSINESSES TO REPLICATE
 
-Find real named businesses making money that could be replicated and improved. Return up to 5, but only ones that genuinely qualify — fewer is correct if fewer pass. Requirements:
-- Must pass all three buildability tests from your instructions (Redmaine can build it, Quill can market it alone, specific 1% better angle). A business that is clearly profitable but needs premises, licensing, headcount, or a sales team to replicate must be DROPPED — this is the most common reason to reject an otherwise attractive business here.
-- Real companies with real URLs found via search today
-- Verifiable revenue evidence (reviews, rankings, community posts, estimated traffic)
-- UK businesses strongly preferred — only use US/AU if no UK equivalent found
-- Must not appear on the exclusion list above
-- Must not overlap with Adrian's existing portfolio above
+Apply the two-category rule from your instructions. Every entry is either Category A (foreign, proven demand, no UK equivalent) or Category B (UK, proven demand, one specific fixable weakness). Anything fitting neither is dropped, not softened into one of them.
 
-Search specifically for:
-- UK businesses with outdated tech or no AI integration
-- UK Etsy shops with 10,000+ reviews and no dominant brand
-- UK apps with 3-4 star ratings and obvious gaps in reviews
-- UK SaaS tools charging premium prices with weak competition
+WORKED REJECTIONS — real output from this scanner that should never have shipped. Do not reproduce these, or anything shaped like them:
+- "CVwizard" and "Kickresume" — rejected twice over. First, the claim that no UK-specific CV builder exists is simply false: StandOut CV, ApplyArc and Reed's own CV builder all operate in the UK today, so the Category A gap does not survive a competitor check. Second, the two entries are the same underlying idea — an AI CV builder — aimed at two different incumbents, which is exactly the padding the one-idea-one-entry rule forbids.
+- "LawDepot UK" — rejected because the competitor check was never really run. Rocket Lawyer UK has traded in the UK since 2012 with real traction. Any finding that treats UK online legal documents as an open space has not searched the space at all.
 
-For each include:
+The lesson in both is the same: the competitor check IS the work, not a formality to complete after choosing. Run it before you commit to an entry, and let it kill entries.
+
+Still applies to every entry here: all three buildability tests from your instructions, the exclusion list above, and Adrian's existing portfolio spaces above. A business that is clearly profitable but needs premises, licensing, headcount or a sales team to replicate must be DROPPED.
+
+For each entry return:
+- category: exactly "A" or "B"
+- idea_key: short kebab-case slug naming the UNDERLYING product idea, not the company — e.g. "ai-cv-builder", "uk-will-writing", "trade-invoice-app". Two entries may never share one.
 - name: actual business name
-- url: real URL found via search
-- what_they_sell: what they sell and actual price point
-- vulnerability: specific weakness found
-- how_to_beat_them: concrete plan
+- url: real URL verified via search today
+- what_they_sell: what it is, and the actual price point
+- demand_evidence: {"metric":"what you measured — monthly visits / review count / funding raised / app rating and volume / reported revenue","value":"the actual figure","source":"where it came from, with URL"}
+- competitor_check: {"searched":["the actual searches you ran"],"found":[{"name":"...","url":"...","why_not_equivalent":"..."}],"gap_survives":true|false,"reasoning":"..."}
+    Category A: gap_survives MUST be true. If a credible UK equivalent exists, drop the entry rather than output it with gap_survives false.
+    Category B: this records who else serves these customers and why the weak point is still worth attacking.
+- weak_point: CATEGORY B ONLY — {"what":"the one narrow defect","evidence":"the real complaint, missing feature or pricing problem, and where you saw it","fix":"what fixing only this part looks like"}. Omit entirely for Category A.
 - buildability: {"redmaine_can_build":"...","quill_can_market":"...","one_percent_better":"..."}
 - effort: "Low", "Medium", or "High"
 - verdict: "CLONE IT", "WORTH STUDYING", or "LEAVE IT"
 
-Output as a second JSON array in a \`\`\`replicate fenced block. Every business must be real, named, with a URL found via search.
+Output as a second JSON array in a \`\`\`replicate fenced block. Maximum 3 entries — a ceiling, not a target. One or zero is the normal, correct result on most days.
 
 ---
 
@@ -379,7 +384,11 @@ function sectionForDate(now) {
 // lose a whole section to a parse failure. Still far inside
 // RESEARCH_TIMEOUT_MS (720s) — Section A already does comparable scoring work
 // within budget.
-const SECTION_CONFIG = {
+// Exported so a real Section A run can be reproduced outside the handler —
+// same system prompt, same user prompt, same token and search budgets — to
+// check what the model actually returns without sending an email or writing
+// to the database.
+export const SECTION_CONFIG = {
   A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 8000, maxUses: 8 },
   B: { buildUserPrompt: buildResearchUserB, maxTokens: 12000, maxUses: 10 },
 }
@@ -657,6 +666,112 @@ export function parseOpportunities(text) {
 // match the opportunities block above or vice versa). Independent of
 // parseOpportunities so a failure here can be handled without affecting the
 // existing opportunity analysis at all.
+// Ceiling, not a target. Three is deliberately lower than the old five: the
+// failure mode this section had was padding towards a quota with near-identical
+// competitors, and a smaller ceiling removes some of the pull to do that.
+export const REPLICATE_MAX = 3
+
+const isStr = (v) => typeof v === 'string' && v.trim().length > 0
+const isUrl = (v) => isStr(v) && /^https?:\/\/[^\s]+\.[^\s]+/i.test(v.trim())
+
+// Why this exists as CODE and not only as prompt wording: the previous prompt
+// already demanded real named businesses with real URLs and verifiable revenue
+// evidence, and the scanner still shipped CVwizard, Kickresume and LawDepot UK
+// — two of them the same idea aimed at different incumbents, all three with a
+// competitor check that was never really run. Instructions alone demonstrably
+// did not hold. These checks are structural: an entry that does not carry its
+// own evidence cannot reach the email regardless of how convincing its prose is.
+//
+// Deliberately checks for the PRESENCE and SHAPE of evidence, never the truth
+// of it — code cannot know whether Rocket Lawyer UK competes with LawDepot. It
+// can know whether the model recorded searching, what it found, and whether it
+// concluded the gap survived. That is the measure-then-judge split used for the
+// image backstop: the model measures, fixed rules decide.
+export function replicateRejectionReasons(o) {
+  if (!o || typeof o !== 'object') return ['not an object']
+  const reasons = []
+  const cat = String(o.category ?? '').trim().toUpperCase()
+
+  if (cat !== 'A' && cat !== 'B') reasons.push(`category must be "A" or "B", got ${JSON.stringify(o.category ?? null)}`)
+  if (!isStr(o.name)) reasons.push('no business name')
+  if (!isUrl(o.url)) reasons.push('no usable URL')
+  if (!isStr(o.idea_key)) reasons.push('no idea_key — cannot enforce one-idea-one-entry without it')
+
+  const d = o.demand_evidence
+  if (!d || typeof d !== 'object') reasons.push('no demand_evidence — the "proven demand" claim is unsupported')
+  else {
+    if (!isStr(d.metric)) reasons.push('demand_evidence.metric missing')
+    if (!isStr(d.value)) reasons.push('demand_evidence.value missing — no actual figure')
+    if (!isStr(d.source)) reasons.push('demand_evidence.source missing — figure cited to nothing')
+  }
+
+  const c = o.competitor_check
+  if (!c || typeof c !== 'object') reasons.push('no competitor_check')
+  else {
+    if (!Array.isArray(c.searched) || !c.searched.some(isStr)) {
+      reasons.push('competitor_check.searched is empty — the check was not actually run')
+    }
+    if (!isStr(c.reasoning)) reasons.push('competitor_check.reasoning missing')
+    // The LawDepot UK / CVwizard failure in one line: a Category A entry whose
+    // own competitor check says the UK gap does not survive is self-refuting,
+    // and must never be surfaced with the contradiction left as a caveat.
+    if (cat === 'A' && c.gap_survives !== true) {
+      reasons.push('Category A but the UK gap did not survive its own competitor check')
+    }
+  }
+
+  if (cat === 'B') {
+    const w = o.weak_point
+    if (!w || typeof w !== 'object') reasons.push('Category B with no weak_point — "could be better" is not a finding')
+    else {
+      if (!isStr(w.what)) reasons.push('weak_point.what missing')
+      if (!isStr(w.evidence)) reasons.push('weak_point.evidence missing — the weakness is asserted, not evidenced')
+      if (!isStr(w.fix)) reasons.push('weak_point.fix missing — no description of fixing just that part')
+    }
+  }
+
+  return reasons
+}
+
+// Applies the per-entry rules above, then the two cross-entry rules that a
+// single-entry check structurally cannot catch: one idea per email, and one
+// business per email. CVwizard + Kickresume passed every per-entry test and
+// were still wrong together, because they were one idea twice.
+export function filterReplicateBusinesses(entries) {
+  const kept = []
+  const dropped = []
+  const seenIdea = new Set()
+  const seenName = new Set()
+
+  for (const o of Array.isArray(entries) ? entries : []) {
+    const reasons = replicateRejectionReasons(o)
+    const ideaKey = String(o?.idea_key ?? '').trim().toLowerCase()
+    const nameKey = String(o?.name ?? '').trim().toLowerCase()
+
+    if (!reasons.length) {
+      if (seenIdea.has(ideaKey)) reasons.push(`same underlying idea as an earlier entry ("${ideaKey}") — one idea, one entry`)
+      else if (seenName.has(nameKey)) reasons.push(`duplicate business "${o.name}"`)
+    }
+
+    if (reasons.length) {
+      dropped.push({ name: isStr(o?.name) ? o.name : '(unnamed)', reasons })
+      continue
+    }
+
+    seenIdea.add(ideaKey)
+    seenName.add(nameKey)
+    kept.push(o)
+  }
+
+  // Truncation is recorded rather than silent — an over-quota entry was valid,
+  // it just lost on ordering, and that reads very differently in a log from an
+  // entry that failed the evidence bar.
+  const overflow = kept.slice(REPLICATE_MAX)
+  for (const o of overflow) dropped.push({ name: o.name, reasons: [`over the ${REPLICATE_MAX}-entry ceiling`] })
+
+  return { kept: kept.slice(0, REPLICATE_MAX), dropped }
+}
+
 export function parseReplicateBusinesses(text) {
   let jsonStr = null
   const fenced = [...text.matchAll(/```replicate\s*([\s\S]*?)```/g)]
@@ -665,7 +780,15 @@ export function parseReplicateBusinesses(text) {
 
   const parsed = JSON.parse(jsonStr)
   if (!Array.isArray(parsed)) throw new Error('Businesses-to-replicate JSON was not an array')
-  return parsed.slice(0, 5)
+
+  const { kept, dropped } = filterReplicateBusinesses(parsed)
+  for (const d of dropped) {
+    console.log(`[opportunity-scanner-worker-background] replicate entry dropped — ${d.name}: ${d.reasons.join('; ')}`)
+  }
+  if (parsed.length && !kept.length) {
+    console.log(`[opportunity-scanner-worker-background] all ${parsed.length} replicate entr${parsed.length === 1 ? 'y' : 'ies'} failed the evidence bar — section will be omitted`)
+  }
+  return kept
 }
 
 // Parses the "UK COMPANIES HOUSE INTELLIGENCE" section — a distinctly fenced
@@ -857,20 +980,56 @@ function verdictBadgeReplicate(v) {
   return `<span style="display:inline-block;background:${style.bg};color:${style.fg};font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(v)}</span>`
 }
 
+// Category chip — states which of the two shapes this entry is, so the claim
+// being made is legible before reading the detail. A is "nobody serves this in
+// the UK"; B is "somebody does, and here is the one thing they get wrong".
+function categoryChipReplicate(cat) {
+  const c = String(cat || '').trim().toUpperCase()
+  const style = c === 'A'
+    ? { bg: '#e0f2fe', fg: '#075985', label: 'A · Not in the UK yet' }
+    : { bg: '#f3e8ff', fg: '#6b21a8', label: 'B · UK, one fixable weakness' }
+  return `<span style="display:inline-block;background:${style.bg};color:${style.fg};font-weight:700;font-size:11px;padding:3px 9px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(style.label)}</span>`
+}
+
 function replicateCard(o, i) {
   const titleHtml = o.url
     ? `<a href="${esc(o.url)}" style="color:#111827;text-decoration:none">${esc(o.name)}</a>`
     : esc(o.name)
+
+  // Demand evidence is rendered as figure-then-source rather than prose, so a
+  // claim with nothing behind it would look conspicuously empty instead of
+  // reading as confident copy. That asymmetry is the point.
+  const d = o.demand_evidence
+  const demandHtml = d && typeof d === 'object'
+    ? field('Evidence of demand', `${d.value ?? ''} — ${d.metric ?? ''} (${d.source ?? 'no source given'})`)
+    : ''
+
+  const w = o.weak_point
+  const weakHtml = w && typeof w === 'object'
+    ? field('The one weak point', `${w.what ?? ''} — ${w.evidence ?? ''}`) + field('What fixing just that looks like', w.fix ?? '')
+    : ''
+
+  const c = o.competitor_check
+  const rivals = c && Array.isArray(c.found) && c.found.length
+    ? c.found.map((f) => f?.name).filter(Boolean).join(', ')
+    : 'none found'
+  const competitorHtml = c && typeof c === 'object'
+    ? field('Competitor check', `${c.reasoning ?? ''} (checked: ${rivals})`)
+    : ''
+
   return `
   <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:24px;margin-bottom:20px">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px;gap:12px">
       <div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4;flex:1">${i + 1}. ${titleHtml}</div>
       ${verdictBadgeReplicate(String(o.verdict ?? ''))}
     </div>
+    <div style="margin-bottom:10px">${categoryChipReplicate(o.category)}</div>
     ${o.url ? `<div style="font-size:12px;color:#6b7280;font-family:sans-serif;margin-bottom:12px;word-break:break-all">${esc(o.url)}</div>` : ''}
     ${field('What they sell', o.what_they_sell)}
-    ${field('Why they&rsquo;re vulnerable', o.vulnerability)}
-    ${field('How to replicate &amp; beat them', o.how_to_beat_them)}
+    ${demandHtml}
+    ${weakHtml}
+    ${competitorHtml}
+    ${o.buildability?.one_percent_better ? field('Your angle', o.buildability.one_percent_better) : ''}
     ${field('Effort to replicate', o.effort)}
   </div>`
 }
@@ -1007,7 +1166,7 @@ function buildEmail(opportunities, dateStr, replicateBusinesses = [], opts = {})
   const replicateSection = replicateBusinesses.length ? `
   <div style="margin-top:8px;margin-bottom:20px;padding-top:28px;border-top:2px solid #e5e7eb">
     <div style="font-size:20px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">Businesses to Replicate</div>
-    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${replicateBusinesses.length} real, profitable business${replicateBusinesses.length === 1 ? '' : 'es'} worth cloning or studying</div>
+    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${replicateBusinesses.length} named business${replicateBusinesses.length === 1 ? '' : 'es'} that survived a competitor check &mdash; each either absent from the UK, or here with one specific fixable weakness</div>
     ${replicateBusinesses.map(replicateCard).join('')}
   </div>` : ''
   return `<!DOCTYPE html>
