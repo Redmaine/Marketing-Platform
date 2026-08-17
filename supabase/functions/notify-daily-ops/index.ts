@@ -30,9 +30,18 @@ serve(async (req) => {
   try { body = await req.json() } catch { /* no body = real yesterday */ }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+  // Service-role key as a bearer token, which daily-ops-check's own cronAuth
+  // fallback accepts directly — the same way sweep-stuck-metricool-posts calls
+  // schedule-to-metricool. This line used to pass a local `cronSecret` const
+  // read straight from the environment; when the auth block above was replaced
+  // with the shared checkCronAuth helper (16 Aug 2026) that const went with it
+  // and this reference was missed. Auth then passed and the function died one
+  // line later on "ReferenceError: cronSecret is not defined", so the daily
+  // email silently stopped arriving while the cron job kept reporting a run.
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   const checkRes = await fetch(`${supabaseUrl}/functions/v1/daily-ops-check`, {
     method: 'POST',
-    headers: { 'x-cron-secret': cronSecret, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, 'Content-Type': 'application/json' },
     body: JSON.stringify(body.date ? { date: body.date } : {}),
   })
   if (!checkRes.ok) {
