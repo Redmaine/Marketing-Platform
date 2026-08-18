@@ -269,6 +269,23 @@ serve(async (req) => {
 
     const client = item.client
 
+    // Inactive-client guard (added 18 Aug 2026). "Quill Gmail E2E Test 0810"
+    // — a client set active=false a week earlier — kept reaching Metricool
+    // brand-ID/slot-collision logic and writing real rows to
+    // edge_function_errors purely because something still queued content
+    // against it (a leftover manual/E2E invocation, not the nightly sweep).
+    // Checked here, before any Metricool/brand-ID/slot work, so an inactive
+    // client can never trigger a live action again regardless of what
+    // enqueues against it. Deliberately does NOT call logEdgeError: a client
+    // being off is an expected, unremarkable state, not an operational
+    // failure worth alerting on — markFailed still records why on the queue
+    // row itself, for anyone looking at that specific item.
+    if (client?.active !== true) {
+      const msg = `Client "${client?.name ?? item.client_id}" is not active — refusing to schedule.`
+      await markFailed(admin, item.id, msg)
+      return json({ error: msg }, 422)
+    }
+
     // LinkedIn personal-profile-vs-company-page routing: Metricool's
     // /v2/scheduler/posts request body has no field for this — the
     // "providers: [{ network: 'linkedin' }]" shape below is identical for

@@ -35,6 +35,18 @@ import { checkCronAuth } from '../_shared/cronAuth.ts'
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
+// Same cross-function error log every other cron function already writes to
+// (see daily-ops-check's edge_function_errors_window check). Added 18 Aug
+// 2026 — a dispatch failure (e.g. "Your Company AI" returning HTTP 503 on
+// 17 Aug) previously only reached console.error, which daily-ops-check has
+// no way to read, so a real per-client dispatch failure was invisible to
+// the daily report even though every other function's failures show up
+// there. No separate alerting path — this reuses the existing one.
+async function logEdgeError(admin: Admin, message: string) {
+  const { error } = await admin.from('edge_function_errors').insert({ function_name: 'midnight-cron', error_message: message })
+  if (error) console.error(`[midnight-cron] failed to write edge_function_errors: ${error.message}`)
+}
+
 serve(async (req) => {
   const auth = await checkCronAuth(req, 'midnight-cron')
   if (!auth.authorised) return auth.response!
@@ -75,9 +87,15 @@ serve(async (req) => {
         headers: { Authorization: `Bearer ${SERVICE_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id: client.id }),
       }).then((res) => {
-        if (!res.ok) console.error(`[midnight-cron] dispatch to ${client.name} returned HTTP ${res.status}`)
+        if (!res.ok) {
+          const msg = `dispatch to ${client.name} returned HTTP ${res.status}`
+          console.error(`[midnight-cron] ${msg}`)
+          logEdgeError(admin, msg)
+        }
       }).catch((e) => {
-        console.error(`[midnight-cron] dispatch to ${client.name} failed: ${String((e as Error)?.message ?? e)}`)
+        const msg = `dispatch to ${client.name} failed: ${String((e as Error)?.message ?? e)}`
+        console.error(`[midnight-cron] ${msg}`)
+        logEdgeError(admin, msg)
       })
 
       // deno-lint-ignore no-explicit-any
