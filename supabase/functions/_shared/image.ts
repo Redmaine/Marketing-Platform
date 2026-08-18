@@ -629,6 +629,111 @@ const REVIEW_ESCALATION = {
 
 const IMAGE_REVIEW_MAX_ATTEMPTS = 3
 
+// ── Visual-style compliance (all brands) ─────────────────────────────────────
+// Added 18 Aug 2026. Until now the ONLY check on a generated image was
+// passesStylePrefixCheck, which verifies the brand's visual_style text was
+// present in the PROMPT — it never looks at the resulting image. Two confirmed
+// failures made the gap concrete: a CRHQ image with a visible human figure
+// reached the approval queue (11 Aug), and Quill kept producing illustrated
+// people despite its own "no people" rule (18 Aug).
+//
+// The pre-existing face/text backstop above is CRHQ-only (it runs on the Flux
+// branch, and useFlux is slug === 'crhq'), so every other brand had no
+// post-generation image check of any kind.
+//
+// Deliberately generic: it reads each brand's own visual_style from
+// mkt_clients and asks whether THIS image breaks the prohibitions stated
+// there. No CRHQ- or Quill-specific logic, so any brand with image generation
+// is covered the moment it has a visual_style — 6 of the 9 image-generating
+// brands currently state some form of "no people".
+const STYLE_REVIEW_MAX_ATTEMPTS = 3
+
+// Same measure-then-judge split the face/text backstop uses: the model reports
+// what it observes and which stated rule it breaks; fixed code decides the
+// outcome. It is told to flag ONLY unambiguous breaches of explicit
+// prohibitions — a brand's aesthetic preferences (film stock, palette,
+// lighting) are not pass/fail criteria, and treating them as such would stall
+// the pipeline on taste rather than rules.
+const STYLE_COMPLIANCE_SYSTEM = `You check whether a generated image breaks the explicit visual rules a brand has set. You are given the brand's own visual style specification and one image.
+
+Return ONLY a JSON object, no preamble, no code fence:
+
+{
+  "violations": [
+    { "rule": "the specific prohibition breached, quoted or closely paraphrased from the specification", "observed": "what is actually visible in the image that breaches it", "certainty": 0.0-1.0 }
+  ]
+}
+
+Rules for judging:
+- Report ONLY breaches of explicit PROHIBITIONS — wording like "no ...", "never ...", "absolutely no ...", "avoid entirely". These are hard rules.
+- Do NOT report aesthetic or stylistic preferences as violations. Colour palette, film grain, lens character, lighting mood, composition and general "feel" are NOT pass/fail criteria, even when the specification describes them in detail.
+- A prohibition on people/human figures/faces is breached by ANY depicted person, including illustrated, cartoon, silhouetted, distant, partial, or seen from behind — unless the specification itself explicitly permits that form.
+- certainty is how sure you are the breach is really present and really prohibited. Use below 0.7 when you are unsure, guessing, or the rule is ambiguous.
+- An empty violations array is the correct and expected answer for a compliant image. Do not invent a breach to seem thorough.`
+
+interface StyleComplianceResult {
+  violations?: Array<{ rule?: unknown; observed?: unknown; certainty?: unknown }>
+}
+
+// Only act on breaches the model is genuinely confident about. Below this, a
+// borderline call would cost the post its image and flag it for a human on
+// what may be a hallucinated violation — the wrong trade for a false positive.
+const STYLE_VIOLATION_MIN_CERTAINTY = 0.7
+
+// Pure: same measurement always yields the same verdict. Mirrors
+// judgeImageMeasurement.
+export function judgeStyleCompliance(result: StyleComplianceResult): { compliant: boolean; violation: string | null } {
+  const found = (result?.violations ?? [])
+    .filter((v) => Number(v?.certainty ?? 0) >= STYLE_VIOLATION_MIN_CERTAINTY)
+    .map((v) => {
+      const rule = String(v?.rule ?? '').trim() || 'unstated rule'
+      const observed = String(v?.observed ?? '').trim()
+      return observed ? `${rule} — ${observed}` : rule
+    })
+
+  if (!found.length) return { compliant: true, violation: null }
+  return { compliant: false, violation: found.join('; ').slice(0, 500) }
+}
+
+// Asks the vision model to check this image against this brand's own rules.
+// Throws on transport/parse failure so the caller can log it and decide —
+// never silently returns "compliant" on an error.
+async function checkStyleCompliance(bytes: Uint8Array, visualStyle: string): Promise<{ compliant: boolean; violation: string | null }> {
+  // Chunked base64 — a spread/apply over a ~1.5MB image blows the call stack.
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  const b64 = btoa(binary)
+
+  const raw = await callAnthropicVision(
+    STYLE_COMPLIANCE_SYSTEM,
+    b64,
+    `Brand visual style specification:\n\n${visualStyle}\n\nCheck this image against it.`,
+    1000,
+  )
+  const match = raw.match(/\{[\s\S]*\}/)
+  if (!match) throw new Error(`style compliance check returned no JSON: ${raw.slice(0, 200)}`)
+  return judgeStyleCompliance(JSON.parse(match[0]) as StyleComplianceResult)
+}
+
+// Flags the post the same way a failed TEXT review is flagged (see fill.ts's
+// needs_attention branch), so a human sees it in the approval queue with a
+// reason naming the rule that failed. Deliberately does NOT touch image_url —
+// a non-compliant image must never be attached.
+async function flagImageNeedsAttention(
+  admin: Admin,
+  contentQueueId: string,
+  reason: string,
+): Promise<void> {
+  const { error } = await admin.from('mkt_content_queue').update({
+    review_status: 'needs_attention',
+    review_reason: `Image failed visual-style compliance: ${reason}`.slice(0, 1000),
+  }).eq('id', contentQueueId)
+  if (error) console.error(`[image] flagging needs_attention failed for ${contentQueueId}: ${error.message}`)
+}
+
 // ── AI provenance marker ─────────────────────────────────────────────────────
 // Meta requires photorealistic AI-generated organic posts to carry an AI
 // disclosure, and its automatic detection keys off industry provenance
@@ -870,8 +975,11 @@ export async function generatePostImage(
   }
 
   try {
-    let rawBytes: Uint8Array
-    if (useFlux) {
+    // Produces raw model output from whichever provider this brand uses.
+    // Returns null when the Flux face/text backstop exhausted its own attempts
+    // (that path logs its own 'exhausted' event before giving up).
+    const generateRaw = async (attemptPrompt: string): Promise<Uint8Array | null> => {
+      if (useFlux) {
       // Generate -> measure -> judge -> regenerate. The backstop is the gate:
       // an image is only used if it clears BOTH the face and text thresholds,
       // regardless of what the prose rules in the prompt asked for.
@@ -884,8 +992,8 @@ export async function generatePostImage(
       let lastBytes: Uint8Array | null = null
 
       for (let attempt = 1; attempt <= IMAGE_REVIEW_MAX_ATTEMPTS; attempt++) {
-        const attemptPrompt = escalations.length ? `${prompt}\n\n${escalations.join('\n')}` : prompt
-        const candidate = await callFlux(attemptPrompt, apiKey)
+        const fluxPrompt = escalations.length ? `${attemptPrompt}\n\n${escalations.join('\n')}` : attemptPrompt
+        const candidate = await callFlux(fluxPrompt, apiKey)
         lastBytes = candidate
 
         let measurement: ImageMeasurement
@@ -924,14 +1032,84 @@ export async function generatePostImage(
         await logImageReview(admin, client, contentQueueId, platform, IMAGE_REVIEW_MAX_ATTEMPTS, 'exhausted',
           [`no attempt passed review after ${IMAGE_REVIEW_MAX_ATTEMPTS} tries — no image attached`], null)
         console.error(`[image] ${client.name}: all ${IMAGE_REVIEW_MAX_ATTEMPTS} attempts failed review for ${contentQueueId} — posting without an image`)
-        return
+        return null
       }
-      rawBytes = accepted
-      void lastBytes
-    } else {
+        void lastBytes
+        return accepted
+      }
+
       const negativePrompt = wantsHeadlineOverlay(client) ? CRHQ_NEGATIVE_PROMPT : undefined
-      rawBytes = await callStabilityAI(prompt, apiKey, negativePrompt)
+      return await callStabilityAI(attemptPrompt, apiKey, negativePrompt)
     }
+
+    // ── Visual-style compliance gate (every brand) ───────────────────────────
+    // Generate -> check the IMAGE against this brand's own visual_style
+    // prohibitions -> regenerate on a confident breach. This is the check that
+    // was missing entirely: passesStylePrefixCheck above only proves the style
+    // text reached the prompt, and the face/text backstop only runs for CRHQ.
+    //
+    // A brand with no visual_style set skips this — there is nothing to check
+    // against, and inventing rules for it would be worse than not checking.
+    const styleRules = String(client.visual_style ?? '').trim()
+    let rawBytes: Uint8Array | null = null
+    let lastViolation: string | null = null
+
+    for (let attempt = 1; attempt <= STYLE_REVIEW_MAX_ATTEMPTS; attempt++) {
+      const attemptPrompt = lastViolation
+        // Escalate on the rule that actually broke, same reasoning as
+        // REVIEW_ESCALATION — regenerating with an identical prompt is another
+        // roll of the same dice.
+        ? `${prompt}\n\nCRITICAL: the previous attempt broke this brand's visual rules — ${lastViolation}. That is a hard prohibition, not a preference. Regenerate so it cannot recur.`
+        : prompt
+
+      const candidate = await generateRaw(attemptPrompt)
+      // Provider-level exhaustion (Flux face/text backstop) already logged and
+      // already decided this post goes out image-less.
+      if (!candidate) return
+
+      if (!styleRules) { rawBytes = candidate; break }
+
+      let verdict: { compliant: boolean; violation: string | null }
+      try {
+        verdict = await checkStyleCompliance(candidate, styleRules)
+      } catch (e) {
+        // A checker failure must not silently attach an unchecked image, but
+        // it must not cost the post its image on a transport blip either.
+        // Logged as 'error' so it is visible and countable; the loop retries.
+        const msg = String((e as Error)?.message ?? e)
+        console.error(`[image] ${client.name}: style compliance check failed on attempt ${attempt} — ${msg}`)
+        await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [`style check error: ${msg}`], null)
+        continue
+      }
+
+      await logImageReview(
+        admin, client, contentQueueId, platform, attempt,
+        verdict.compliant ? 'pass' : 'reject',
+        [verdict.compliant ? 'visual_style compliant' : `STYLE ${verdict.violation}`],
+        null,
+      )
+
+      if (verdict.compliant) {
+        rawBytes = candidate
+        if (attempt > 1) console.log(`[image] ${client.name}: style-compliant on attempt ${attempt} for ${contentQueueId}`)
+        break
+      }
+
+      console.error(`[image] ${client.name}: attempt ${attempt} broke visual_style for ${contentQueueId} — ${verdict.violation}`)
+      lastViolation = verdict.violation
+    }
+
+    if (!rawBytes) {
+      // Every attempt broke the brand's own stated rules. Do NOT attach the
+      // image, and flag the post for a human the same way a failed text review
+      // is flagged — with a reason naming the rule that failed.
+      await logImageReview(admin, client, contentQueueId, platform, STYLE_REVIEW_MAX_ATTEMPTS, 'exhausted',
+        [`visual_style not met after ${STYLE_REVIEW_MAX_ATTEMPTS} attempts — no image attached`], null)
+      await flagImageNeedsAttention(admin, contentQueueId, lastViolation ?? 'compliance check could not complete')
+      console.error(`[image] ${client.name}: all ${STYLE_REVIEW_MAX_ATTEMPTS} attempts broke visual_style for ${contentQueueId} — flagged needs_attention, no image attached`)
+      return
+    }
+
     let bytes = await resizeForPlatform(rawBytes, platform)
 
     // CRHQ-only (see wantsHeadlineOverlay): force a deliberate B&W treatment
