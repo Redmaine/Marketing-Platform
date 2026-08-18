@@ -39,6 +39,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { scrapeCrhqContent, type ScrapedVideo, type ScrapedArticle } from '../_shared/crhqScrape.ts'
 import { platformSchedule, hasAutoPostOnDate } from '../_shared/fill.ts'
 import { dayOfWeekUK, addDays, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
+import { ukTimeSlotToUtc } from '../_shared/ukTime.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
 import { generatePostImage } from '../_shared/image.ts'
 import { latestOptimisationNotes } from '../_shared/optimisation.ts'
@@ -211,8 +212,12 @@ async function nextAvailableSlot(admin: Admin, client: Record<string, any>, plat
   for (let walked = 0; walked < SAFETY_MAX_DAYS_WALKED; walked++) {
     if (schedule.days.has(dayOfWeekUK(day)) && !(await hasAutoPostOnDate(admin, client.id, platform, day))) {
       const time = schedule.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
-      const [hh, mm] = time.split(':')
-      const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+      // ukTimeSlotToUtc, not setHours — this is the exact code path behind
+      // the confirmed live bug: CRHQ's Instagram slot is configured 07:30 UK
+      // and was firing 08:30 UK during BST. See ukTime.ts's header (18 Aug
+      // 2026 fix) — setHours() sets the hour in the RUNTIME's local zone,
+      // which is UTC here, not Europe/London.
+      const slot = ukTimeSlotToUtc(day, time)
       // The walk moves strictly forward in time, so the moment a candidate
       // slot exceeds the 48h window every later candidate would too — no
       // slot available within the window this run, rather than reaching

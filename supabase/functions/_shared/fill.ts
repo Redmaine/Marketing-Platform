@@ -2,6 +2,7 @@
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
 import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, dateOnly, isPlatformConnected, stripMarkdown } from './generate.ts'
+import { ukTimeSlotToUtc } from './ukTime.ts'
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
 import { latestOptimisationNotes } from './optimisation.ts'
@@ -161,10 +162,11 @@ export async function cronPostOnDate(admin: Admin, clientId: string, platform: s
 export async function slotDateTime(admin: Admin, client: Record<string, any>, platform: string, day: Date): Promise<Date> {
   const schedule = await platformSchedule(admin, client, platform)
   const slotTime = schedule?.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
-  const [hh, mm] = slotTime.split(':')
-  const slot = new Date(day)
-  slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
-  return slot
+  // ukTimeSlotToUtc, not setHours — see its header (18 Aug 2026 fix).
+  // slotTime is UK-local ("07:30"); setHours() would set it in the RUNTIME's
+  // local zone, which is UTC on this Edge Function runtime, not Europe/London
+  // — so "07:30" was landing as 07:30 UTC = 08:30 UK during BST.
+  return ukTimeSlotToUtc(day, slotTime)
 }
 
 // The next empty posting slot for this brand+platform, walking forward from
@@ -447,9 +449,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
 
         // Slot time: the per-platform schedule's time for THIS day when set,
         // otherwise the client-wide post_time exactly as before.
+        // ukTimeSlotToUtc, not setHours — see slotDateTime's comment above
+        // and ukTime.ts's header (18 Aug 2026 fix).
         const slotTime = schedule?.timeByDay.get(dayOfWeekUK(day)) ?? String(client.post_time ?? '09:00')
-        const [hh, mm] = slotTime.split(':')
-        const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+        const slot = ukTimeSlotToUtc(day, slotTime)
 
         // Auto-approve — set by Adrian per brand (mkt_clients.auto_approve),
         // never by any automated signal. Only applies to a post that actually

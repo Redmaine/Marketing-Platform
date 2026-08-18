@@ -27,6 +27,7 @@ import { cors, json } from '../_shared/cors.ts'
 import { buildSystemPrompt } from '../_shared/prompts.ts'
 import { callAnthropicStructured, addDays, stripMarkdown } from '../_shared/generate.ts'
 import { hasAutoPostOnDate } from '../_shared/fill.ts'
+import { ukTimeSlotToUtc } from '../_shared/ukTime.ts'
 
 const MAX_SLOT_SEARCH_DAYS = 21
 
@@ -167,7 +168,7 @@ serve(async (req) => {
     const monday = addDays(base, 1)
     const targets = [monday, addDays(monday, 2), addDays(monday, 4)] // Mon, Wed, Fri
 
-    const [hh, mm] = String(client.post_time ?? '09:00').split(':')
+    const postTime = String(client.post_time ?? '09:00')
     const reservedSlots = new Set<string>()
     // Bug fix — these rows used to get pillar: "Blog: <title>", a synthetic
     // label that isn't one of the client's real content_pillars. It showed
@@ -185,7 +186,10 @@ serve(async (req) => {
     for (let i = 0; i < posts.length; i++) {
       const platform = connected[i % connected.length]
       const day = await nextFreeSlot(admin, client.id, platform, targets[i], reservedSlots)
-      const slot = new Date(day); slot.setHours(Number(hh) || 9, Number(mm) || 0, 0, 0)
+      // ukTimeSlotToUtc, not setHours — see ukTime.ts's header (18 Aug 2026
+      // fix). post_time is UK-local; setHours() sets the hour in this
+      // runtime's own local zone, which is UTC, not Europe/London.
+      const slot = ukTimeSlotToUtc(day, postTime)
       rows.push({
         client_id: client.id, platform, content_type: 'post',
         pillar: clientPillars[i % clientPillars.length], body: stripMarkdown(posts[i]), status: 'draft', generated_by: 'ai',

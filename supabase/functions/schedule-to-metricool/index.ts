@@ -19,6 +19,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 import { platformSchedule } from '../_shared/platformSchedule.ts'
+import { dayOfWeekUK, ukTimeSlotToUtc } from '../_shared/ukTime.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -113,14 +114,25 @@ async function nextSlot(
   if (schedule) {
     // Walk forward to the next day this PLATFORM actually posts on, and use
     // that day's own configured time.
+    //
+    // dayOfWeekUK(d), not d.getDay() — this runtime's local timezone is UTC
+    // (confirmed directly against a deployed function), not Europe/London, so
+    // the native getDay() can disagree with the UK calendar day for up to an
+    // hour around UK midnight during BST. schedule.days is keyed by UK
+    // weekday (platformSchedule.ts), so the lookup key has to match.
     for (let i = 0; i < 14; i++) {
       const d = new Date(now)
       d.setDate(now.getDate() + i)
-      if (!schedule.days.has(d.getDay())) continue
-      const time = schedule.timeByDay.get(d.getDay()) || String(client.post_time ?? '09:00')
-      const [hh, mm] = time.split(':').map(Number)
-      d.setHours(hh || 0, mm || 0, 0, 0)
-      if (d > now) return d
+      const ukDay = dayOfWeekUK(d)
+      if (!schedule.days.has(ukDay)) continue
+      const time = schedule.timeByDay.get(ukDay) || String(client.post_time ?? '09:00')
+      // ukTimeSlotToUtc, not setHours — see ukTime.ts's header (18 Aug 2026
+      // fix). This is the exact class of bug that put a CRHQ post at 07:00
+      // instead of its real 18:00 Facebook slot, one layer deeper: even
+      // after picking the right slot, writing it with setHours() would still
+      // land an hour off during BST.
+      const slot = ukTimeSlotToUtc(d, time)
+      if (slot > now) return slot
     }
     // Every configured day inside the next fortnight is already behind us
     // (only reachable if the schedule is very sparse). Fall through rather
@@ -128,7 +140,7 @@ async function nextSlot(
   }
 
   // No per-platform schedule for this brand+platform — original behaviour.
-  const [hh, mm] = (String(client.post_time ?? '') || '09:00').split(':').map(Number)
+  const fallbackTime = String(client.post_time ?? '') || '09:00'
   const targets = ((client.post_days ?? []) as string[])
     // Case-insensitive: some brands store lowercase day names, and the old
     // exact-match lookup silently dropped every one of them.
@@ -136,13 +148,15 @@ async function nextSlot(
     .filter((n) => n != null)
 
   if (targets.length === 0) {
-    const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh || 0, mm || 0, 0, 0); return d
+    const d = new Date(now); d.setDate(d.getDate() + 1); return ukTimeSlotToUtc(d, fallbackTime)
   }
   for (let i = 0; i < 14; i++) {
-    const d = new Date(now); d.setDate(now.getDate() + i); d.setHours(hh || 0, mm || 0, 0, 0)
-    if (targets.includes(d.getDay()) && d > now) return d
+    const d = new Date(now); d.setDate(now.getDate() + i)
+    if (!targets.includes(dayOfWeekUK(d))) continue
+    const slot = ukTimeSlotToUtc(d, fallbackTime)
+    if (slot > now) return slot
   }
-  const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh || 0, mm || 0, 0, 0); return d
+  const d = new Date(now); d.setDate(d.getDate() + 1); return ukTimeSlotToUtc(d, fallbackTime)
 }
 
 // ── Metricool call with retry ────────────────────────────────────────────────
