@@ -18,6 +18,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+import { platformSchedule } from '../_shared/platformSchedule.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -25,6 +26,14 @@ const cors = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 const DOW = { Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3, Thursday: 4, Friday: 5, Saturday: 6 }
+
+// Case-insensitive view of DOW. mkt_clients.post_days is free text and brands
+// genuinely differ: CRHQ stores lowercase ("monday"), everyone else stores
+// capitalised ("Monday"). The original exact-match lookup silently dropped
+// every lowercase day, leaving the day list empty — see nextSlot below.
+const DOW_LOWER: Record<string, number> = Object.fromEntries(
+  Object.entries(DOW).map(([name, n]) => [name.toLowerCase(), n]),
+)
 
 const METRICOOL_USER_ID = '4984082'
 
@@ -68,18 +77,72 @@ async function logEdgeError(admin: ReturnType<typeof createClient>, message: str
   if (error) console.error('[schedule-to-metricool] Failed to write edge_function_errors:', error.message)
 }
 
-function nextSlot(postDays: string[], postTime: string | null): Date {
+// Picks the slot for a post whose own scheduled_for is missing or already in
+// the past.
+//
+// Fix (18 Aug 2026) — this used to take only the client-wide
+// mkt_clients.post_days / post_time and never saw `platform` at all, so every
+// platform for a brand converged on one time. mkt_clients.post_time is a
+// single brand-wide default and structurally cannot express a per-platform
+// cadence; the real per-platform schedule lives in mkt_content_schedule.
+//
+// Confirmed instance: a CRHQ FACEBOOK post landed at 07:00. CRHQ's Facebook
+// slot is Tue/Thu/Sat 18:00 and its Instagram slot is Mon/Tue/Thu/Fri 07:30 —
+// 07:00 is neither. It is mkt_clients.post_time, CRHQ's brand-wide default,
+// which is exactly what the old code reached for. (CRHQ's post_days are also
+// stored lowercase and the DOW map is capitalised, so every day mapped to
+// undefined, targets came out empty, and it fell straight to the
+// "tomorrow at post_time" branch — 07:00 on whatever day came next.)
+//
+// Now consults the platform's own schedule first and only falls back to the
+// client-wide default when a brand genuinely has no rows for that platform —
+// which preserves the old behaviour exactly for those brands.
+async function nextSlot(
+  // Loosely typed to match platformSchedule's own Admin alias. Typing this as
+  // ReturnType<typeof createClient> reproduces the supabase-js generic
+  // mismatch this file already carries on every logEdgeError call, and there
+  // is no reason to add a nineteenth instance of it.
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  client: Record<string, any>,
+  platform: string,
+): Promise<Date> {
   const now = new Date()
-  const [hh, mm] = (postTime || '09:00').split(':').map(Number)
-  const targets = (postDays || []).map((d) => DOW[d as keyof typeof DOW]).filter((n) => n != null)
+  const schedule = await platformSchedule(admin, client, platform)
+
+  if (schedule) {
+    // Walk forward to the next day this PLATFORM actually posts on, and use
+    // that day's own configured time.
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(now)
+      d.setDate(now.getDate() + i)
+      if (!schedule.days.has(d.getDay())) continue
+      const time = schedule.timeByDay.get(d.getDay()) || String(client.post_time ?? '09:00')
+      const [hh, mm] = time.split(':').map(Number)
+      d.setHours(hh || 0, mm || 0, 0, 0)
+      if (d > now) return d
+    }
+    // Every configured day inside the next fortnight is already behind us
+    // (only reachable if the schedule is very sparse). Fall through rather
+    // than inventing a slot this platform never posts in.
+  }
+
+  // No per-platform schedule for this brand+platform — original behaviour.
+  const [hh, mm] = (String(client.post_time ?? '') || '09:00').split(':').map(Number)
+  const targets = ((client.post_days ?? []) as string[])
+    // Case-insensitive: some brands store lowercase day names, and the old
+    // exact-match lookup silently dropped every one of them.
+    .map((d) => DOW_LOWER[String(d).trim().toLowerCase()])
+    .filter((n) => n != null)
+
   if (targets.length === 0) {
-    const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh, mm || 0, 0, 0); return d
+    const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh || 0, mm || 0, 0, 0); return d
   }
   for (let i = 0; i < 14; i++) {
-    const d = new Date(now); d.setDate(now.getDate() + i); d.setHours(hh, mm || 0, 0, 0)
+    const d = new Date(now); d.setDate(now.getDate() + i); d.setHours(hh || 0, mm || 0, 0, 0)
     if (targets.includes(d.getDay()) && d > now) return d
   }
-  const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh, mm || 0, 0, 0); return d
+  const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(hh || 0, mm || 0, 0, 0); return d
 }
 
 // ── Metricool call with retry ────────────────────────────────────────────────
@@ -230,7 +293,9 @@ serve(async (req) => {
     const chosenDate = chosen ? new Date(chosen) : null
     const slot = (chosenDate && !isNaN(chosenDate.getTime()) && chosenDate > new Date())
       ? chosenDate
-      : nextSlot(client.post_days, client.post_time)
+      // Platform-aware: this post's own platform decides the slot, not the
+      // brand-wide default. See nextSlot's header for the CRHQ 07:00 case.
+      : await nextSlot(admin, client, item.platform)
 
     // Issue 6: reject if the resolved slot is in the past.
     if (slot <= new Date()) {

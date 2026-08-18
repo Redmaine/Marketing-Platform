@@ -50,40 +50,16 @@ function targetPostsForDays(days: Set<number>, windowDays: number): number {
 // per row, so a platform can legitimately post at different times on
 // different days. Any day missing a usable time falls back to
 // client.post_time at the point of use.
-export interface PlatformSchedule {
-  days: Set<number>
-  timeByDay: Map<number, string>
-}
-
-// Exported so crhq-nightly-content can find CRHQ's next available per-platform
-// slot without duplicating this query/parsing logic.
-export async function platformSchedule(admin: Admin, client: Record<string, any>, platform: string): Promise<PlatformSchedule | null> {
-  const { data } = await admin
-    .from('mkt_content_schedule')
-    .select('day_of_week, time_uk')
-    .eq('client_id', client.id)
-    .eq('platform', platform)
-    .eq('active', true)
-
-  const rows = data ?? []
-  if (!rows.length) return null
-
-  const days = new Set<number>()
-  const timeByDay = new Map<number, string>()
-  for (const r of rows) {
-    const d = Number(r.day_of_week)
-    if (!Number.isInteger(d) || d < 0 || d > 6) continue
-    days.add(d)
-    const t = String(r.time_uk || '').trim()
-    // First usable time wins for a day that somehow has more than one row.
-    if (t && !timeByDay.has(d)) timeByDay.set(d, t)
-  }
-
-  // Rows existed but none carried a valid day — treat as "no schedule" rather
-  // than generating nothing at all for this platform.
-  if (!days.size) return null
-  return { days, timeByDay }
-}
+// Moved to _shared/platformSchedule.ts (18 Aug 2026) so schedule-to-metricool
+// can use it without importing this file's whole dependency chain. Re-exported
+// here so crhq-nightly-content and every other existing consumer keeps working
+// unchanged, and so there is still exactly one definition.
+// Imported (not just re-exported) because this file calls platformSchedule()
+// internally in slotDateTime/nextEmptySlot/fillClientGap — a bare
+// `export ... from` would re-export the name without binding it in local scope.
+import { platformSchedule } from './platformSchedule.ts'
+export { platformSchedule }
+export type { PlatformSchedule } from './platformSchedule.ts'
 
 // The platform(s) this client is scheduled to post on, filtered to only those
 // they've actually connected. Falls back to connected_platforms[0] (or
