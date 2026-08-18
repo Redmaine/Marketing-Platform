@@ -99,6 +99,16 @@ const GITHUB_BRANDS: Record<string, GithubBrand> = {
     repo: 'Redmaine/onceuponayou-v2', branch: 'main', siteUrl: 'https://onceuponayou.co.uk',
     format: 'markdown', postPath: 'src/blog/{slug}.md',
   },
+  // Added 18 Aug 2026. Riverside previously fell through to Branch 3, which
+  // marks the row published, leaves live_url NULL and hands back an HTML file
+  // for manual upload — so three posts sat "published" from 6 Aug with
+  // nothing a visitor could reach. riverside-website now has a real /blog
+  // route and reads src/blog/*.md, the same path and format this table
+  // already uses for the other markdown brands.
+  riverside: {
+    repo: 'Redmaine/riverside-website', branch: 'main', siteUrl: 'https://riversideonline.co.uk',
+    format: 'markdown', postPath: 'src/blog/{slug}.md',
+  },
   yca: {
     repo: 'Redmaine/yca-website', branch: 'main', siteUrl: 'https://yourcompanyai.co.uk',
     format: 'html', postPath: 'blog/{slug}.html',
