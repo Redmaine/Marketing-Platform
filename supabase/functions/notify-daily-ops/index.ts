@@ -13,10 +13,39 @@
 //
 // Deploy: supabase functions deploy notify-daily-ops
 // Schedule: 35 10 * * * (5 min after daily-ops-check's own 10:30 UTC run)
+//
+// SELF-ERROR-LOGGING — added 20 Aug 2026. Real 14-day evidence (Supabase's
+// function_edge_logs, cross-checked against cron.job_run_details) found this
+// function had already failed silently on 2 of its first 7 real production
+// days: 17 Aug ("ReferenceError: cronSecret is not defined" — the exact
+// historical bug the comment below describes) and 14 Aug (its own invocation
+// never appears in the function logs at all, despite pg_cron's
+// cron.job_run_details reporting the outer net.http_post() call
+// "succeeded" — that only proves the async request was queued, not that
+// this function ever ran or that Resend accepted anything). Neither failure
+// left ANY trace anywhere a human or another check would see it: this
+// function has no fallback alert channel of its own, and previously wrote
+// nothing to edge_function_errors on either failure path below — so
+// tomorrow's daily-ops-check (which DOES read edge_function_errors) would
+// have had nothing to surface even the day after. logEdgeError below is a
+// partial mitigation, not a same-day catch: it makes a repeat of the 17 Aug
+// incident show up in the NEXT day's report instead of never at all. A real
+// same-day catch would need a separate monitor calling this function's own
+// status (the same shape as outreach-platform's gmail-health-check), which
+// is a bigger, separate decision, not made here.
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 
+// deno-lint-ignore no-explicit-any
+type Admin = any
+
 const TO_EMAIL = 'adrianfielding@me.com'
+
+async function logEdgeError(admin: Admin, message: string) {
+  const { error } = await admin.from('edge_function_errors').insert({ function_name: 'notify-daily-ops', error_message: message })
+  if (error) console.error(`[notify-daily-ops] failed to write edge_function_errors: ${error.message}`)
+}
 
 serve(async (req) => {
   // Shared cronAuth helper — see the identical note in daily-ops-check. This
@@ -30,21 +59,16 @@ serve(async (req) => {
   try { body = await req.json() } catch { /* no body = real yesterday */ }
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!
-  // Service-role key as a bearer token, which daily-ops-check's own cronAuth
-  // fallback accepts directly — the same way sweep-stuck-metricool-posts calls
-  // schedule-to-metricool. This line used to pass a local `cronSecret` const
-  // read straight from the environment; when the auth block above was replaced
-  // with the shared checkCronAuth helper (16 Aug 2026) that const went with it
-  // and this reference was missed. Auth then passed and the function died one
-  // line later on "ReferenceError: cronSecret is not defined", so the daily
-  // email silently stopped arriving while the cron job kept reporting a run.
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  const admin: Admin = createClient(supabaseUrl, serviceKey)
+
   const checkRes = await fetch(`${supabaseUrl}/functions/v1/daily-ops-check`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${serviceKey}`, apikey: serviceKey, 'Content-Type': 'application/json' },
     body: JSON.stringify(body.date ? { date: body.date } : {}),
   })
   if (!checkRes.ok) {
+    await logEdgeError(admin, `daily-ops-check returned ${checkRes.status} — no daily ops email sent`)
     return new Response(JSON.stringify({ ok: false, error: `daily-ops-check returned ${checkRes.status}` }), { status: 502, headers: { 'Content-Type': 'application/json' } })
   }
   const result = await checkRes.json()
@@ -52,13 +76,31 @@ serve(async (req) => {
   const anyFlag = !!result.any_flag
 
   // Build a plain-English summary of exactly what's flagged, per check —
-  // only the categories that actually have something wrong get a line.
-  const issues: string[] = []
+  // only the categories that actually have something wrong get a line. Each
+  // gets a severity so the email can visually separate "needs action today"
+  // from "FYI, low priority" — added 20 Aug 2026. Previously every flag
+  // rendered identically in one flat list: a single stray contact with no
+  // email looked exactly as urgent as a real edge function exception, so
+  // there was no way to tell at a glance which finding actually needed
+  // action today. critical = something is actually broken or losing money
+  // (real exceptions, revenue-facing automation with no send evidence, a
+  // cost overrun, the health-monitor itself failing) — minor = worth
+  // knowing but not urgent (a data-hygiene gap, or a single brand's
+  // zero-send day that could be legitimate).
+  type Issue = { severity: 'critical' | 'minor'; text: string }
+  const issues: Issue[] = []
   if (report.outreach?.flagged_zero_send?.length) {
-    issues.push(`Outreach: zero sends for ${report.outreach.flagged_zero_send.join(', ')} on ${report.outreach.date_checked}`)
+    const allBrandsDown = report.outreach.flagged_zero_send.length >= 3
+    issues.push({
+      severity: allBrandsDown ? 'critical' : 'minor',
+      text: `Outreach: zero sends for ${report.outreach.flagged_zero_send.join(', ')} on ${report.outreach.date_checked}`,
+    })
   }
   if (report.cron_healthcheck?.stale) {
-    issues.push(`cron-healthcheck hasn't run in ${report.cron_healthcheck.hours_since_last_run ?? '?'}h (last: ${report.cron_healthcheck.last_run_at ?? 'never'})`)
+    issues.push({
+      severity: 'critical',
+      text: `cron-healthcheck hasn't run in ${report.cron_healthcheck.hours_since_last_run ?? '?'}h (last: ${report.cron_healthcheck.last_run_at ?? 'never'})`,
+    })
   }
   if (report.cron_healthcheck?.reported_errors?.length) {
     // Fix — this used to relay cron-healthcheck's errors with no timestamp,
@@ -71,18 +113,24 @@ serve(async (req) => {
     const ageLabel = report.cron_healthcheck.reported_errors_age_label
       ? ` (${report.cron_healthcheck.reported_errors_age_label})`
       : ''
-    issues.push(`cron-healthcheck itself flagged${ageLabel}: ${report.cron_healthcheck.reported_errors.join(', ')}`)
+    issues.push({
+      severity: 'critical',
+      text: `cron-healthcheck itself flagged${ageLabel}: ${report.cron_healthcheck.reported_errors.join(', ')}`,
+    })
   }
   if (report.invoice_chase_evidence?.flagged_no_evidence_found) {
-    issues.push(`No real invoice-chase send evidence found for ${report.invoice_chase_evidence.date_checked}`)
+    issues.push({ severity: 'critical', text: `No real invoice-chase send evidence found for ${report.invoice_chase_evidence.date_checked}` })
   }
   if (report.contacts_missing_email?.flagged?.length) {
     const names = report.contacts_missing_email.flagged.map((c: { name: string }) => c.name).join(', ')
-    issues.push(`${report.contacts_missing_email.flagged.length} contact(s) created ${report.contacts_missing_email.date_checked} with no email on file: ${names}`)
+    issues.push({
+      severity: 'minor',
+      text: `${report.contacts_missing_email.flagged.length} contact(s) created ${report.contacts_missing_email.date_checked} with no email on file: ${names}`,
+    })
   }
   if (report.edge_function_errors_window?.total > 0) {
     const byFn = Object.entries(report.edge_function_errors_window.by_function ?? {}).map(([fn, n]) => `${fn} (${n})`).join(', ')
-    issues.push(`${report.edge_function_errors_window.total} edge function error(s) in the window: ${byFn}`)
+    issues.push({ severity: 'critical', text: `${report.edge_function_errors_window.total} edge function error(s) in the window: ${byFn}` })
   }
   if (report.voice_quote_spend?.flagged_over_threshold) {
     const v = report.voice_quote_spend
@@ -93,11 +141,15 @@ serve(async (req) => {
     const top = (v.by_account ?? []).slice(0, 3)
       .map((a: { account_id: string; pence: number }) => `${a.account_id} (${gbp(a.pence)})`)
       .join(', ')
-    issues.push(
-      `Voice-to-quote spend ${gbp(v.total_pence)} on ${v.date_checked}, over the ${gbp(v.threshold_pence)} daily threshold ` +
-      `(${v.calls} call(s))${top ? ` — biggest: ${top}` : ''}`,
-    )
+    issues.push({
+      severity: 'critical',
+      text: `Voice-to-quote spend ${gbp(v.total_pence)} on ${v.date_checked}, over the ${gbp(v.threshold_pence)} daily threshold ` +
+        `(${v.calls} call(s))${top ? ` — biggest: ${top}` : ''}`,
+    })
   }
+
+  const critical = issues.filter((i) => i.severity === 'critical')
+  const minor = issues.filter((i) => i.severity === 'minor')
 
   // Structural safeguard, not a habit to remember: the real daily cron run
   // always calls with an empty body (no date override), so it always gets
@@ -106,17 +158,40 @@ serve(async (req) => {
   // test run can never land in the inbox looking like a real report —
   // this is enforced in code, not left to whoever is testing to remember.
   const testPrefix = body.date ? '[MANUAL CHECK — not the daily report] ' : ''
-  const subject = testPrefix + (anyFlag ? `🔴 Daily Ops — ${issues.length} issue${issues.length === 1 ? '' : 's'} found` : `🟢 Daily Ops — Clean`)
+  const subjectParts = [
+    critical.length ? `${critical.length} critical` : null,
+    minor.length ? `${minor.length} minor` : null,
+  ].filter(Boolean).join(', ')
+  const subject = testPrefix + (anyFlag ? `🔴 Daily Ops — ${subjectParts}` : `🟢 Daily Ops — Clean`)
   const dateLabel = report.outreach?.date_checked ?? 'yesterday'
   const testBanner = body.date
     ? `<p style="background:#FFF3CD;border:1px solid #FFE58F;padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:16px">Manually triggered re-check for ${body.date} — not the real daily report.</p>`
     : ''
+  // Two visually distinct blocks so severity reads at a glance without
+  // opening every line: a solid red block for anything needing action
+  // today, a muted grey block below for FYI-only findings. A report with
+  // only minor findings still gets the 🔴 subject (anyFlag is true) but the
+  // body itself is visibly calmer — no red block at all — since nothing in
+  // it is actually urgent.
+  const criticalBlock = critical.length
+    ? `<div style="background:#FDECEA;border:1px solid #F5C6CB;border-radius:8px;padding:16px;margin-bottom:16px">
+        <p style="margin:0 0 8px;font-weight:bold;color:#C0392B">🔴 Needs action today (${critical.length})</p>
+        <ul style="margin:0;padding-left:20px">${critical.map((i) => `<li style="margin-bottom:8px">${i.text}</li>`).join('')}</ul>
+      </div>`
+    : ''
+  const minorBlock = minor.length
+    ? `<div style="background:#F3F4F6;border:1px solid #E5E7EB;border-radius:8px;padding:16px">
+        <p style="margin:0 0 8px;font-weight:bold;color:#6B7280">🟡 FYI — low priority (${minor.length})</p>
+        <ul style="margin:0;padding-left:20px;color:#4B5563">${minor.map((i) => `<li style="margin-bottom:8px">${i.text}</li>`).join('')}</ul>
+      </div>`
+    : ''
   const html = anyFlag
     ? `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1C1C2E">
         ${testBanner}
-        <h2 style="color:#C0392B">🔴 Daily Ops Check — ${dateLabel}</h2>
-        <p>${issues.length} issue${issues.length === 1 ? '' : 's'} found:</p>
-        <ul>${issues.map((i) => `<li style="margin-bottom:8px">${i}</li>`).join('')}</ul>
+        <h2 style="color:${critical.length ? '#C0392B' : '#B7791F'}">${critical.length ? '🔴' : '🟡'} Daily Ops Check — ${dateLabel}</h2>
+        <p>${critical.length ? `${critical.length} critical` : ''}${critical.length && minor.length ? ', ' : ''}${minor.length ? `${minor.length} minor` : ''} finding${issues.length === 1 ? '' : 's'}:</p>
+        ${criticalBlock}
+        ${minorBlock}
         <p style="font-size:12px;color:#9CA3AF;margin-top:24px">This is a report only — nothing was changed or resent automatically.</p>
       </div>`
     : `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1C1C2E">
@@ -129,6 +204,7 @@ serve(async (req) => {
 
   const resendKey = Deno.env.get('RESEND_API_KEY')
   if (!resendKey) {
+    await logEdgeError(admin, 'RESEND_API_KEY not configured — no daily ops email sent')
     return new Response(JSON.stringify({ ok: false, error: 'RESEND_API_KEY not configured' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
   }
   const sendRes = await fetch('https://api.resend.com/emails', {
@@ -143,11 +219,16 @@ serve(async (req) => {
   })
   if (!sendRes.ok) {
     const detail = await sendRes.text()
+    await logEdgeError(admin, `Resend send failed (${sendRes.status}): ${detail.slice(0, 300)}`)
     return new Response(JSON.stringify({ ok: false, error: `Resend send failed: ${detail}` }), { status: 502, headers: { 'Content-Type': 'application/json' } })
   }
   const sendBody = await sendRes.json().catch(() => ({}))
 
-  return new Response(JSON.stringify({ ok: true, any_flag: anyFlag, issue_count: issues.length, subject, resend_id: sendBody.id ?? null }), {
+  return new Response(JSON.stringify({
+    ok: true, any_flag: anyFlag, issue_count: issues.length,
+    critical_count: critical.length, minor_count: minor.length,
+    subject, resend_id: sendBody.id ?? null,
+  }), {
     headers: { 'Content-Type': 'application/json' },
   })
 })
