@@ -20,10 +20,11 @@
 // This file now just loads active clients and fires one request per client
 // at generate-client-content, registered with EdgeRuntime.waitUntil so each
 // keeps running in the background after THIS function's own response
-// returns — this function does no LLM work itself and returns in well under
-// a second regardless of how many clients are active, so it can never hit
-// the 150s ceiling itself. Each per-client invocation gets its own fresh
-// 150s budget instead of all clients sharing one.
+// returns — this function does no LLM work itself, so it can never hit the
+// 150s ceiling itself. Each per-client invocation gets its own fresh 150s
+// budget instead of all clients sharing one. (As of 20 Aug 2026 this no
+// longer returns in under a second — see STAGGER_MS below — but the total
+// is still trivial against the 150s ceiling: ~7.5s for 11 clients.)
 //
 // Deploy:  supabase functions deploy midnight-cron
 // Deploy:  supabase functions deploy generate-client-content
@@ -45,6 +46,69 @@ type Admin = any
 async function logEdgeError(admin: Admin, message: string) {
   const { error } = await admin.from('edge_function_errors').insert({ function_name: 'midnight-cron', error_message: message })
   if (error) console.error(`[midnight-cron] failed to write edge_function_errors: ${error.message}`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Root cause of the 19 Aug 503s (Once Upon A You, Quill — LinkedIn, Adrian
+// Fielding — LinkedIn — confirmed via mkt_cron_log: exactly the 8 of 11
+// dispatched clients that DIDN'T 503 logged a midnight-content-generation
+// row that night; the 3 that did have no row at all, meaning their nightly
+// fill — approval-rate refresh, weekly blog, fillClientGap — silently never
+// ran). generate-client-content's own code has no path that returns a
+// non-2xx status (its top-level catch always falls through to an implicit
+// 200), so this was never that function rejecting a request — it's Supabase's
+// own edge-function gateway rejecting some of the burst before the function
+// code even started. Nothing else is scheduled at 00:00 UTC in this project
+// (checked cron.job) — the burst is self-inflicted: 11 fetches fired within
+// the same tick of this loop, un-staggered.
+//
+// Two changes address that without reintroducing the sequential-run timeout
+// this dispatcher exists to avoid (11 clients even fully serialised through
+// both retries and the stagger below adds at most ~30s, nowhere near the
+// 150s ceiling — and none of that time is spent waiting on the receiving
+// function's own real work, only on firing the next request):
+//   1. STAGGER_MS between firing each client's request, so 11 requests
+//      leave over several seconds instead of all in the same millisecond.
+//   2. DISPATCH_MAX_ATTEMPTS with backoff on a non-2xx/network failure —
+//      same retry-with-backoff shape schedule-to-metricool already uses for
+//      its own transient-failure handling, applied here for consistency.
+const STAGGER_MS = 750
+const DISPATCH_MAX_ATTEMPTS = 3
+const DISPATCH_BACKOFF_MS = [1000, 3000]
+
+// Fires one client's dispatch, retrying a non-2xx or network failure up to
+// DISPATCH_MAX_ATTEMPTS times before logging a hard failure. Every failed
+// attempt is still logged (not just the final one) — a client that failed
+// twice and recovered on attempt 3 is exactly the early warning of platform
+// pressure that should be visible before it becomes a full outage, same
+// reasoning schedule-to-metricool's retry logging already uses.
+async function dispatchClientWithRetry(
+  admin: Admin, targetUrl: string, serviceKey: string, client: { id: string; name: string },
+): Promise<void> {
+  let lastMsg = 'unknown error'
+  for (let attempt = 1; attempt <= DISPATCH_MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(targetUrl, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: client.id }),
+      })
+      if (res.ok) {
+        if (attempt > 1) console.log(`[midnight-cron] dispatch to ${client.name} succeeded on attempt ${attempt}/${DISPATCH_MAX_ATTEMPTS}`)
+        return
+      }
+      lastMsg = `dispatch to ${client.name} returned HTTP ${res.status} (attempt ${attempt}/${DISPATCH_MAX_ATTEMPTS})`
+    } catch (e) {
+      lastMsg = `dispatch to ${client.name} failed: ${String((e as Error)?.message ?? e)} (attempt ${attempt}/${DISPATCH_MAX_ATTEMPTS})`
+    }
+    console.error(`[midnight-cron] ${lastMsg}`)
+    await logEdgeError(admin, lastMsg)
+    if (attempt < DISPATCH_MAX_ATTEMPTS) await sleep(DISPATCH_BACKOFF_MS[attempt - 1])
+  }
+  console.error(`[midnight-cron] dispatch to ${client.name} exhausted ${DISPATCH_MAX_ATTEMPTS} attempts — giving up for tonight`)
 }
 
 serve(async (req) => {
@@ -73,33 +137,18 @@ serve(async (req) => {
     if (clientsError) throw new Error(`could not load active clients: ${clientsError.message}`)
 
     const targetUrl = `${SUPABASE_URL}/functions/v1/generate-client-content`
-    for (const client of clients ?? []) {
-      // Not awaited in the loop — starting the fetch and moving straight to
-      // the next client is what makes this a fan-out rather than another
-      // sequential run under a different name. The promise is still tracked
-      // (for the console log below) and handed to EdgeRuntime.waitUntil so
-      // the underlying request actually completes in the background instead
-      // of risking cancellation the moment this function's own response is
-      // sent — an un-awaited, unregistered fetch can be torn down before it
-      // ever reaches the network once the isolate thinks its work is done.
-      const promise = fetch(targetUrl, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${SERVICE_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: client.id }),
-      }).then((res) => {
-        if (!res.ok) {
-          const msg = `dispatch to ${client.name} returned HTTP ${res.status}`
-          console.error(`[midnight-cron] ${msg}`)
-          logEdgeError(admin, msg)
-        }
-      }).catch((e) => {
-        const msg = `dispatch to ${client.name} failed: ${String((e as Error)?.message ?? e)}`
-        console.error(`[midnight-cron] ${msg}`)
-        logEdgeError(admin, msg)
-      })
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime
+    for (let i = 0; i < (clients ?? []).length; i++) {
+      const client = (clients ?? [])[i]
 
-      // deno-lint-ignore no-explicit-any
-      const rt = (globalThis as any).EdgeRuntime
+      // The retry-with-backoff now lives inside dispatchClientWithRetry — see
+      // that function's comment for why (the 19 Aug 503s). Still not awaited
+      // here: starting the request (with its own internal retries) and
+      // moving on is what keeps this a fan-out. Handed to EdgeRuntime.waitUntil
+      // so it survives past this function's own response the same as before.
+      const promise = dispatchClientWithRetry(admin, targetUrl, SERVICE_KEY, client)
+
       if (rt?.waitUntil) {
         rt.waitUntil(promise)
       } else {
@@ -110,6 +159,11 @@ serve(async (req) => {
       }
 
       dispatched.push(client.name)
+
+      // Stagger — see the STAGGER_MS comment above. Skipped after the last
+      // client so this function doesn't wait out a pointless final delay
+      // before returning.
+      if (i < (clients ?? []).length - 1) await sleep(STAGGER_MS)
     }
     console.log(`[midnight-cron] dispatched ${dispatched.length} client(s): ${dispatched.join(', ')}`)
   } catch (e) {
