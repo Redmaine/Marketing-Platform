@@ -1,0 +1,58 @@
+-- =============================================================================
+-- Schedule cron-healthcheck — daily, 10:00 UTC.
+--
+-- Built 13 Aug 2026 alongside the crhq-nightly-content imagescript fix (see
+-- that function's own commit, and _shared/vendor/imagescript/README.md) —
+-- the crash that took it down happened before its own mkt_cron_log write
+-- ever ran, so the missed 12 Aug 22:00 run left zero trace anywhere. This
+-- schedules the healthcheck function that closes that gap: it checks every
+-- genuinely-scheduled cron job's mkt_cron_log freshness and writes a clear
+-- alert to edge_function_errors for anything gone stale.
+--
+-- 10:00 UTC is deliberately clear of every monitored job's own grace
+-- window: crhq-nightly-content (22:00, 26h grace -> stale threshold crosses
+-- around 00:00 two nights later — a single missed run is reliably >26h
+-- stale by the NEXT day's 10:00 check), midnight-content-generation (00:00,
+-- same 26h logic), check-client-news (09:00 — this check runs an hour
+-- after it, so a normal day's run is always already logged by the time
+-- this checks it, not a near-miss race).
+--
+-- The header literals (Authorization/apikey/x-cron-secret) are the
+-- project's own long-lived anon key and shared CRON_SECRET — safe to embed
+-- literally, matching every other cron.job entry in this project (see
+-- cron.job for the identical pattern on e.g. crhq-nightly-content,
+-- check-client-news). This migration deliberately does NOT paste the real
+-- values inline (a committed file is a worse place for them than they
+-- already are, spread across every other cron.job row) — it was actually
+-- applied by extracting both entirely server-side from check-client-news's
+-- own already-scheduled command and substituting them directly into
+-- cron.schedule's command argument, never displaying either value. Re-run
+-- that way if this ever needs re-applying (e.g. after a CRON_SECRET
+-- rotation this migration wasn't re-run for):
+--
+--   DO $$
+--   DECLARE
+--     v_ref_command text; v_auth text; v_apikey text; v_cron_secret text;
+--   BEGIN
+--     SELECT command INTO v_ref_command FROM cron.job WHERE jobname = 'check-client-news';
+--     v_auth := substring(v_ref_command from '''Authorization'', ''([^'']*)''');
+--     v_apikey := substring(v_ref_command from '''apikey'', ''([^'']*)''');
+--     v_cron_secret := substring(v_ref_command from '''x-cron-secret'', ''([^'']*)''');
+--     PERFORM cron.schedule(
+--       'cron-healthcheck', '0 10 * * *',
+--       'select net.http_post(
+--         url := ''https://fvyvtdwsomxfkpxwygpk.supabase.co/functions/v1/cron-healthcheck'',
+--         headers := jsonb_build_object(
+--           ''Authorization'', ''' || v_auth || ''', ''apikey'', ''' || v_apikey || ''',
+--           ''x-cron-secret'', ''' || v_cron_secret || ''', ''Content-Type'', ''application/json''
+--         ), body := ''{}''::jsonb
+--       );'
+--     );
+--   END $$;
+--
+-- Confirmed live 13 Aug 2026: cron.job now has a 'cron-healthcheck' row on
+-- this exact schedule, with a command header fingerprint (SHA-256) matching
+-- every other job's shared secret — checked without ever displaying the
+-- raw value, same discipline as the CRON_SECRET rotation done earlier this
+-- session.
+-- =============================================================================
