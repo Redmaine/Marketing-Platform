@@ -1066,12 +1066,19 @@ function competitionReality(o) {
 
 function card(o, i) {
   const totalScore = typeof o.total_score === 'number' ? o.total_score : null
+  // Table, not flexbox — same fix as competitionReality() and prospectCard()
+  // above, same bug: a flex:1 title next to a white-space:nowrap badge can
+  // get squeezed to a razor-thin width in Outlook/mobile mail clients,
+  // producing the vertical, one-letter-per-line rendering.
+  const header = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:14px">
+      <tr>
+        <td style="vertical-align:top"><div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4">${i + 1}. ${esc(o.name)}</div></td>
+        <td width="1" style="vertical-align:top;padding-left:12px;white-space:nowrap">${verdictBadge(String(o.verdict ?? ''))}</td>
+      </tr>
+    </table>`
   return `
   <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:24px;margin-bottom:20px">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;gap:12px">
-      <div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4;flex:1">${i + 1}. ${esc(o.name)}</div>
-      ${verdictBadge(String(o.verdict ?? ''))}
-    </div>
+    ${header}
     ${competitionReality(o)}
     ${totalScore !== null ? `
     <div style="margin-bottom:14px">
@@ -1190,12 +1197,28 @@ function prospectCard(o, i) {
   const titleHtml = o.website
     ? `<a href="${esc(o.website)}" style="color:#111827;text-decoration:none">${esc(o.name)}</a>`
     : esc(o.name)
+  const titleCell = `<div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4">${i + 1}. ${titleHtml}</div>`
+  // Table, not flexbox — same fix as competitionReality() above, same bug.
+  // display:flex has no support in Outlook and is inconsistent across mobile
+  // mail clients; a flex:1 title next to a white-space:nowrap badge can get
+  // squeezed to a razor-thin width there, and once a client can't fit even
+  // one word it falls back to breaking between every character — the
+  // reported vertical, one-letter-per-line rendering. width="1" on the badge
+  // <td> gives that column only the minimum width its non-wrapping content
+  // needs and lets the title column take the rest, with no way to be
+  // squeezed. Only wrapped in the table when a badge actually exists (o.trade)
+  // — the title alone has no sibling to be squeezed by.
+  const header = o.trade
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:4px">
+      <tr>
+        <td style="vertical-align:top">${titleCell}</td>
+        <td width="1" style="vertical-align:top;padding-left:12px;white-space:nowrap"><span style="display:inline-block;background:#f3f4f6;color:#6b7280;font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(o.trade)}</span></td>
+      </tr>
+    </table>`
+    : `<div style="margin-bottom:4px">${titleCell}</div>`
   return `
   <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:24px;margin-bottom:20px">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px;gap:12px">
-      <div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4;flex:1">${i + 1}. ${titleHtml}</div>
-      ${o.trade ? `<span style="display:inline-block;background:#f3f4f6;color:#6b7280;font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(o.trade)}</span>` : ''}
-    </div>
+    ${header}
     ${o.website ? `<div style="font-size:12px;color:#6b7280;font-family:sans-serif;margin-bottom:12px;word-break:break-all">${esc(o.website)}</div>` : ''}
     ${field('Incorporated', o.incorporated)}
     ${field('Signal', o.signal)}
