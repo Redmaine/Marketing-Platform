@@ -116,10 +116,15 @@ const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete
 // CRHQ prompt scaffolding for Flux (2026-08-20).
 //
 // WHY THIS EXISTS. CRHQ is the only client on Flux (usesFluxProvider), and
-// this integration sends Flux no negative prompt — CRHQ_NEGATIVE_PROMPT is
-// only ever passed on the Stability branch, which CRHQ never takes, so it is
-// dead code for this client. That leaves every prohibition in CRHQ's
-// visual_style expressed as prose to a purely positive-conditioning model.
+// this integration sends Flux no negative prompt. Stability's own
+// negative-prompt mechanism (callStabilityAI's negativePrompt param, weight
+// -1) is real and still there for whichever client actually uses it — CRHQ
+// just never reaches that branch, so the CRHQ-specific negative prompt that
+// used to sit on it was pure dead code, removed 20 Aug 2026 (it also named
+// "photorealistic, photograph, real photo", stale terms from the pre-16-Aug
+// ink-wash era and by then the opposite of what CRHQ wanted). That leaves
+// every prohibition in CRHQ's visual_style expressed as prose to a purely
+// positive-conditioning model.
 //
 // Two consequences drove the 18 Aug 2026 failures:
 //   1. The medium spec (Tri-X, grain, handheld) sat in the MIDDLE of a
@@ -297,20 +302,14 @@ async function quillAlternatingStreamWantsImage(admin: Admin, clientId: string, 
   return !previous.image_url
 }
 
-// Genuine Stability negative prompt (weight -1), not just prose in the
-// positive prompt — added after the first round of test samples showed
-// prose alone ("no human faces under any circumstances") wasn't reliably
-// stopping Stability from rendering clear, recognisable faces, and one
-// sample defaulted straight back to a control-room/wall-of-screens scene
-// despite the positive prompt explicitly saying not to. Same gate as
-// wantsHeadlineOverlay — CRHQ only.
-const CRHQ_NEGATIVE_PROMPT = 'human face, human faces, visible eyes, close-up portrait, facial features, crowd of faces, photorealistic, photograph, press photograph, news photograph, real photo, colour, saturated colour, control room, operations room, security operations centre, wall of monitors, bank of screens, call center, office cubicles'
-
 // TODO (scoping note, not built — deliberately deferred, see 2026-08-09
 // CRHQ image-style overhaul): automated face-detection + regenerate-on-
-// failure as a hard backstop, in case CRHQ_CONCEPT_SYSTEM + the negative
-// prompt above don't hold up as reliably once run against the full spread
-// of real CRHQ stories, not just the 3 that were manually reviewed clean.
+// failure as a hard backstop, in case CRHQ_CONCEPT_SYSTEM + Stability's own
+// negative prompt (as it stood at the time — CRHQ has since moved to Flux;
+// see the Flux review backstop further down, which is this same idea, now
+// actually built for the Flux path) don't hold up as reliably once run
+// against the full spread of real CRHQ stories, not just the 3 that were
+// manually reviewed clean.
 // Two failed rounds before the concept-prompt fix (see git history) showed
 // prose + a negative prompt alone aren't trustworthy on their own — this
 // would be the belt-and-braces version if manual spot-checks start finding
@@ -473,12 +472,14 @@ async function disableImageGenForPlatform(admin: Admin, client: Record<string, a
 // other client is untouched and still goes through Stability below.
 //
 // The catch this introduces, and the reason the review backstop further down
-// exists: flux-1.1-pro has NO negative-prompt parameter. Stability's
-// CRHQ_NEGATIVE_PROMPT (weight -1) was the mechanism actually holding the
-// no-faces rule, and it has no Flux equivalent — exclusions can only be
-// written as prose in the positive prompt, which the code comment above
-// CRHQ_NEGATIVE_PROMPT already records as having failed once. Prose rules are
-// still sent (belt), but the backstop is what enforces them (braces).
+// exists: flux-1.1-pro has NO negative-prompt parameter. On Stability, CRHQ
+// had used a genuine negative prompt (weight -1, removed 20 Aug 2026 as
+// confirmed-dead code once CRHQ left Stability — see git history for the
+// exact wording) as the mechanism actually holding the no-faces rule, and it
+// has no Flux equivalent — exclusions can only be written as prose in the
+// positive prompt, which has already recorded one real failure (a rendered
+// face slipped through). Prose rules are still sent (belt), but the backstop
+// is what enforces them (braces).
 const FLUX_MODEL_URL = 'https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions'
 const FLUX_POLL_TIMEOUT_MS = 180_000
 
@@ -1154,8 +1155,14 @@ export async function generatePostImage(
         return accepted
       }
 
-      const negativePrompt = wantsHeadlineOverlay(client) ? CRHQ_NEGATIVE_PROMPT : undefined
-      return await callStabilityAI(attemptPrompt, apiKey, negativePrompt)
+      // No client currently supplies a negative prompt on this branch — CRHQ
+      // was the only one that did, and CRHQ is on Flux (usesFluxProvider),
+      // never Stability, so that value could never actually reach here (see
+      // CRHQ_MEDIUM_DIRECTIVE above). callStabilityAI's negativePrompt
+      // parameter is kept — it's the general mechanism (weight -1 push),
+      // just currently unused; wire a real one through if a future
+      // Stability client needs it.
+      return await callStabilityAI(attemptPrompt, apiKey)
     }
 
     // ── Visual-style compliance gate (every brand) ───────────────────────────
