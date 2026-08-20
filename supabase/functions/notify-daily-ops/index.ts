@@ -224,6 +224,23 @@ serve(async (req) => {
   }
   const sendBody = await sendRes.json().catch(() => ({}))
 
+  // Durable same-day evidence that this actually sent — added 20 Aug 2026
+  // alongside notify-daily-ops-healthcheck, which reads this row to catch a
+  // missing report the same morning instead of the next day. Only written
+  // for a REAL scheduled run (no date override) — same reasoning as the
+  // testPrefix/subject guard above: a manual re-check must never look like
+  // today's real report, including to the healthcheck reading this table.
+  if (!body.date) {
+    const { error: logError } = await admin.from('mkt_cron_log').insert({
+      job_name: 'notify-daily-ops',
+      clients_processed: 0,
+      posts_generated: 0,
+      errors: null,
+      notes: [subject],
+    })
+    if (logError) console.error(`[notify-daily-ops] failed to write mkt_cron_log: ${logError.message}`)
+  }
+
   return new Response(JSON.stringify({
     ok: true, any_flag: anyFlag, issue_count: issues.length,
     critical_count: critical.length, minor_count: minor.length,
