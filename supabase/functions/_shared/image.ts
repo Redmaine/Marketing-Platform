@@ -113,6 +113,72 @@ const DEFAULT_CONCEPT_SYSTEM = 'You turn a social media post into a short, concr
 // around markable surfaces in the first place.
 const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph. Describe ONE clear setting, composition and mood that captures what the post is about, drawing from a wide range of possible settings (coastal and maritime, government or parliamentary buildings, outdoor and field locations, city streets, courtrooms, transport and infrastructure, or an interior only when it is genuinely the best fit) — do not default to an office, briefing room, or security operations centre unless the story is unambiguously about that exact thing. Critically: never describe a person\'s face, expression, or a close-up or portrait of a person — no "a man reading," no "an official looking concerned," nothing that puts a human face in frame. If a human presence belongs in the scene, describe it only as a distant figure, a silhouette, or a figure seen from behind — never facial detail. Strongly prefer scenes built around objects, architecture, landscape or symbolic detail over scenes built around a person. Describe surfaces as blank and unmarked — never mention hull numbers, registrations, signage, badges, insignia or any lettering, and avoid making a marked surface the subject of the shot. Never describe any text, quotes, numbers or words that should appear in the image. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
+// CRHQ prompt scaffolding for Flux (2026-08-20).
+//
+// WHY THIS EXISTS. CRHQ is the only client on Flux (usesFluxProvider), and
+// this integration sends Flux no negative prompt — CRHQ_NEGATIVE_PROMPT is
+// only ever passed on the Stability branch, which CRHQ never takes, so it is
+// dead code for this client. That leaves every prohibition in CRHQ's
+// visual_style expressed as prose to a purely positive-conditioning model.
+//
+// Two consequences drove the 18 Aug 2026 failures:
+//   1. The medium spec (Tri-X, grain, handheld) sat in the MIDDLE of a
+//      ~2,300-character prompt, after the scene concept. Diffusion models
+//      weight early tokens most, so "what the picture is of" outranked "what
+//      kind of photograph it is" — and the model resolved the ambiguity as a
+//      clean CGI render.
+//   2. The "Avoid entirely:" list ends the prompt naming cartoon, 3D render,
+//      CGI, digital art, concept art. Naming a style is how you ask for it;
+//      with no negative channel those tokens are conditioning INPUT, which is
+//      the classic "don't think of an elephant" failure.
+//
+// The visual_style text itself is left byte-for-byte untouched — it is the
+// spec the compliance checker judges against, and passesStylePrefixCheck
+// requires it verbatim and contiguous in the prompt. So instead of rewriting
+// it, this brackets it: the medium is asserted FIRST (primacy) and the
+// photographic requirements restated LAST in positive form (recency), so the
+// banned-style nouns are no longer the final thing the model reads.
+//
+// Deliberately names nothing it does not want. Every clause states what the
+// image IS, never what it must not be.
+const CRHQ_MEDIUM_DIRECTIVE = 'A real black-and-white 35mm documentary reportage photograph, shot on Kodak Tri-X 400 film pushed one stop and scanned from the negative. Coarse silver-halide grain is plainly visible across the whole frame, including in flat areas of sky, wall and shadow. Available light only, handheld, slightly imperfect framing, deep true blacks and blown-out highlights. Every surface is physical and worn — scuffed, dusty, damp, fingerprinted, unevenly lit'
+
+const CRHQ_STYLE_REINFORCEMENT = 'Above all this must read as a real photograph made on real film: heavy visible grain everywhere, genuine surface texture, uneven natural light, and the small optical imperfections of a handheld 35mm frame. Every surface in shot is blank, plain and unlettered'
+
+// Turns a style-checker violation into a POSITIVE corrective instruction.
+//
+// The retry previously pasted the checker's own prose straight back into the
+// prompt: "the previous attempt broke this brand's visual rules — This image
+// is a 3D render or CGI...". With no negative-prompt channel on Flux, that
+// fed the exact tokens "3D render", "CGI" and "control room" back in as
+// conditioning — so the escalation could make the next attempt worse than the
+// one it was correcting. Real example, 18 Aug 2026: the rejection naming a
+// "control room or security operations centre with a wall of monitors" would
+// have been echoed verbatim into the regeneration prompt.
+//
+// This maps the violation to what the image should BE instead, and never
+// repeats the offending noun.
+function styleCorrectionFor(violation: string | null): string {
+  const v = String(violation ?? '').toLowerCase()
+
+  if (/3d|cgi|render|digital art|concept art|illustration|cartoon|drawing|painting|sketch|smooth|flawless|airbrush|plastic|waxy/.test(v)) {
+    return 'The previous frame was too clean and too perfect to read as a photograph. Make it unmistakably a scanned film negative: coarse silver-halide grain over the entire image including flat areas, visible dust and surface wear, uneven available light, slight handheld softness, and blown highlights that are not recovered.'
+  }
+  if (/control room|operations centre|operations center|monitor|screen|console|surveillance|command centre|command center/.test(v)) {
+    return 'Set this somewhere else entirely — outdoors or in a public civic space. Choose a coastal or maritime location, a street, a field or open ground, a transport or infrastructure setting, or the exterior of a public building. No interior filled with equipment or displays.'
+  }
+  if (/face|portrait|eyes|person|figure|people|crowd/.test(v)) {
+    return 'Remove people from the frame entirely. Build the photograph around objects, architecture, landscape or weather instead. If any human presence is unavoidable it must be a distant silhouette seen from behind, no larger than a small part of the frame.'
+  }
+  if (/text|letter|number|marking|sign|logo|insignia|registration|hull|digit|stencil/.test(v)) {
+    return 'Every surface must be completely blank — plain unmarked metal, plain unmarked paint, plain unmarked fabric. Turn away or exclude anything that could carry markings, and do not make any marked surface the subject.'
+  }
+  if (/colour|color|saturat/.test(v)) {
+    return 'Pure black and white only, with a full tonal range from deep true blacks to blown highlights. No colour cast of any kind.'
+  }
+  return 'Make this unmistakably a real black-and-white documentary photograph on pushed Tri-X film: heavy visible grain, worn physical surfaces, uneven available light, handheld imperfection.'
+}
+
 async function summariseToVisualConcept(postBody: string, systemPrompt: string = DEFAULT_CONCEPT_SYSTEM): Promise<string> {
   const body = String(postBody || '').replace(/\s+/g, ' ').trim()
   if (!body) return ''
@@ -131,11 +197,18 @@ async function summariseToVisualConcept(postBody: string, systemPrompt: string =
 // concept system prompt (see CRHQ_CONCEPT_SYSTEM) — every other client is
 // completely unaffected.
 async function buildImagePrompt(postBody: string, visualStyle: string | null, client?: Record<string, any>): Promise<string> {
-  const conceptSystem = wantsHeadlineOverlay(client ?? {}) ? CRHQ_CONCEPT_SYSTEM : DEFAULT_CONCEPT_SYSTEM
+  const isCrhq = wantsHeadlineOverlay(client ?? {})
+  const conceptSystem = isCrhq ? CRHQ_CONCEPT_SYSTEM : DEFAULT_CONCEPT_SYSTEM
   const concept = await summariseToVisualConcept(postBody, conceptSystem)
   const style = String(visualStyle || '').trim()
-  const parts = [concept, style, NO_TEXT_INSTRUCTION].filter(Boolean)
-  return parts.join('. ')
+  // CRHQ brackets the brand style with a medium directive first and a
+  // positive restatement last — see CRHQ_MEDIUM_DIRECTIVE. `style` stays
+  // verbatim and contiguous so passesStylePrefixCheck still holds. Every
+  // other client is completely unaffected.
+  const parts = isCrhq
+    ? [CRHQ_MEDIUM_DIRECTIVE, concept, style, CRHQ_STYLE_REINFORCEMENT, NO_TEXT_INSTRUCTION]
+    : [concept, style, NO_TEXT_INSTRUCTION]
+  return parts.filter(Boolean).join('. ')
 }
 
 // Instagram requires exact 1080x1080 square images. Stability only generates
@@ -576,6 +649,45 @@ export async function generateWithFlux(prompt: string, token: string): Promise<U
   return await callFlux(prompt, token)
 }
 
+// Pulls the FIRST complete JSON object out of a model response.
+//
+// This previously used /\{[\s\S]*\}/ — greedy, so it spanned from the first
+// "{" to the LAST "}" anywhere in the reply. When the model returned its JSON
+// and then added a sentence of commentary containing a brace, the match
+// swallowed both and JSON.parse died with "Unexpected non-whitespace character
+// after JSON at position N". That was not a rare edge case: on 18 Aug 2026 it
+// killed 2 of the 3 style attempts on BOTH of CRHQ's posts
+// (19e37a77…, 496b8d62…), leaving one real style verdict before the loop
+// declared itself exhausted and shipped no image at all.
+//
+// Brace-counting from the first "{" (string-aware, so braces inside quoted
+// values don't miscount) returns exactly one object and ignores anything after
+// it. Markdown fences are stripped first.
+function extractFirstJsonObject(raw: string): string | null {
+  const text = String(raw ?? '').replace(/```(?:json)?/gi, '')
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') { inString = true; continue }
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return text.slice(start, i + 1)
+    }
+  }
+  return null
+}
+
 async function measureImage(bytes: Uint8Array): Promise<ImageMeasurement> {
   // Chunked base64 — a spread/apply over a ~1.5MB image blows the call stack.
   let binary = ''
@@ -586,9 +698,9 @@ async function measureImage(bytes: Uint8Array): Promise<ImageMeasurement> {
   const b64 = btoa(binary)
 
   const raw = await callAnthropicVision(IMAGE_REVIEW_SYSTEM, b64, 'Measure this image.', 1500)
-  const match = raw.match(/\{[\s\S]*\}/)
-  if (!match) throw new Error(`image review returned no JSON: ${raw.slice(0, 200)}`)
-  return JSON.parse(match[0]) as ImageMeasurement
+  const json = extractFirstJsonObject(raw)
+  if (!json) throw new Error(`image review returned no JSON: ${raw.slice(0, 200)}`)
+  return JSON.parse(json) as ImageMeasurement
 }
 
 // Durable record of every review attempt — see migration 101. Best-effort:
@@ -647,6 +759,10 @@ const IMAGE_REVIEW_MAX_ATTEMPTS = 3
 // is covered the moment it has a visual_style — 6 of the 9 image-generating
 // brands currently state some form of "no people".
 const STYLE_REVIEW_MAX_ATTEMPTS = 3
+// How many times the style checker itself may fail (parse/transport) without
+// costing a generation attempt. Bounded so a persistently broken checker can
+// never loop forever — once spent, the post goes out image-less and flagged.
+const STYLE_CHECK_ERROR_BUDGET = 3
 
 // Same measure-then-judge split the face/text backstop uses: the model reports
 // what it observes and which stated rule it breaks; fixed code decides the
@@ -713,9 +829,9 @@ async function checkStyleCompliance(bytes: Uint8Array, visualStyle: string): Pro
     `Brand visual style specification:\n\n${visualStyle}\n\nCheck this image against it.`,
     1000,
   )
-  const match = raw.match(/\{[\s\S]*\}/)
-  if (!match) throw new Error(`style compliance check returned no JSON: ${raw.slice(0, 200)}`)
-  return judgeStyleCompliance(JSON.parse(match[0]) as StyleComplianceResult)
+  const json = extractFirstJsonObject(raw)
+  if (!json) throw new Error(`style compliance check returned no JSON: ${raw.slice(0, 200)}`)
+  return judgeStyleCompliance(JSON.parse(json) as StyleComplianceResult)
 }
 
 // Flags the post the same way a failed TEXT review is flagged (see fill.ts's
@@ -1054,12 +1170,24 @@ export async function generatePostImage(
     let rawBytes: Uint8Array | null = null
     let lastViolation: string | null = null
 
+    // A checker crash must not cost a generation attempt. Before this, the
+    // catch below did a bare `continue`, so a transport blip — or the greedy
+    // JSON bug fixed in extractFirstJsonObject — silently burned one of the
+    // three tries without ever producing a style verdict. On 18 Aug 2026 that
+    // consumed 2 of 3 attempts on both CRHQ posts, so a single genuine
+    // rejection was enough to exhaust the loop and ship no image.
+    //
+    // Checker errors now draw on their own separate budget and re-run the
+    // same attempt number, so STYLE_REVIEW_MAX_ATTEMPTS means what it says:
+    // three real style verdicts.
+    let checkerErrors = 0
     for (let attempt = 1; attempt <= STYLE_REVIEW_MAX_ATTEMPTS; attempt++) {
       const attemptPrompt = lastViolation
         // Escalate on the rule that actually broke, same reasoning as
         // REVIEW_ESCALATION — regenerating with an identical prompt is another
-        // roll of the same dice.
-        ? `${prompt}\n\nCRITICAL: the previous attempt broke this brand's visual rules — ${lastViolation}. That is a hard prohibition, not a preference. Regenerate so it cannot recur.`
+        // roll of the same dice. Phrased as a positive correction rather than
+        // by quoting the violation back: see styleCorrectionFor.
+        ? `${prompt}\n\nCRITICAL — the previous attempt was rejected. ${styleCorrectionFor(lastViolation)} This is a hard requirement, not a preference.`
         : prompt
 
       const candidate = await generateRaw(attemptPrompt)
@@ -1079,7 +1207,18 @@ export async function generatePostImage(
         const msg = String((e as Error)?.message ?? e)
         console.error(`[image] ${client.name}: style compliance check failed on attempt ${attempt} — ${msg}`)
         await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [`style check error: ${msg}`], null)
-        continue
+        checkerErrors++
+        if (checkerErrors <= STYLE_CHECK_ERROR_BUDGET) {
+          // Re-run this attempt rather than consuming it — no style verdict
+          // was produced, so nothing was actually learned about the image.
+          attempt--
+          continue
+        }
+        // Budget spent: stop retrying the checker and fall through to the
+        // exhausted branch, which attaches no image and flags for a human.
+        // Failing closed is deliberate — an unchecked image must never ship.
+        console.error(`[image] ${client.name}: style checker failed ${checkerErrors}x, giving up for ${contentQueueId}`)
+        break
       }
 
       await logImageReview(
