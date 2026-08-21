@@ -394,7 +394,13 @@ serve(async (req) => {
           // the rest (see _shared/image.ts, and migration 61 which adds
           // 'facebook' to CRHQ's allow-list to let this through at all).
           if (review.body && wantsImage) {
-            await generatePostImage(admin, client, inserted.id, review.body, platform)
+            // primarySource.title is the actual scraped video/article this post
+            // was built around — prompts.ts already steers the COPY with it.
+            // Passing it on is Defect 2's fix: without it the image concept
+            // only ever saw the finished copy, which on Instagram is two lines
+            // and a URL, and the concepts came out generic as a result. See
+            // summariseToVisualConcept in _shared/image.ts.
+            await generatePostImage(admin, client, inserted.id, review.body, platform, primarySource.title)
           } else if (review.body && platform === 'facebook') {
             console.log(`[crhq-nightly-content] facebook: skipping image for ${inserted.id} — alternating (previous post had one)`)
           }

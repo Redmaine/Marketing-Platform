@@ -72,6 +72,10 @@ const INSTAGRAM_SIZE = 1080
 // must now use, regardless of brand — Stability cannot render readable text
 // at all, so this always applies, not just when a client's own visual_style
 // happens to mention it.
+//
+// STILL USED BY EVERY NON-CRHQ (Stability) CLIENT — they are not failing and
+// are deliberately untouched. CRHQ no longer ends its prompt with this; see
+// CRHQ_SURFACE_CLOSER for why.
 const NO_TEXT_INSTRUCTION = 'no text, no words, no letters, no typography, no labels'
 
 // TODO: Manual photography upload for CRHQ
@@ -111,7 +115,42 @@ const DEFAULT_CONCEPT_SYSTEM = 'You turn a social media post into a short, concr
 // prompt to lean on, and rendered hull numbers were the single most common
 // review rejection, so the concept itself now avoids proposing scenes built
 // around markable surfaces in the first place.
-const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph. Describe ONE clear setting, composition and mood that captures what the post is about, drawing from a wide range of possible settings (coastal and maritime, government or parliamentary buildings, outdoor and field locations, city streets, courtrooms, transport and infrastructure, or an interior only when it is genuinely the best fit) — do not default to an office, briefing room, or security operations centre unless the story is unambiguously about that exact thing. Critically: never describe a person\'s face, expression, or a close-up or portrait of a person — no "a man reading," no "an official looking concerned," nothing that puts a human face in frame. If a human presence belongs in the scene, describe it only as a distant figure, a silhouette, or a figure seen from behind — never facial detail. Strongly prefer scenes built around objects, architecture, landscape or symbolic detail over scenes built around a person. Describe surfaces as blank and unmarked — never mention hull numbers, registrations, signage, badges, insignia or any lettering, and avoid making a marked surface the subject of the shot. Never describe any text, quotes, numbers or words that should appear in the image. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+//
+// REWRITTEN 21 Aug 2026 after the 19/20 Aug exhaustions (both posts shipped
+// with no image at all — image_review_events, eee743fc… and 701fd49c…). The
+// previous version's two clauses each failed for a specific, reproducible
+// reason, both confirmed by re-running it live against those same two real
+// post bodies:
+//
+//   1. It offered a MENU of settings ("coastal and maritime, government or
+//      parliamentary buildings, outdoor and field locations, CITY STREETS,
+//      courtrooms, transport and infrastructure"). The model picked a menu
+//      item rather than describing the actual story — which is Defect 2
+//      (irrelevance) and Defect 1 (text) at the same time, because the menu's
+//      own entries are signage-dense settings. Re-run live on the 20 Aug
+//      Birmingham public-order post it produced "a wide street in a major
+//      city centre… Victorian and modern buildings lining both sides, traffic
+//      lights and street infrastructure" — a shopfront-lined street, which is
+//      exactly the scene that rendered "POLICE", "PUBS", "S LOAN" and
+//      "POLLO A LA BRASA" three attempts running.
+//   2. Its text clause banned MENTIONING lettering ("never mention hull
+//      numbers, registrations, signage, badges, insignia or any lettering")
+//      but never banned choosing an object whose entire function is to carry
+//      lettering. Re-run live on the SAS-warning post it produced "a briefing
+//      room with maps, threat assessment charts… a wall of security
+//      infrastructure diagrams" — nothing "mentions" lettering, yet a map and
+//      a chart cannot be rendered without glyphs, which is where "TACTICAL
+//      ZONES", "BATTICAL ZONES", "T50" and "T40" came from.
+//
+// So the fix is at the object-class level, not the wording level: name the
+// specific story, then build the frame out of things that carry no writing.
+//
+// Note WHERE the prohibitions live. This system prompt is read by Claude, an
+// instruction-following text model that handles "do not use X" correctly.
+// Flux is a diffusion model with no negative channel, and only ever sees
+// Claude's OUTPUT — which, by construction, contains none of these nouns. The
+// negation happens in the one place negation actually works.
+const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare:\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- banners, flags, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
 // CRHQ prompt scaffolding for Flux (2026-08-20).
 //
@@ -150,6 +189,28 @@ const CRHQ_MEDIUM_DIRECTIVE = 'A real black-and-white 35mm documentary reportage
 
 const CRHQ_STYLE_REINFORCEMENT = 'Above all this must read as a real photograph made on real film: heavy visible grain everywhere, genuine surface texture, uneven natural light, and the small optical imperfections of a handheld 35mm frame. Every surface in shot is blank, plain and unlettered'
 
+// What CRHQ's prompt ends on, replacing NO_TEXT_INSTRUCTION in that slot
+// (21 Aug 2026). Non-CRHQ clients keep NO_TEXT_INSTRUCTION unchanged — they
+// are on Stability, which has a real negative channel, and none of them are
+// failing this way.
+//
+// The 20 Aug fix (commit 8294c59) established the principle for this file
+// already: with no negative channel, naming a thing is how you ask for it, so
+// the banned-STYLE nouns were moved off the end of the prompt and replaced
+// with a positive restatement. The banned-TEXT nouns were left behind — CRHQ's
+// prompt still ended on "no text, no words, no letters, no typography, no
+// labels", five glyph nouns in the highest-weighted recency slot, immediately
+// after visual_style's own unavoidable "no signage, no painted lettering, no
+// labels, no logos…" block. After that fix the style rejections stopped and
+// every one of the next six attempts was rejected for TEXT instead.
+//
+// visual_style is the compliance spec and passesStylePrefixCheck needs it
+// verbatim, so its glyph nouns cannot be removed — but they no longer have to
+// be the last thing Flux reads. This states what the surfaces ARE. It names
+// no glyph noun at all, and it reinforces the framing the concept was built
+// with (see CRHQ_CONCEPT_SYSTEM) rather than fighting it.
+const CRHQ_SURFACE_CLOSER = 'Every surface in frame is bare, continuous material — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth, glass, water — filling the frame as texture, tone and shadow, photographed close enough that material and light are the whole subject'
+
 // Turns a style-checker violation into a POSITIVE corrective instruction.
 //
 // The retry previously pasted the checker's own prose straight back into the
@@ -176,7 +237,10 @@ function styleCorrectionFor(violation: string | null): string {
     return 'Remove people from the frame entirely. Build the photograph around objects, architecture, landscape or weather instead. If any human presence is unavoidable it must be a distant silhouette seen from behind, no larger than a small part of the frame.'
   }
   if (/text|letter|number|marking|sign|logo|insignia|registration|hull|digit|stencil/.test(v)) {
-    return 'Every surface must be completely blank — plain unmarked metal, plain unmarked paint, plain unmarked fabric. Turn away or exclude anything that could carry markings, and do not make any marked surface the subject.'
+    // Same reasoning as REVIEW_ESCALATION.text — this is positive
+    // conditioning on Flux, so it names bare materials rather than the
+    // markings it is correcting.
+    return 'Move the camera in close and fill the frame with bare physical material — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth. Material, texture, shadow and light are the entire subject of this photograph.'
   }
   if (/colour|color|saturat/.test(v)) {
     return 'Pure black and white only, with a full tonal range from deep true blacks to blown highlights. No colour cast of any kind.'
@@ -184,36 +248,153 @@ function styleCorrectionFor(violation: string | null): string {
   return 'Make this unmistakably a real black-and-white documentary photograph on pushed Tri-X film: heavy visible grain, worn physical surfaces, uneven available light, handheld imperfection.'
 }
 
-async function summariseToVisualConcept(postBody: string, systemPrompt: string = DEFAULT_CONCEPT_SYSTEM): Promise<string> {
+// `sourceTitle` is the real story the post was written from — CRHQ's
+// primarySourceForPlatform picks one scraped video/article per post and
+// crhq-nightly-content already steers the COPY with it (prompts.ts: "This
+// specific post must be built primarily around this video: …"). It was never
+// passed on to the image, which is a large part of Defect 2: published copy
+// is a lossy summary of the story, and on Instagram it is barely a summary at
+// all. The 19 Aug Instagram post's entire body was "Nuclear strike risk to UK
+// is a live operational concern. We've analysed the threat level and what it
+// means. Watch now at youtube.com/watch?v=…" — two lines and a URL, from
+// which the concept model produced a generic "stark institutional corridor in
+// a government defence facility". The video it was written about was titled
+// "WILL They ATTACK UK with a NUCLEAR STRIKE" (crhq_scrape_cache, 19 Aug),
+// and that title never reached the image at all.
+// Deterministic guard on what the concept model returns, for CRHQ only. Same
+// principle the rest of this file already runs on: prose rules are advisory,
+// a fixed check is what enforces them.
+//
+// It is needed because prose alone measurably is not enough. Re-running the
+// rewritten CRHQ_CONCEPT_SYSTEM twice on the same real 20 Aug Birmingham post
+// gave one clean scene and one containing "boarded-up storefronts" and
+// "emergency vehicle lights" — with the forbidden-object list right there in
+// the system prompt. One sample in three is not a fix; every generation has to
+// clear the bar, so the check has to be code.
+//
+// Every entry here is an object whose PURPOSE is to carry writing (or a
+// setting made of them). Rejecting the concept and asking again is cheap — one
+// short text call — and happens long before any image is paid for.
+const CONCEPT_BANNED_SUBJECTS =
+  /\b(shops?|shopfronts?|storefronts?|store fronts?|shutters?|retail|high street|pubs?|caf[eé]s?|restaurants?|screens?|monitors?|displays?|projections?|dashboards?|maps?|charts?|diagrams?|blueprints?|documents?|papers?|paperwork|files?|folders?|notebooks?|books?|newspapers?|cars?|vans?|lorr(?:y|ies)|trucks?|buses|trains?|aircraft|aeroplanes?|helicopters?|ships?|boats?|vessels?|vehicles?|ambulances?|banners?|flags?|posters?|signs?|signage|signposts?|plaques?|noticeboards?|hoardings?|billboards?|uniforms?|badges?|insignia|packaging|boxes|crates?|offices?|briefing rooms?|control rooms?|operations cent(?:re|er)s?|newsrooms?|number plates?|licen[cs]e plates?|labels?|lettering|inscriptions?|graffiti)\b/i
+
+// The rewritten system prompt insists the scene be specific to THIS story and
+// refuses genericness. On a post that is purely "someone said something" —
+// e.g. the real 18 Aug SAS post, whose entire body is a warning being
+// described — that pressure made the model decline outright and return a
+// paragraph of explanation instead of a scene. Unguarded, that paragraph
+// becomes the image prompt.
+const CONCEPT_REFUSAL = /^(i (can'?t|cannot|am unable|will not|won'?t)|i'?m (sorry|unable|not able)|unfortunately|to work with|there is no)/i
+
+// Last resort when the model cannot produce a usable scene. Deliberately a
+// real, on-brand, structurally text-free frame rather than the previous
+// fallback of `body.slice(0, 220)` — which pasted the raw post copy into the
+// image prompt, URL and all. The 19 Aug Instagram post's copy ends
+// "Watch now at youtube.com/watch?v=x0TIu0RZmkM"; handing that to a
+// text-to-image model as its scene description is asking for rendered
+// lettering, in the one code path meant to be the safe one.
+const CRHQ_CONCEPT_FALLBACK = 'Rain-soaked concrete and weathered brick at ground level in flat grey British daylight, water standing in the cracks and the wall filling the frame'
+
+const CONCEPT_MAX_ATTEMPTS = 3
+
+// Returns the reason a concept is unusable, or null if it is fine.
+function conceptProblem(concept: string): string | null {
+  const c = concept.trim()
+  if (!c) return 'empty'
+  if (CONCEPT_REFUSAL.test(c)) return 'the model declined to describe a scene'
+  // A scene description is one or two sentences. Anything much longer is
+  // commentary, an explanation, or the post copy echoed back.
+  if (c.length > 500) return 'not a scene description (too long)'
+  const banned = CONCEPT_BANNED_SUBJECTS.exec(c)
+  if (banned) return `contains "${banned[0]}"`
+  return null
+}
+
+// `sourceTitle` is the real story the post was written from — CRHQ's
+// primarySourceForPlatform picks one scraped video/article per post and
+// crhq-nightly-content already steers the COPY with it (prompts.ts: "This
+// specific post must be built primarily around this video: …"). It was never
+// passed on to the image, which is a large part of Defect 2: published copy
+// is a lossy summary of the story, and on Instagram it is barely a summary at
+// all. The 19 Aug Instagram post's entire body was "Nuclear strike risk to UK
+// is a live operational concern. We've analysed the threat level and what it
+// means. Watch now at youtube.com/watch?v=…" — two lines and a URL, from
+// which the concept model produced a generic "stark institutional corridor in
+// a government defence facility". The video it was written about was titled
+// "WILL They ATTACK UK with a NUCLEAR STRIKE" (crhq_scrape_cache, 19 Aug),
+// and that title never reached the image at all. With it passed through, the
+// same post now yields "a concrete bunker entrance set into a hillside, its
+// heavy blast doors sealed shut" — about that story, and made of materials
+// that cannot carry writing.
+//
+// `validate` is CRHQ-only. Every other client keeps the original
+// single-call-and-take-it behaviour exactly.
+export async function summariseToVisualConcept(
+  postBody: string,
+  systemPrompt: string = DEFAULT_CONCEPT_SYSTEM,
+  sourceTitle?: string | null,
+  validate = false,
+): Promise<string> {
   const body = String(postBody || '').replace(/\s+/g, ' ').trim()
   if (!body) return ''
-  try {
-    const concept = await callAnthropic(systemPrompt, `Post:\n${body.slice(0, 1000)}`, 150)
-    return concept.replace(/\s+/g, ' ').trim() || body.slice(0, 220)
-  } catch (e) {
-    console.error(`[image] visual-concept summary failed, falling back to truncated post body — ${String((e as Error)?.message ?? e)}`)
-    return body.slice(0, 220)
+  const source = String(sourceTitle ?? '').replace(/\s+/g, ' ').trim()
+  const base = source
+    ? `Post:\n${body.slice(0, 1000)}\n\nThe post was written about this specific story: "${source.slice(0, 300)}". The scene must be about that story in particular.`
+    : `Post:\n${body.slice(0, 1000)}`
+
+  let correction = ''
+  for (let attempt = 1; attempt <= (validate ? CONCEPT_MAX_ATTEMPTS : 1); attempt++) {
+    try {
+      const raw = await callAnthropic(systemPrompt, base + correction, 150)
+      const concept = raw.replace(/\s+/g, ' ').trim()
+      if (!validate) return concept || body.slice(0, 220)
+
+      const problem = conceptProblem(concept)
+      if (!problem) return concept
+
+      console.error(`[image] concept attempt ${attempt} unusable — ${problem}`)
+      // Named explicitly. This correction is read by Claude, which handles
+      // "do not use X" correctly — it never reaches the diffusion model.
+      correction = `\n\nYour previous answer was rejected because it ${problem}. Reply with ONLY a scene description — one or two sentences, no explanation, no refusal — about this same specific story, built only from place, ground, weather, light, architecture and raw material, and containing none of the STEP 3 forbidden objects. If the post is about what someone said, describe the real-world thing they were talking about.`
+    } catch (e) {
+      console.error(`[image] visual-concept summary failed on attempt ${attempt} — ${String((e as Error)?.message ?? e)}`)
+      if (!validate) return body.slice(0, 220)
+    }
   }
+
+  // Never the raw post body for CRHQ — see CRHQ_CONCEPT_FALLBACK.
+  console.error('[image] concept model produced no usable scene — using the text-free fallback frame')
+  return validate ? CRHQ_CONCEPT_FALLBACK : body.slice(0, 220)
 }
 
 // Post copy (summarised into a visual concept, not passed through raw) +
-// brand visual style, both folded into one prompt, with the no-text
-// instruction always appended last regardless of brand. CRHQ gets its own
-// concept system prompt (see CRHQ_CONCEPT_SYSTEM) — every other client is
-// completely unaffected.
-async function buildImagePrompt(postBody: string, visualStyle: string | null, client?: Record<string, any>): Promise<string> {
+// brand visual style, both folded into one prompt. CRHQ gets its own concept
+// system prompt (see CRHQ_CONCEPT_SYSTEM) and its own closing line (see
+// CRHQ_SURFACE_CLOSER) — every other client is completely unaffected and
+// still ends on NO_TEXT_INSTRUCTION.
+//
+// Returns the concept alongside the prompt so it can be logged against every
+// review attempt. Until now nothing anywhere persisted what the image was
+// actually asked to depict, so "is the image about the post?" could not be
+// answered from the data at all — only re-derived by re-running the model.
+export async function buildImagePrompt(
+  postBody: string,
+  visualStyle: string | null,
+  client?: Record<string, any>,
+  sourceTitle?: string | null,
+): Promise<{ prompt: string; concept: string }> {
   const isCrhq = wantsHeadlineOverlay(client ?? {})
   const conceptSystem = isCrhq ? CRHQ_CONCEPT_SYSTEM : DEFAULT_CONCEPT_SYSTEM
-  const concept = await summariseToVisualConcept(postBody, conceptSystem)
+  const concept = await summariseToVisualConcept(postBody, conceptSystem, sourceTitle, isCrhq)
   const style = String(visualStyle || '').trim()
   // CRHQ brackets the brand style with a medium directive first and a
   // positive restatement last — see CRHQ_MEDIUM_DIRECTIVE. `style` stays
   // verbatim and contiguous so passesStylePrefixCheck still holds. Every
   // other client is completely unaffected.
   const parts = isCrhq
-    ? [CRHQ_MEDIUM_DIRECTIVE, concept, style, CRHQ_STYLE_REINFORCEMENT, NO_TEXT_INSTRUCTION]
+    ? [CRHQ_MEDIUM_DIRECTIVE, concept, style, CRHQ_STYLE_REINFORCEMENT, CRHQ_SURFACE_CLOSER]
     : [concept, style, NO_TEXT_INSTRUCTION]
-  return parts.filter(Boolean).join('. ')
+  return { prompt: parts.filter(Boolean).join('. '), concept }
 }
 
 // Instagram requires exact 1080x1080 square images. Stability only generates
@@ -715,6 +896,12 @@ async function logImageReview(
   verdict: 'pass' | 'reject' | 'error' | 'exhausted',
   reasons: string[],
   measurement: ImageMeasurement | null,
+  // The scene the image was asked to depict (migration
+  // 20260821_image_review_events_concept). Recorded on every attempt so
+  // "was the image about the post?" is answerable from the table instead of
+  // only by re-running the concept model — which is how Defect 2 went
+  // unnoticed for as long as it did.
+  concept: string | null = null,
 ): Promise<void> {
   try {
     const { error } = await admin.from('image_review_events').insert({
@@ -726,6 +913,7 @@ async function logImageReview(
       verdict,
       reasons,
       measurement,
+      concept,
     })
     if (error) console.error(`[image] image_review_events insert failed: ${error.message}`)
   } catch (e) {
@@ -736,7 +924,19 @@ async function logImageReview(
 // Escalating pressure on the rule that actually failed. Regenerating with an
 // identical prompt is just another roll of the same dice.
 const REVIEW_ESCALATION = {
-  text: 'CRITICAL: the previous attempt rendered legible lettering. Every painted, printed or stencilled surface must be completely blank — plain unmarked metal, plain unmarked paper, plain unmarked fabric. Remove or turn away any hull, plate, sign or chart that could carry markings.',
+  // Rewritten 21 Aug 2026. The previous text escalation was itself made of
+  // glyph nouns — "legible lettering… any hull, plate, sign or chart that
+  // could carry markings" — and on Flux there is no negative channel to send
+  // them down, so it went in as positive conditioning on the retry. The 20 Aug
+  // Birmingham run is the record: attempt 1 rejected on storefront signage,
+  // this escalation appended, attempt 2 came back with MORE signage
+  // ("POLICE", "PUBS", "S LOAN"), attempt 3 the same again. It was not merely
+  // failing to help.
+  //
+  // A retry cannot rewrite the concept it was given, so the one lever it has
+  // is the camera: move in until only material fills the frame. Stated
+  // positively, naming nothing it does not want.
+  text: 'CRITICAL: move the camera much closer and photograph bare physical material alone — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth, water. Fill the whole frame with that material, its texture, and the light falling across it. Material, texture, shadow and weather are the entire subject of this photograph.',
   face: 'CRITICAL: the previous attempt rendered an identifiable face. Remove people from the frame entirely — this is an environmental or still-life photograph with no human figures at all.',
 }
 
@@ -815,7 +1015,7 @@ export function judgeStyleCompliance(result: StyleComplianceResult): { compliant
 // Asks the vision model to check this image against this brand's own rules.
 // Throws on transport/parse failure so the caller can log it and decide —
 // never silently returns "compliant" on an error.
-async function checkStyleCompliance(bytes: Uint8Array, visualStyle: string): Promise<{ compliant: boolean; violation: string | null }> {
+export async function checkStyleCompliance(bytes: Uint8Array, visualStyle: string): Promise<{ compliant: boolean; violation: string | null }> {
   // Chunked base64 — a spread/apply over a ~1.5MB image blows the call stack.
   let binary = ''
   const CHUNK = 0x8000
@@ -1038,6 +1238,10 @@ export async function generatePostImage(
   contentQueueId: string,
   postBody: string,
   platform: string,
+  // The real story this post was written from — CRHQ's per-post primary
+  // source (crhq-nightly-content's primarySourceForPlatform). Optional, and
+  // every caller that doesn't have one behaves exactly as before.
+  sourceTitle?: string | null,
 ): Promise<void> {
   // Per-client platform ALLOW-list (mkt_clients.image_gen_platforms, migration
   // 51). When set, images are generated ONLY for those platforms — every other
@@ -1079,7 +1283,7 @@ export async function generatePostImage(
     return
   }
 
-  const prompt = await buildImagePrompt(postBody, client.visual_style, client)
+  const { prompt, concept } = await buildImagePrompt(postBody, client.visual_style, client, sourceTitle)
 
   // Fails closed: an opportunity to enforce the brand's locked visual style
   // silently dropping is worse than one missing image. Disables this
@@ -1122,12 +1326,12 @@ export async function generatePostImage(
           // 'error' so these are visible and countable rather than invisible.
           const msg = String((e as Error)?.message ?? e)
           console.error(`[image] ${client.name}: review measurement failed on attempt ${attempt} — ${msg}`)
-          await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [msg], null)
+          await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [msg], null, concept)
           continue
         }
 
         const { verdict, reasons } = judgeImageMeasurement(measurement)
-        await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement)
+        await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement, concept)
 
         if (verdict === 'pass') {
           accepted = candidate
@@ -1147,7 +1351,7 @@ export async function generatePostImage(
         // text-only — the same outcome as any other image failure in this
         // file, and strictly better than shipping a face or a hull number.
         await logImageReview(admin, client, contentQueueId, platform, IMAGE_REVIEW_MAX_ATTEMPTS, 'exhausted',
-          [`no attempt passed review after ${IMAGE_REVIEW_MAX_ATTEMPTS} tries — no image attached`], null)
+          [`no attempt passed review after ${IMAGE_REVIEW_MAX_ATTEMPTS} tries — no image attached`], null, concept)
         console.error(`[image] ${client.name}: all ${IMAGE_REVIEW_MAX_ATTEMPTS} attempts failed review for ${contentQueueId} — posting without an image`)
         return null
       }
@@ -1213,7 +1417,7 @@ export async function generatePostImage(
         // Logged as 'error' so it is visible and countable; the loop retries.
         const msg = String((e as Error)?.message ?? e)
         console.error(`[image] ${client.name}: style compliance check failed on attempt ${attempt} — ${msg}`)
-        await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [`style check error: ${msg}`], null)
+        await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [`style check error: ${msg}`], null, concept)
         checkerErrors++
         if (checkerErrors <= STYLE_CHECK_ERROR_BUDGET) {
           // Re-run this attempt rather than consuming it — no style verdict
@@ -1232,7 +1436,7 @@ export async function generatePostImage(
         admin, client, contentQueueId, platform, attempt,
         verdict.compliant ? 'pass' : 'reject',
         [verdict.compliant ? 'visual_style compliant' : `STYLE ${verdict.violation}`],
-        null,
+        null, concept,
       )
 
       if (verdict.compliant) {
@@ -1250,7 +1454,7 @@ export async function generatePostImage(
       // image, and flag the post for a human the same way a failed text review
       // is flagged — with a reason naming the rule that failed.
       await logImageReview(admin, client, contentQueueId, platform, STYLE_REVIEW_MAX_ATTEMPTS, 'exhausted',
-        [`visual_style not met after ${STYLE_REVIEW_MAX_ATTEMPTS} attempts — no image attached`], null)
+        [`visual_style not met after ${STYLE_REVIEW_MAX_ATTEMPTS} attempts — no image attached`], null, concept)
       await flagImageNeedsAttention(admin, contentQueueId, lastViolation ?? 'compliance check could not complete')
       console.error(`[image] ${client.name}: all ${STYLE_REVIEW_MAX_ATTEMPTS} attempts broke visual_style for ${contentQueueId} — flagged needs_attention, no image attached`)
       return
