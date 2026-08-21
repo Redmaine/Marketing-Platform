@@ -59,6 +59,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { cors, json } from '../_shared/cors.ts'
+import { releaseForClient } from '../_shared/blogDependentRelease.ts'
 
 type GithubBrand = {
   repo: string
@@ -626,9 +627,21 @@ serve(async (req) => {
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: finalStatus, published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Committed to GitHub, but could not update status: ${updErr.message}` }, 500)
 
+      // Only on a real 'published', not 'publish_unverified' — see
+      // _shared/blogDependentRelease.ts. Best-effort: a release failure must
+      // not block the publish response that already succeeded above.
+      let releasedCount = 0
+      if (finalStatus === 'published') {
+        try {
+          releasedCount = (await releaseForClient(admin, client.id)).released
+        } catch (e) {
+          console.error(`[publish-approved-blog] blog_dependent release failed: ${String((e as Error)?.message ?? e)}`)
+        }
+      }
+
       return json({
         ok: true, method: 'github', format: ghBrand.format, liveUrl, listing_updated: listingUpdated,
-        published_at: now, verified, ...(verifyNote ? { warning: verifyNote } : {}),
+        published_at: now, verified, blog_dependent_released: releasedCount, ...(verifyNote ? { warning: verifyNote } : {}),
       })
     }
 
@@ -684,7 +697,16 @@ serve(async (req) => {
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Published to Steady, but could not update status here: ${updErr.message}` }, 500)
 
-      return json({ ok: true, method: 'steady', liveUrl, published_at: now })
+      // Best-effort — see the github branch above for why this can't block
+      // the publish response.
+      let releasedCount = 0
+      try {
+        releasedCount = (await releaseForClient(admin, client.id)).released
+      } catch (e) {
+        console.error(`[publish-approved-blog] blog_dependent release failed: ${String((e as Error)?.message ?? e)}`)
+      }
+
+      return json({ ok: true, method: 'steady', liveUrl, published_at: now, blog_dependent_released: releasedCount })
     }
 
     // ── Branch 3: everyone else (Riverside, CRHQ, …) ──────────────────────────
@@ -694,12 +716,22 @@ serve(async (req) => {
     const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
     if (updErr) return json({ error: updErr.message }, 500)
 
+    // Best-effort — see the github branch above for why this can't block
+    // the publish response.
+    let releasedCount = 0
+    try {
+      releasedCount = (await releaseForClient(admin, client.id)).released
+    } catch (e) {
+      console.error(`[publish-approved-blog] blog_dependent release failed: ${String((e as Error)?.message ?? e)}`)
+    }
+
     return json({
       ok: true,
       method: 'manual',
       published_at: now,
       filename: `${slug}.html`,
       htmlContent: buildStandaloneHtml(blog, schemaScripts),
+      blog_dependent_released: releasedCount,
     })
   } catch (e) {
     const message = String((e as Error)?.message ?? e)
