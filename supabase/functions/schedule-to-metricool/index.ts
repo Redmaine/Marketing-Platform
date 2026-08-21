@@ -19,7 +19,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 import { platformSchedule } from '../_shared/platformSchedule.ts'
-import { dayOfWeekUK, ukTimeSlotToUtc } from '../_shared/ukTime.ts'
+import { dayOfWeekUK, ukTimeSlotToUtc, ukWallClockIso } from '../_shared/ukTime.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -377,7 +377,12 @@ serve(async (req) => {
       return json({ error: msg }, 500)
     }
 
-    const dateTimeStr = slot.toISOString().slice(0, 19)
+    // UK wall-clock, NOT UTC — the payload below pairs this with an explicit
+    // timezone: 'Europe/London', so it must be the London reading of `slot`.
+    // This was slot.toISOString().slice(0, 19) (the UTC reading) until
+    // 21 Aug 2026; see ukWallClockIso's comment for why that was wrong and
+    // why it stayed hidden for so long.
+    const dateTimeStr = ukWallClockIso(slot)
 
     // AI-generated cover image (fill.ts / _shared/image.ts) — attached when
     // present. NOTE: Metricool's public v2 scheduler docs weren't reachable
@@ -428,17 +433,32 @@ serve(async (req) => {
     // no-image half of its alternation would otherwise announce an AI image
     // that isn't there, which is its own kind of inaccuracy.
     //
-    // Idempotent: PATCH re-sends the whole body for an existing post, so
+    // Idempotent: the update re-sends the whole body for an existing post, so
     // without the includes() guard a rescheduled post would accumulate the
     // line twice.
     if (attachingImage && client?.slug === 'crhq' && !String(item.body ?? '').includes(AI_IMAGE_DISCLOSURE)) {
       requestBody.text = `${item.body}\n\n${AI_IMAGE_DISCLOSURE}`
     }
 
-    // Issue 8: if metricool_post_id already exists, PATCH the existing post
+    // Issue 8: if metricool_post_id already exists, update the existing post
     // rather than creating a duplicate.
+    //
+    // PUT, not PATCH (fixed 21 Aug 2026). This branch had never once run
+    // against a real existing post — every successful call this function has
+    // ever made was a POST for a new one — so nobody had discovered that
+    // Metricool's v2 scheduler does not accept PATCH on this route. It
+    // answers PATCH with a Spring-level 500, "Required request parameter
+    // 'fields' for method parameter type List is not present": the verb
+    // falls through to a different partial-update handler expecting a
+    // ?fields= list we neither send nor want. Confirmed live against the
+    // real API while re-pushing the BST-corrected times — 3/3 attempts 500'd
+    // and Metricool left the post untouched.
+    //
+    // PUT with the full body is the documented update shape, and the body
+    // assembled above already IS the full body, so this is purely a verb
+    // fix — the "re-sends the whole body" idempotency note above still holds.
     const existingPostId = item.metricool_post_id
-    const method = existingPostId ? 'PATCH' : 'POST'
+    const method = existingPostId ? 'PUT' : 'POST'
     const url = existingPostId
       ? `https://app.metricool.com/api/v2/scheduler/posts/${existingPostId}?userId=${METRICOOL_USER_ID}&blogId=${brandId}`
       : `https://app.metricool.com/api/v2/scheduler/posts?userId=${METRICOOL_USER_ID}&blogId=${brandId}`

@@ -79,6 +79,39 @@ export function ukTimeSlotToUtc(day: Date, hhmm: string): Date {
   return new Date(guess.getTime() - offsetHours * 3600_000)
 }
 
+// ── Machine direction: UTC instant -> UK wall-clock, as an ISO-like string ─
+//
+// The exact inverse of ukTimeSlotToUtc, and deliberately NOT one of the
+// display helpers below: this is for an API that wants a *local* datetime in
+// one field and its timezone in another, so it must stay machine-parseable
+// ("YYYY-MM-DDTHH:mm:ss", no zone suffix, no prettifying).
+//
+// It exists for Metricool's publicationDate: { dateTime, timezone }. That
+// payload was previously built with slot.toISOString().slice(0, 19) — the
+// UTC wall-clock reading — while declaring timezone 'Europe/London', so
+// Metricool interpreted the UTC reading as a London time.
+//
+// That mislabelling was invisible for a long time because it cancelled out
+// an equal-and-opposite storage bug: pre-ukTimeSlotToUtc, an intended 07:30
+// UK was stored as 07:30 UTC, and sending "07:30" labelled London happened to
+// publish at exactly the right moment. Once storage was fixed (5a2faac) the
+// stored instant became 06:30 UTC, and the same mislabelling started
+// scheduling posts a full hour EARLY. Confirmed live 21 Aug 2026 against the
+// real Metricool account. Anything building that payload must use this, not
+// toISOString().
+export function ukWallClockIso(d: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/London',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(d)
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00'
+  // Some runtimes render midnight as hour "24" under hour12:false; normalise.
+  const hh = get('hour') === '24' ? '00' : get('hour')
+  return `${get('year')}-${get('month')}-${get('day')}T${hh}:${get('minute')}:${get('second')}`
+}
+
 // ── Display direction: UTC instant -> UK-local formatted string ───────────
 //
 // ukTimeSlotToUtc above solves the STORAGE direction (a UK wall-clock time
