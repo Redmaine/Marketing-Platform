@@ -423,11 +423,26 @@ export const SECTION_CONFIG = {
 // extended: there was no exclusion table anywhere in this codebase.
 
 const SEEN_SECTION_LEGISLATION = 'legislation'
-// How far back to consider an item "already reported". Legislation has a long
-// shelf life — Making Tax Digital was announced years before its in-force
-// date — so a short window would let the same items cycle back round. A year
-// is long enough that anything genuinely still newsworthy has had its turn.
+// How far back to consider an item "already reported" — for an item that has
+// only ever been sent ONCE. Legislation has a long shelf life — Making Tax
+// Digital was announced years before its in-force date — so a short window
+// would let the same item cycle back round. A year is long enough that
+// anything genuinely still newsworthy has had its turn.
+//
+// This window does NOT apply once an item has been sent HARD_CAP_SENDS
+// times — see loadSeenItems. Originally this was the only rule, and it had
+// a real bug: after SEEN_LOOKBACK_DAYS elapsed the item dropped out of the
+// exclusion list and became eligible again, and if re-sent it would drop out
+// again a year later — "permanently excluded" was never actually permanent.
+// Confirmed against opportunity_scanner_seen_items directly: times_seen also
+// never incremented before this fix (see recordSeenItems), so nothing had
+// hit the old code's own attempted safeguard in practice.
 const SEEN_LOOKBACK_DAYS = 365
+// A legislation item may be sent at most this many times, full stop, no
+// matter how much time passes. Once an item's times_seen reaches this, it is
+// permanently excluded — loadSeenItems keeps such rows in the exclusion list
+// forever, ignoring SEEN_LOOKBACK_DAYS entirely for them.
+const HARD_CAP_SENDS = 2
 // How many titles to inject into the prompt. The database filter is the
 // authoritative one, so this only needs to cover enough recent history to
 // stop the model wasting searches; injecting all of them would bloat the
@@ -511,14 +526,22 @@ export function titlesSimilar(a, b) {
 // Best-effort by design: if this lookup fails, the run continues with an
 // empty seen-list rather than dying. A repeat item is a far better outcome
 // than a failed scan, and the failure is logged either way.
+//
+// Returns rows matching EITHER condition, not just the recency window:
+//   - times_seen >= HARD_CAP_SENDS — permanently excluded, regardless of age.
+//     This is the fix for the loophole above: without it, an item sent twice
+//     more than SEEN_LOOKBACK_DAYS apart would still drop out and be eligible
+//     for a third send.
+//   - last_seen_at within the lookback window — the existing soft exclusion,
+//     unchanged, for items that have only been sent once so far.
 async function loadSeenItems(admin, section) {
   if (!admin) return []
   const since = new Date(Date.now() - SEEN_LOOKBACK_DAYS * 86400_000).toISOString()
   const { data, error } = await admin
     .from('opportunity_scanner_seen_items')
-    .select('item_key, title, last_seen_at')
+    .select('item_key, title, last_seen_at, times_seen')
     .eq('section', section)
-    .gte('last_seen_at', since)
+    .or(`times_seen.gte.${HARD_CAP_SENDS},last_seen_at.gte.${since}`)
     .order('last_seen_at', { ascending: false })
   if (error) {
     console.error(`[opportunity-scanner-worker-background] seen-items lookup failed for "${section}": ${error.message}`)
@@ -532,10 +555,21 @@ async function loadSeenItems(admin, section) {
 // Also dedups within the batch itself, since nothing stops the model
 // returning the same item twice in one response.
 export function filterUnseenLegislation(items, seen) {
-  const seenKeys = new Set(seen.map((s) => s.item_key))
-  const seenTitles = seen.map((s) => s.title)
+  // Keyed lookup, not just a Set of keys, so a match can report how many
+  // times that item has actually been sent — loadSeenItems already decides
+  // which rows are even in `seen` (recent-once, or hard-capped-forever); this
+  // only needs to phrase the drop reason accordingly.
+  const seenByKey = new Map(seen.map((s) => [s.item_key, s]))
   const kept = []
   const dropped = []
+
+  const dropReasonFor = (matchedSeen, matchKind) => {
+    const timesSeen = matchedSeen.times_seen ?? 1
+    if (timesSeen >= HARD_CAP_SENDS) {
+      return `${matchKind} of "${matchedSeen.title}", already sent ${timesSeen} time(s) — permanently excluded at the ${HARD_CAP_SENDS}-send cap`
+    }
+    return `${matchKind} of previously sent "${matchedSeen.title}"`
+  }
 
   for (const item of items) {
     const title = String(item?.title ?? '').trim()
@@ -543,9 +577,10 @@ export function filterUnseenLegislation(items, seen) {
     const key = normaliseKey(title)
     if (!key) { dropped.push({ title, reason: 'title normalised to empty' }); continue }
 
-    if (seenKeys.has(key)) { dropped.push({ title, reason: 'exact match with previously sent item' }); continue }
-    const near = seenTitles.find((t) => titlesSimilar(title, t))
-    if (near) { dropped.push({ title, reason: `near-duplicate of previously sent "${near}"` }); continue }
+    const exact = seenByKey.get(key)
+    if (exact) { dropped.push({ title, reason: dropReasonFor(exact, 'exact match') }); continue }
+    const near = seen.find((s) => titlesSimilar(title, s.title))
+    if (near) { dropped.push({ title, reason: dropReasonFor(near, 'near-duplicate') }); continue }
     if (kept.some((k) => normaliseKey(k.title) === key || titlesSimilar(title, k.title))) {
       dropped.push({ title, reason: 'duplicate within this same batch' }); continue
     }
@@ -561,9 +596,18 @@ export function filterUnseenLegislation(items, seen) {
 // permanently suppressed having never once been seen by Adrian, which is the
 // one genuinely unrecoverable failure mode in this design.
 //
-// Upserts rather than inserts so an item resurfacing after its exclusion
-// window bumps last_seen_at/times_seen instead of erroring on the unique
-// index. Best-effort per row: one bad row never drops the rest.
+// Calls record_opportunity_scanner_seen_item (migration
+// 20260821124845_legislation_permanent_send_cap.sql) — a single atomic
+// upsert that increments times_seen server-side, rather than a plain
+// supabase-js .upsert(). A plain upsert can't express "times_seen = times_seen
+// + 1" in its payload (it can only set columns to fixed values), which is
+// exactly why the previous version of this function silently never
+// incremented times_seen despite an old comment here claiming it did —
+// confirmed against production: every row in opportunity_scanner_seen_items
+// sat at times_seen = 1 regardless of how many times that item had actually
+// been through this function. The RPC also avoids a read-then-write race
+// between concurrent invocations. Best-effort per row: one bad row never
+// drops the rest.
 async function recordSeenItems(admin, section, items) {
   if (!admin || !items.length) return { recorded: 0 }
   let recorded = 0
@@ -573,17 +617,19 @@ async function recordSeenItems(admin, section, items) {
     const itemKey = normaliseKey(title)
     if (!title || !itemKey) continue
 
-    const { error } = await admin
-      .from('opportunity_scanner_seen_items')
-      .upsert(
-        { section, item_key: itemKey, title, last_seen_at: new Date().toISOString() },
-        { onConflict: 'section,item_key', ignoreDuplicates: false },
-      )
+    const { data: timesSeen, error } = await admin.rpc('record_opportunity_scanner_seen_item', {
+      p_section: section,
+      p_item_key: itemKey,
+      p_title: title,
+    })
     if (error) {
-      console.error(`[opportunity-scanner-worker-background] seen-item upsert failed for "${title}": ${error.message}`)
+      console.error(`[opportunity-scanner-worker-background] seen-item record failed for "${title}": ${error.message}`)
       continue
     }
     recorded++
+    if (timesSeen >= HARD_CAP_SENDS) {
+      console.log(`[opportunity-scanner-worker-background] "${title}" has now been sent ${timesSeen} time(s) — will be permanently excluded from here on`)
+    }
   }
 
   return { recorded }
