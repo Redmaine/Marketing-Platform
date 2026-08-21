@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
 import supabase from '../lib/supabase'
+// UK-local display formatting (src/lib/ukTime.js). Only the RENDERING of
+// stored UTC timestamps goes through these — every query filter, sort and
+// date-bucketing key below is left on the raw value, deliberately.
+import { ukDate } from '../lib/ukTime'
 import { BlogPostModal } from '../components/BlogPostModal'
 
 export function Blog() {
@@ -165,7 +169,7 @@ export function Blog() {
                     <span style={{ fontSize: 13, fontWeight: 800 }}>{blog.client?.short_name || blog.client?.name}</span>
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--mist)' }}>
-                    {blog.publish_date && new Date(blog.publish_date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    {blog.publish_date && ukDate(blog.publish_date, { weekday: 'short', day: 'numeric', month: 'short' })}
                     {blog.target_keyword && <span> · keyword: <strong>{blog.target_keyword}</strong></span>}
                   </div>
                 </div>
@@ -194,7 +198,7 @@ export function Blog() {
                 <span className="pill" style={{ background: '#D1FAE5', color: '#065F46' }}>✓ Published</span>
               ) : blog.status === 'rejected' ? (
                 <p style={{ fontSize: 12, color: '#991B1B', margin: 0 }}>
-                  Rejected{blog.rejected_at && ` ${new Date(blog.rejected_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+                  Rejected{blog.rejected_at && ` ${ukDate(blog.rejected_at, { day: 'numeric', month: 'short', year: 'numeric' })}`}
                   {' — '}{blog.rejection_reason || 'No reason given.'}
                 </p>
               ) : (
@@ -250,8 +254,8 @@ export function Blog() {
                 <div style={{ fontSize: 16, fontWeight: 700 }}>{post.title}</div>
                 <div style={{ fontSize: 12, color: 'var(--mist)', marginTop: 4 }}>
                   {post.status === 'published' && post.published_at
-                    ? `Published ${new Date(post.published_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`
-                    : `Created ${new Date(post.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+                    ? `Published ${ukDate(post.published_at, { day: 'numeric', month: 'short', year: 'numeric' })}`
+                    : `Created ${ukDate(post.created_at, { day: 'numeric', month: 'short', year: 'numeric' })}`}
                 </div>
               </div>
               <span className="pill" style={{

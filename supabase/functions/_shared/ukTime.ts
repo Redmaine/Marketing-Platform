@@ -78,3 +78,83 @@ export function ukTimeSlotToUtc(day: Date, hhmm: string): Date {
   // that amount to land on the correct UTC instant.
   return new Date(guess.getTime() - offsetHours * 3600_000)
 }
+
+// ── Display direction: UTC instant -> UK-local formatted string ───────────
+//
+// ukTimeSlotToUtc above solves the STORAGE direction (a UK wall-clock time
+// in, the correct UTC instant out). Everything below is the other direction,
+// and it exists because the storage fix left a matching read-side gap:
+// timestamps are stored correctly in UTC, but every place a human actually
+// READS one was rendering the raw UTC value. The Supabase Edge runtime's own
+// local timezone is UTC (see the note at the top of this file), and so is
+// Netlify's, so a bare toISOString() — or a toLocaleString() with no
+// timeZone option — renders UTC, not UK. During BST that is an hour early:
+// a 22:00 UK post read back as "21:00", and generate-daily-status's
+// generated_at said 21:00 for a file written at 22:00 UK.
+//
+// The offset is NEVER hardcoded to +1. These use Intl with
+// timeZone: 'Europe/London', the same tzdata authority ukTimeSlotToUtc's
+// shortOffset lookup uses, so they are correct on both sides of the
+// late-October BST->GMT transition without any code change. timeZoneName:
+// 'short' additionally renders the live abbreviation ("BST" or "GMT"), so
+// the rendered string says which one it is rather than leaving the reader
+// to work it out.
+//
+// STRICTLY FOR DISPLAY. Never feed the output of these back into a query,
+// a sort, a comparison, or an API payload — those must stay UTC ISO.
+
+type TimeInput = Date | string | number | null | undefined
+
+function toDate(input: TimeInput): Date | null {
+  if (input === null || input === undefined || input === '') return null
+  const d = input instanceof Date ? input : new Date(input)
+  return isNaN(d.getTime()) ? null : d
+}
+
+// "BST" during British Summer Time, "GMT" the rest of the year — read from
+// tzdata for the given instant, not assumed.
+export function ukZoneLabel(input: TimeInput): string {
+  const d = toDate(input) ?? new Date()
+  return new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', timeZoneName: 'short' })
+    .formatToParts(d)
+    .find((p) => p.type === 'timeZoneName')?.value ?? 'GMT'
+}
+
+// "21 Aug 2026, 22:00 BST" / "15 Dec 2026, 22:00 GMT"
+export function formatUkDateTime(input: TimeInput, fallback = '—'): string {
+  const d = toDate(input)
+  if (!d) return fallback
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZoneName: 'short',
+  }).format(d)
+}
+
+// "22:00 BST" — time of day only, for lists that already show the date.
+export function formatUkTime(input: TimeInput, fallback = '—'): string {
+  const d = toDate(input)
+  if (!d) return fallback
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+    timeZoneName: 'short',
+  }).format(d)
+}
+
+// Date only, UK-local calendar day — "21 August 2026". Takes the same
+// Intl options object every existing date label in this codebase uses, just
+// with the timeZone pinned so the UK's day is used rather than the
+// runtime's. A timestamp of 23:30 UTC in BST is 00:30 the NEXT day in the
+// UK, which is the day a reader would name; without the pin these labels
+// silently print yesterday.
+export function formatUkDate(
+  input: TimeInput,
+  opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' },
+  fallback = '—',
+): string {
+  const d = toDate(input)
+  if (!d) return fallback
+  return new Intl.DateTimeFormat('en-GB', { ...opts, timeZone: 'Europe/London' }).format(d)
+}

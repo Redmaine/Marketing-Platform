@@ -36,6 +36,10 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+// Display-only UK-local formatting — this file's entire output is an email a
+// human reads, so any timestamp reaching the body gets converted (see
+// _shared/ukTime.ts). Nothing here is stored, compared or sent to an API.
+import { formatUkDateTime } from '../_shared/ukTime.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -99,7 +103,11 @@ serve(async (req) => {
   if (report.cron_healthcheck?.stale) {
     issues.push({
       severity: 'critical',
-      text: `cron-healthcheck hasn't run in ${report.cron_healthcheck.hours_since_last_run ?? '?'}h (last: ${report.cron_healthcheck.last_run_at ?? 'never'})`,
+      // last_run_at arrives from daily-ops-check as a UTC ISO string (it is a
+      // raw mkt_cron_log.created_at and must STAY UTC there — that report
+      // does hours_since_last_run arithmetic on it). It is converted here, at
+      // the one point it turns into prose in an email, and nowhere earlier.
+      text: `cron-healthcheck hasn't run in ${report.cron_healthcheck.hours_since_last_run ?? '?'}h (last: ${report.cron_healthcheck.last_run_at ? formatUkDateTime(report.cron_healthcheck.last_run_at) : 'never'})`,
     })
   }
   if (report.cron_healthcheck?.reported_errors?.length) {

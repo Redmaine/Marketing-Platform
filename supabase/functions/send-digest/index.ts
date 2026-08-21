@@ -12,6 +12,12 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+// Display-only UK-local formatting — see _shared/ukTime.ts. Both labels
+// below used a bare toLocaleDateString, which formats in the RUNTIME's own
+// timezone, and the Supabase Edge runtime's is UTC — so during BST a post
+// scheduled 00:30 UK (23:30 UTC the day before) was listed under the wrong
+// day. The query bounds in this file stay UTC.
+import { formatUkDate, formatUkTime } from '../_shared/ukTime.ts'
 
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const OPS_URL = 'https://ops.yourcompanyai.co.uk'
@@ -70,7 +76,7 @@ serve(async (req) => {
     const overdueIds = new Set(overdue.map((o) => o.id))
     const todayTasks = tasks.filter((t) => !overdueIds.has(t.id))
     const pendingCount = posts.length
-    const dateLabel = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
+    const dateLabel = formatUkDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' })
 
     const titleOf = (t: { title?: string; task?: string }) => t.title || t.task || 'Task'
     const nameOf = (x: { client?: { short_name?: string; name?: string } }) => x.client?.short_name || x.client?.name || 'Unassigned'
@@ -86,8 +92,11 @@ serve(async (req) => {
       for (const p of posts) {
         const colour = p.client?.brand_primary_color || '#E8410A'
         const preview = esc(String(p.body || '').slice(0, 140)) + (String(p.body || '').length > 140 ? '…' : '')
+        // Now shows the UK time of day as well as the UK day. This list is
+        // the one place Adrian decides whether a slot is right before
+        // approving it, and the slot's hour was the one thing it never said.
         const when = p.scheduled_for
-          ? new Date(p.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+          ? `${formatUkDate(p.scheduled_for, { weekday: 'short', day: 'numeric', month: 'short' })}, ${formatUkTime(p.scheduled_for)}`
           : 'no date set'
         html += `<div style="border-left:4px solid ${colour};background:#F7F9FA;border-radius:8px;padding:10px 12px;margin-top:10px">`
         // This badge reflects ORIGIN, not approval state: is_manual means a

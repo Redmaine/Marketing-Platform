@@ -32,6 +32,9 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 import { findRecurringRejectionPatterns, PATTERN_LOOKBACK_DAYS, PATTERN_THRESHOLD } from '../_shared/recurringRejectionPatterns.ts'
+// Display-only UK-local formatting — see _shared/ukTime.ts. The 24h and
+// 30-day query windows below stay UTC.
+import { formatUkDate, formatUkTime } from '../_shared/ukTime.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -41,8 +44,11 @@ const cors = {
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const TO = 'hello@yourcompanyai.co.uk'
 
+// UK-local. This was a bare toLocaleDateString, which formats in the
+// runtime's own timezone — UTC on Supabase Edge — so a post scheduled just
+// after UK midnight during BST was reported under the previous day.
 function dateLabel(d: Date): string {
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+  return formatUkDate(d, { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
 serve(async (req) => {
@@ -111,7 +117,11 @@ serve(async (req) => {
     const now = new Date()
     const blocks = rejected.map((p) => {
       const brand = p.client?.short_name || p.client?.name || 'Unknown brand'
-      const scheduled = p.scheduled_for ? dateLabel(new Date(p.scheduled_for)) : 'no date set'
+      // Slot time included, UK-local with its BST/GMT label — a rejected
+      // post's slot is part of judging whether the rejection was right.
+      const scheduled = p.scheduled_for
+        ? `${dateLabel(new Date(p.scheduled_for))}, ${formatUkTime(p.scheduled_for)}`
+        : 'no date set'
       const preview = String(p.body || '').slice(0, 100) + (String(p.body || '').length > 100 ? '…' : '')
       return [
         `Brand: ${brand}`,

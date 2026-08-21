@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useLocation } from 'react-router-dom'
 import supabase from '../lib/supabase'
+// UK-local display formatting (src/lib/ukTime.js). Only the RENDERING of
+// stored UTC timestamps goes through these — every query filter, sort and
+// date-bucketing key below is left on the raw value, deliberately.
+import { ukDate, ukTime, ukDateTime } from '../lib/ukTime'
 
 const TABS = ['overview', 'content', 'calendar', 'notes', 'report', 'settings']
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -164,7 +168,7 @@ function ContentTab({ content, onRefresh }) {
       const detail = data?.detail ? ' — ' + (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : ''
       setNotice('Metricool error: ' + (data?.error || error?.message || 'unknown') + detail)
     } else {
-      setNotice('Scheduled to Metricool for ' + new Date(data.scheduled_for).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }))
+      setNotice('Scheduled to Metricool for ' + ukDateTime(data.scheduled_for))
       onRefresh()
     }
   }
@@ -197,8 +201,8 @@ function ContentTab({ content, onRefresh }) {
                     {c.platform}{c.pillar ? ` · ${c.pillar}` : ''}
                     {c.scheduled_for && (
                       <span style={{ marginLeft: 8 }}>
-                        {new Date(c.scheduled_for).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
-                        {' '}{new Date(c.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                        {ukDate(c.scheduled_for, { day: 'numeric', month: 'short' })}
+                        {' '}{ukTime(c.scheduled_for)}
                       </span>
                     )}
                   </div>
@@ -217,9 +221,9 @@ function ContentTab({ content, onRefresh }) {
                     {/* Issue 4: show scheduled date/time under status badge */}
                     {c.scheduled_for && (c.status === 'approved' || c.status === 'scheduled') && (
                       <span style={{ fontSize: 11, color: 'var(--mist)', textAlign: 'right', lineHeight: 1.3 }}>
-                        {new Date(c.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                        {ukDate(c.scheduled_for, { weekday: 'short', day: 'numeric', month: 'short' })}
                         {' at '}
-                        {new Date(c.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                        {ukTime(c.scheduled_for)}
                       </span>
                     )}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -339,10 +343,10 @@ function CalendarTab({ clientId }) {
         <div key={p.id} className="row" style={{ alignItems: 'flex-start' }}>
           <div style={{ minWidth: 72 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>
-              {p.scheduled_for ? new Date(p.scheduled_for).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
+              {ukDate(p.scheduled_for, { day: 'numeric', month: 'short' })}
             </div>
             <div className="muted" style={{ fontSize: 12 }}>
-              {p.scheduled_for ? new Date(p.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : ''}
+              {ukTime(p.scheduled_for, '')}
             </div>
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -535,7 +539,7 @@ function PortalAccess({ client }) {
             <div style={{ fontWeight: 600 }}>{r.email}</div>
             <div className="muted" style={{ fontSize: 12 }}>
               {r.active ? 'Active' : 'Inactive'} · {r.last_login
-                ? `last login ${new Date(r.last_login).toLocaleDateString('en-GB')}`
+                ? `last login ${ukDate(r.last_login, { day: '2-digit', month: '2-digit', year: 'numeric' })}`
                 : 'never logged in'}
             </div>
           </div>

@@ -33,6 +33,11 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { callAnthropic } from '../_shared/generate.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 import { findRecurringRejectionPatterns, PATTERN_LOOKBACK_DAYS } from '../_shared/recurringRejectionPatterns.ts'
+// Display-only UK-local formatting (see _shared/ukTime.ts). Every timestamp
+// in this file's output is read by a human or relayed to Quill in prose, so
+// every one of them is formatted UK-local with an explicit BST/GMT label.
+// The QUERY boundaries above stay UTC — see the note on utcStamp below.
+import { formatUkDateTime } from '../_shared/ukTime.ts'
 
 const BUCKET = 'ops-exports'
 const FILE = 'daily-status.json'
@@ -275,7 +280,7 @@ serve(async (req) => {
     const crhqScrapeArticles = Array.isArray(crhqScrape?.articles) ? crhqScrape.articles : []
     const crhq_last_scrape = crhqScrape
       ? {
-          scraped_at: crhqScrape.scraped_at,
+          scraped_at: formatUkDateTime(crhqScrape.scraped_at),
           source: (crhqScrapeVideos.length || crhqScrapeArticles.length) ? 'youtube_scrape' : 'pillar_fallback',
           videos_found: crhqScrapeVideos.length,
           articles_found: crhqScrapeArticles.length,
@@ -311,7 +316,7 @@ serve(async (req) => {
     const blogs_published_last_7d = (blogsPublishedRes.data || []).map((r: Record<string, any>) => ({
       brand: nameOf(r.client),
       title: r.title,
-      published_at: r.published_at,
+      published_at: formatUkDateTime(r.published_at),
       url: r.live_url ?? null,
     }))
 
@@ -350,7 +355,7 @@ serve(async (req) => {
     // (both are written by the same run, so "most recent" of each lines up).
     const crhq_scrape_status = crhqScrape
       ? {
-          last_scrape_at: crhqScrape.scraped_at,
+          last_scrape_at: formatUkDateTime(crhqScrape.scraped_at),
           videos_found: crhqScrapeVideos.length,
           articles_found: crhqScrapeArticles.length,
           posts_generated_from_scrape: crhqCronLogRes.data?.posts_generated ?? 0,
@@ -359,31 +364,40 @@ serve(async (req) => {
 
     const brands_with_no_content_this_week = brand_counts.filter((b) => b.scheduled_this_week === 0).map((b) => b.brand)
 
+    // EVERY timestamp below is a display value — this file is read by a human
+    // (or read aloud by Quill), never parsed back into a Date by anything.
+    // The only consumer that touches a field here programmatically is
+    // netlify/functions/refresh-status.js, which echoes generated_at straight
+    // back to its caller as text. So the human-readable UK string takes the
+    // plain name, and the machine-readable UTC instant is kept alongside it
+    // under an explicit *_utc key rather than dropped — timestamps this file
+    // reports are still, underneath, UTC in the database.
     const status: Record<string, any> = {
-      generated_at: now.toISOString(),
+      generated_at: formatUkDateTime(now),
+      generated_at_utc: now.toISOString(),
       scheduled_today: scheduledToday.map((r) => ({
         brand: nameOf(r.client),
         platform: r.platform,
-        scheduled_time: r.scheduled_for,
+        scheduled_time: formatUkDateTime(r.scheduled_for, 'no date set'),
         copy_preview: preview(r.body),
         status: r.status,
       })),
       pending_approval: pending.map((r) => ({
         brand: nameOf(r.client),
         platform: r.platform,
-        scheduled_date: r.scheduled_for,
+        scheduled_date: formatUkDateTime(r.scheduled_for, 'no date set'),
         copy_preview: preview(r.body),
         review_status: r.review_status ?? null,
       })),
       rejected_last_24h: rejectedLast24h.map((r) => ({
         brand: nameOf(r.client),
         rejection_reason: r.rejection_reason ?? null,
-        scheduled_date: r.scheduled_for,
+        scheduled_date: formatUkDateTime(r.scheduled_for, 'no date set'),
       })),
       edge_function_errors_last_24h: errors.map((e) => ({
         function_name: e.function_name,
         error_message: e.error_message,
-        timestamp: e.created_at,
+        timestamp: formatUkDateTime(e.created_at),
       })),
       brand_counts,
       crhq_last_scrape,
@@ -440,7 +454,10 @@ serve(async (req) => {
     }
 
     console.log(`[generate-daily-status] wrote ${FILE} — ${status.scheduled_today.length} today, ${status.pending_approval.length} pending, ${status.rejected_last_24h.length} rejected(24h), ${status.recurring_rejection_patterns.length} recurring pattern(s), ${status.edge_function_errors_last_24h.length} error(s), ${status.blogs_pending_approval.length} blog draft(s), summary ${status.summary ? 'ok' : 'failed'}`)
-    return json({ ok: true, generated_at: status.generated_at })
+    // generated_at here is the UK-local display string, matching exactly what
+    // landed in the file (refresh-status.js relays this straight to whoever
+    // asked, so it must read the same as the file it just regenerated).
+    return json({ ok: true, generated_at: status.generated_at, generated_at_utc: status.generated_at_utc })
   } catch (e) {
     console.error(`[generate-daily-status] fatal: ${String((e as Error)?.message ?? e)}`)
     return json({ error: String((e as Error)?.message ?? e) }, 500)

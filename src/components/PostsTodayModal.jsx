@@ -1,3 +1,7 @@
+// UK-local display formatting (src/lib/ukTime.js) — this modal showed each
+// post's slot as a bare, unlabelled "10:00". It now reads "10:00 BST".
+import { ukTime } from '../lib/ukTime'
+
 const PLATFORM_LABEL = {
   facebook: 'Facebook',
   instagram: 'Instagram',
@@ -68,7 +72,7 @@ export function PostsTodayModal({ posts, clients, onClose }) {
                       {PLATFORM_LABEL[post.platform] || post.platform}
                       {post.scheduled_for && (
                         <span style={{ marginLeft: 8 }}>
-                          · {new Date(post.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                          · {ukTime(post.scheduled_for)}
                         </span>
                       )}
                     </div>

@@ -36,6 +36,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+// Display-only UK-local formatting for the alert email's prose — see
+// _shared/ukTime.ts. The window this check QUERIES stays UTC (see below).
+import { formatUkDateTime } from '../_shared/ukTime.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -74,6 +77,12 @@ serve(async (req) => {
   try { body = await req.json() } catch { /* real scheduled call sends no body */ }
 
   const admin: Admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
+  // windowStart stays UTC deliberately: it is a QUERY bound handed to
+  // Postgres (.gte('created_at', windowStart)) and is the "today (UTC)"
+  // definition this check is documented against in the header above.
+  // Shifting it would move the window an hour during BST and could make the
+  // check miss a real run. Only its RENDERING in the alert email below is
+  // converted to UK local.
   const todayUtc = new Date().toISOString().slice(0, 10)
   const windowStart = `${todayUtc}T00:00:00.000Z`
 
@@ -110,8 +119,8 @@ serve(async (req) => {
   if (!ranToday) {
     const resendKey = Deno.env.get('RESEND_API_KEY')
     const detail = body.force_failure
-      ? `Forced failure — manual fire-drill test, not a real outage. Ran at ${new Date().toISOString()}.`
-      : `No mkt_cron_log row for notify-daily-ops since ${windowStart}. The report either crashed before logging, or never fired at all today.`
+      ? `Forced failure — manual fire-drill test, not a real outage. Ran at ${formatUkDateTime(new Date())}.`
+      : `No mkt_cron_log row for notify-daily-ops since ${formatUkDateTime(windowStart)}. The report either crashed before logging, or never fired at all today.`
     if (!resendKey) {
       console.error('[notify-daily-ops-healthcheck] RESEND_API_KEY not configured — cannot send alert')
     } else {

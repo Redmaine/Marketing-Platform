@@ -3,6 +3,10 @@ import { useSearchParams } from 'react-router-dom'
 import supabase from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { awaitingBucket, partitionAwaiting } from '../lib/awaitingApproval'
+// UK-local display formatting (src/lib/ukTime.js). Only the RENDERING of
+// stored UTC timestamps goes through these — every query filter, sort and
+// date-bucketing key below is left on the raw value, deliberately.
+import { ukDate, ukTime, ukDateTime } from '../lib/ukTime'
 
 const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 
@@ -528,7 +532,7 @@ export function ContentQueue() {
                   <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>{item.client?.short_name || item.client?.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--mist)', textTransform: 'capitalize' }}>
                     {item.platform}{item.pillar ? ` · ${item.pillar}` : ''}
-                    {item.scheduled_for && <span style={{ marginLeft: 8 }}>· was due {new Date(item.scheduled_for).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>}
+                    {item.scheduled_for && <span style={{ marginLeft: 8 }}>· was due {ukDate(item.scheduled_for, { day: 'numeric', month: 'short' })}</span>}
                   </div>
                 </div>
                 <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B', flexShrink: 0 }}>failed</span>
@@ -620,9 +624,9 @@ export function ContentQueue() {
                           {item.pillar}
                           {item.scheduled_for && (
                             <span style={{ marginLeft: item.pillar ? 8 : 0 }}>
-                              {item.pillar ? '· ' : ''}{new Date(item.scheduled_for).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}
+                              {item.pillar ? '· ' : ''}{ukDate(item.scheduled_for, { weekday: 'short', day: 'numeric', month: 'short' })}
                               {' at '}
-                              {new Date(item.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                              {ukTime(item.scheduled_for)}
                             </span>
                           )}
                         </div>
@@ -634,7 +638,7 @@ export function ContentQueue() {
                           above, just on a nested flex container instead of a <p>. */}
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
                         {item.review_status === 'passed' && (
-                          <span className="pill" title={item.reviewed_at ? `Reviewed ${new Date(item.reviewed_at).toLocaleString('en-GB')}` : 'Reviewed'}
+                          <span className="pill" title={item.reviewed_at ? `Reviewed ${ukDateTime(item.reviewed_at)}` : 'Reviewed'}
                             style={{ background: '#DCFCE7', color: '#166534' }}>✓ Reviewed</span>
                         )}
                         {item.review_status === 'needs_attention' && (
@@ -1044,7 +1048,7 @@ function RejectedTab({ rejected }) {
           </div>
           {item.rejected_at && (
             <div style={{ fontSize: 11, color: 'var(--mist)', marginBottom: 8 }}>
-              Rejected {new Date(item.rejected_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              Rejected {ukDate(item.rejected_at, { day: 'numeric', month: 'short', year: 'numeric' })}
             </div>
           )}
           <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', marginBottom: 10 }}>{item.body}</p>
@@ -1082,7 +1086,7 @@ function PublishedTab({ published, brand, setBrand }) {
               {p.brand} · {String(p.platform).replace('_', ' ')}
             </div>
             <span className="pill" style={{ background: 'var(--chalk)', color: 'var(--steel)' }}>
-              {new Date(p.date_sent).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+              {ukDate(p.date_sent, { day: 'numeric', month: 'short', year: 'numeric' })}
             </span>
           </div>
           <p style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'break-word', margin: 0 }}>
@@ -1116,7 +1120,7 @@ function GraphicsTab({ graphics, busyId, onApprove, onReject }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, marginBottom: 10 }}>
             <div>
               <span className="pill" style={{ background: '#E0F2FE', color: '#075985', fontSize: 10 }}>
-                Graphic — week of {new Date(g.week_of).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                Graphic — week of {ukDate(g.week_of, { day: 'numeric', month: 'short' })}
               </span>
               <div style={{ fontSize: 13, fontWeight: 800, marginTop: 4 }}>{g.client?.short_name || g.client?.name}</div>
             </div>

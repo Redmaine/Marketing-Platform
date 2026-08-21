@@ -31,6 +31,10 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+// Display-only UK-local formatting for the alert PROSE below — see
+// _shared/ukTime.ts. The staleness arithmetic and the JobStatus.mostRecent
+// field stay on the raw UTC value.
+import { formatUkDateTime } from '../_shared/ukTime.ts'
 
 // deno-lint-ignore no-explicit-any
 type Admin = any
@@ -114,7 +118,13 @@ serve(async (req) => {
 
   for (const job of staleJobs) {
     const message = job.mostRecent
-      ? `[cron-healthcheck] "${job.jobName}" (expected ${job.cadence}) has no mkt_cron_log entry in ${job.hoursSinceLastRun}h — last seen ${job.mostRecent}. Its cron.job may have stopped firing, or the function is crashing before it can log (the exact failure mode that hid the 12 Aug crhq-nightly-content outage).`
+      // These messages land in edge_function_errors, which is exactly where
+      // a human reads them: notify-daily-ops relays them into the daily ops
+      // email and generate-daily-status puts them in the status JSON. So the
+      // timestamp is rendered UK-local here. job.mostRecent itself stays the
+      // raw UTC value in the JSON response and in the hoursSince arithmetic
+      // above — only this sentence is converted.
+      ? `[cron-healthcheck] "${job.jobName}" (expected ${job.cadence}) has no mkt_cron_log entry in ${job.hoursSinceLastRun}h — last seen ${formatUkDateTime(job.mostRecent)}. Its cron.job may have stopped firing, or the function is crashing before it can log (the exact failure mode that hid the 12 Aug crhq-nightly-content outage).`
       : `[cron-healthcheck] "${job.jobName}" (expected ${job.cadence}) has NEVER logged a single mkt_cron_log row. Check whether its cron.job is scheduled and active at all.`
     console.error(message)
     try {

@@ -92,9 +92,16 @@ export async function handler(event) {
     let parsed = null
     try { parsed = JSON.parse(raw) } catch { /* non-JSON success body */ }
 
-    // generate-daily-status returns { ok: true, generated_at }. Surface its
-    // real timestamp rather than stamping one here, so the value always
-    // matches what actually landed in the JSON file.
+    // generate-daily-status returns { ok: true, generated_at,
+    // generated_at_utc }. Surface its real timestamps rather than stamping
+    // one here, so the values always match what actually landed in the JSON
+    // file. generated_at is the human-readable UK-local string ("21 Aug
+    // 2026, 22:00 BST"), generated_at_utc the same instant as UTC ISO for
+    // anything machine-readable. Both are relayed verbatim: this function
+    // deliberately formats nothing itself, so exactly one place (the edge
+    // function, via _shared/ukTime.ts) decides how a timestamp reads. Note
+    // the Netlify runtime's own local timezone is UTC, so formatting here
+    // would have reintroduced the very bug this fixes.
     if (parsed && parsed.ok === false) {
       return json(502, { success: false, error: parsed.error || 'Status generation reported failure' })
     }
@@ -102,6 +109,7 @@ export async function handler(event) {
     return json(200, {
       success: true,
       generated_at: parsed?.generated_at ?? null,
+      generated_at_utc: parsed?.generated_at_utc ?? null,
       message: 'Status refreshed',
     })
   } catch (e) {

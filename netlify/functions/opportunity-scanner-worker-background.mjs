@@ -1429,6 +1429,28 @@ function failureEmail(errMsg, dateStr) {
 </div></body></html>`
 }
 
+// The date line printed at the top of every email this function sends.
+//
+// Display only. This was a bare toLocaleDateString('en-GB', ...), which
+// formats in the RUNTIME's local timezone — and Netlify Functions run in
+// UTC, not Europe/London — so during BST an email built just after UK
+// midnight was headed with the previous day's date. Pinned to
+// Europe/London, which is date-aware via tzdata: no hardcoded offset, so it
+// stays correct across the late-October BST->GMT switch. Mirrors
+// supabase/functions/_shared/ukTime.ts, which this file cannot import
+// across the Deno/Node boundary.
+//
+// dateStr (the ISO YYYY-MM-DD used for subjects and for sectionForDate's
+// odd/even A/B selection) is deliberately left on UTC: it is a run key and
+// a scheduling input, not a rendered timestamp, and the scanner's cron fires
+// at 07:00 UTC where the UTC and UK dates always agree anyway.
+function ukPrettyDate(d = new Date()) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London',
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  }).format(d)
+}
+
 async function sendEmail(resendKey, from, to, subject, html) {
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -1563,7 +1585,7 @@ export async function handler(event) {
     )
 
     const researchText = await fetchResearchText(ANTHROPIC_API_KEY, userPrompt, config.maxTokens, config.maxUses)
-    const prettyDate = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    const prettyDate = ukPrettyDate()
 
     if (section === 'A') {
       const opportunities = parseOpportunities(researchText)
@@ -1676,7 +1698,7 @@ export async function handler(event) {
     console.error('[opportunity-scanner-worker-background] run failed:', errMsg)
 
     const isTimeout = e instanceof ResearchTimeoutError
-    const prettyDate = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+    const prettyDate = ukPrettyDate()
     let emailSent = false
     let itemsFound = 0
     let loggedError = errMsg

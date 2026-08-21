@@ -19,6 +19,11 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
+// Display-only UK-local formatting for the "week of ..." label — see
+// _shared/ukTime.ts. `monday`/`nextMonday` themselves stay exactly as they
+// were: they are the QUERY bounds (.gte/.lt on scheduled_for) and the
+// week-bucketing dayOfWeekUK already handles the UK weekday correctly.
+import { formatUkDate } from '../_shared/ukTime.ts'
 
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const RECIPIENT = 'hello@yourcompanyai.co.uk'
@@ -70,7 +75,7 @@ serve(async (req) => {
 
     const now = new Date()
     const { monday, nextMonday } = thisWeekBounds(now)
-    const dateLabel = monday.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    const dateLabel = formatUkDate(monday, { day: 'numeric', month: 'short', year: 'numeric' })
 
     const { data: clients, error: clientsError } = await admin
       .from('mkt_clients').select('id, name').eq('active', true).order('name')

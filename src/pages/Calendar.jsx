@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import supabase from '../lib/supabase'
+// UK-local display formatting for the ONE place this screen renders a
+// stored timestamp (the post detail modal). The month/week grid and the
+// byDay bucketing below are deliberately NOT converted — they group by the
+// browser's own calendar day and are self-consistent that way; re-basing
+// the whole grid on Europe/London is a separate change.
+import { ukDate, ukTime } from '../lib/ukTime'
 
 const PALETTE = ['#E84B35', '#2E4057', '#22C55E', '#F59E0B', '#8FA3B1', '#7E22CE', '#0EA5E9']
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -286,7 +292,7 @@ function PostActionModal({ post, nameOf, onClose, onChanged }) {
   const [err, setErr] = useState('')
 
   const when = post.scheduled_for
-    ? `${new Date(post.scheduled_for).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} at ${new Date(post.scheduled_for).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`
+    ? `${ukDate(post.scheduled_for, { weekday: 'long', day: 'numeric', month: 'long' })} at ${ukTime(post.scheduled_for)}`
     : ''
 
   async function saveEdit() {

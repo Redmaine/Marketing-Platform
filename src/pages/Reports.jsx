@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
 import supabase from '../lib/supabase'
+// UK-local display formatting (src/lib/ukTime.js). Only the RENDERING of
+// stored UTC timestamps goes through these — every query filter, sort and
+// date-bucketing key below is left on the raw value, deliberately.
+import { ukDate } from '../lib/ukTime'
 
 const monthLabel = (d = new Date()) => d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
 
@@ -53,7 +57,7 @@ export function Reports() {
               <div>
                 <div style={{ fontWeight: 600 }}>{r.client?.short_name || r.client?.name} — {r.month}</div>
                 <div className="muted" style={{ fontSize: 12 }}>
-                  {r.status}{r.sent_to_client ? ` · sent ${r.sent_at ? new Date(r.sent_at).toLocaleDateString('en-GB') : ''}` : ''}
+                  {r.status}{r.sent_to_client ? ` · sent ${r.sent_at ? ukDate(r.sent_at, { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''}` : ''}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
