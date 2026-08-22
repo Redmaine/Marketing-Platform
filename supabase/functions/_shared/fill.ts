@@ -4,7 +4,7 @@
 import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, dateOnly, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { ukTimeSlotToUtc } from './ukTime.ts'
 import { generateReviewedPost } from './review.ts'
-import { generatePostImage } from './image.ts'
+import { generatePostImage, isQuillAlternatingStream, seedAlternatingImageWantsImage } from './image.ts'
 import { latestOptimisationNotes } from './optimisation.ts'
 import { recentRejectionFeedback } from './rejectionFeedback.ts'
 
@@ -399,6 +399,17 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     let day = addDays(now, 1)
     let daysWalked = 0
 
+    // Batching fix (22 Aug 2026) — see seedAlternatingImageWantsImage's
+    // comment in _shared/image.ts for the full incident. Seeded ONCE here,
+    // from real pre-run DB state, then flipped in memory after each post
+    // this loop generates — never re-queried mid-batch, so a single run
+    // that inserts many posts in a row (a real 8 Aug run inserted 17 for
+    // Quill/Facebook in 24 minutes) alternates correctly within itself
+    // instead of every post after the first seeing an imageless sibling
+    // from moments earlier and getting stuck on "no image".
+    const alternatingImages = isQuillAlternatingStream(client, platform)
+    let nextWantsImage = alternatingImages ? await seedAlternatingImageWantsImage(admin, client.id, platform) : undefined
+
     while (generatedForPlatform < gap && generatedForPlatform < platformBudget && daysWalked < SAFETY_MAX_DAYS_WALKED) {
       daysWalked++
       if (day > windowEnd) break
@@ -504,7 +515,16 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // Image generation is best-effort and never blocks or fails the post —
         // generatePostImage swallows its own errors and leaves image_url null
         // (the column's default) on any failure. See _shared/image.ts.
-        if (review.body) await generatePostImage(admin, client, inserted.id, review.body, platform)
+        //
+        // nextWantsImage (undefined unless this is a Quill alternating
+        // stream) is this run's own in-memory decision, not a fresh DB
+        // query — see the batching-fix comment above. Flipped after every
+        // post this loop generates, alternating regardless of whether the
+        // image actually landed, so the toggle always reflects "which half
+        // of the 50/50 split was this post assigned to", the same thing the
+        // old per-post DB query answered for a single, non-batched post.
+        if (review.body) await generatePostImage(admin, client, inserted.id, review.body, platform, undefined, nextWantsImage)
+        if (alternatingImages) nextWantsImage = !nextWantsImage
 
         usedThisRun.push(pillar)
         // Keep the just-generated post in view so the next post in this run

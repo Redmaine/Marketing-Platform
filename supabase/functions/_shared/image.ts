@@ -434,7 +434,7 @@ function wantsHeadlineOverlay(client: Record<string, any>): boolean {
 // checks here rather than a new mkt_clients column, same reasoning as
 // wantsHeadlineOverlay above. Revisit as a proper column if a third stream
 // wants alternating images.
-function isQuillAlternatingStream(client: Record<string, any>, platform: string): boolean {
+export function isQuillAlternatingStream(client: Record<string, any>, platform: string): boolean {
   if (client?.slug === 'quill-linkedin') return true
   return client?.slug === 'quill' && platform === 'facebook'
 }
@@ -454,28 +454,45 @@ function isQuillAlternatingStream(client: Record<string, any>, platform: string)
 // affecting the other's cycle — quill-linkedin's own posts are all LinkedIn
 // anyway, so this is a no-op filter for that stream, not a behaviour change.
 //
-// excludeId matters exactly like facebookWantsImage's own warning: fill.ts
-// calls this AFTER the new row is already inserted (with image_url still
-// null), so without excluding contentQueueId itself, the query would find
-// its own row as "most recent" and always answer true.
-//
 // Rejected posts are excluded because they never reach the platform, so they
 // cannot be half of a 50/50 split of what people actually saw. Counting one
 // inverts the toggle for the next real post — and rejections cluster on
 // image posts, so the error is not evenly distributed.
-async function quillAlternatingStreamWantsImage(admin: Admin, clientId: string, platform: string, excludeId: string): Promise<boolean> {
+//
+// BATCHING FIX (22 Aug 2026): this used to be called once per post, from
+// inside generatePostImage, with excludeId set to the just-inserted row —
+// correct for a single nightly post, but fill.ts's backfill path can
+// generate a whole run of future posts for one platform in one pass (a real
+// 8 Aug run inserted 17 Quill/Facebook posts in 24 minutes). Each of those
+// calls queried "most recent scheduled_for", which — within that same
+// run — resolved to the sibling inserted moments earlier, itself decided
+// (and written) by this exact function. Once the first decision in a batch
+// landed on false, every later post's "most recent" was also imageless, so
+// the whole batch got stuck on false with nothing to flip it back — not
+// because any single decision was wrong in isolation (each one correctly
+// answered "did the most recent post have an image", exactly as designed),
+// but because "most recent" inside one run kept meaning "the sibling I just
+// decided", not "the last real, independently-generated post".
+//
+// Fix: this is now called ONCE per platform per run, BEFORE any of this
+// run's rows exist — genuinely correct history, since nothing from this run
+// can pollute it. The caller (fill.ts) then alternates the boolean itself
+// in memory for the rest of the run, never re-querying mid-batch. A fresh
+// run still reseeds from real DB state, so a manual edit or rejection made
+// between runs is still picked up — the self-correction property is kept,
+// just no longer re-derived on every single post within one run.
+export async function seedAlternatingImageWantsImage(admin: Admin, clientId: string, platform: string): Promise<boolean> {
   const { data, error } = await admin
     .from('mkt_content_queue')
     .select('image_url')
     .eq('client_id', clientId).eq('platform', platform).eq('content_type', 'post')
-    .neq('id', excludeId)
     .neq('status', 'rejected')
     .order('scheduled_for', { ascending: false })
     .limit(1)
   if (error) {
     // Fail closed — a lookup failure must not turn into an image on every
     // post. No image is the safe side of this decision.
-    console.error(`[image] Quill ${platform} image alternation lookup failed (${error.message}) — defaulting to no image`)
+    console.error(`[image] Quill ${platform} image alternation seed lookup failed (${error.message}) — defaulting to no image`)
     return false
   }
   const previous = data?.[0]
@@ -1242,6 +1259,14 @@ export async function generatePostImage(
   // source (crhq-nightly-content's primarySourceForPlatform). Optional, and
   // every caller that doesn't have one behaves exactly as before.
   sourceTitle?: string | null,
+  // Pre-computed alternation decision for Quill's alternating streams (see
+  // seedAlternatingImageWantsImage's batching-fix comment above) — fill.ts
+  // seeds this once per platform per run and flips it in memory per post,
+  // rather than this function re-querying the DB on every call. undefined
+  // means "no pre-computed decision" — falls back to the old per-call query,
+  // which is still correct for a single, non-batched call (e.g. the manual
+  // "Generate a post" button).
+  precomputedWantsImage?: boolean,
 ): Promise<void> {
   // Per-client platform ALLOW-list (mkt_clients.image_gen_platforms, migration
   // 51). When set, images are generated ONLY for those platforms — every other
@@ -1269,10 +1294,18 @@ export async function generatePostImage(
   // Quill's alternating streams only (LinkedIn, and Facebook since the
   // 2026-08-10 image test — see isQuillAlternatingStream). Checked after the
   // allow/deny-list gates above (deliberate configuration always wins first)
-  // but before any generation work starts.
-  if (isQuillAlternatingStream(client, platform) && !(await quillAlternatingStreamWantsImage(admin, client.id, platform, contentQueueId))) {
-    console.log(`[image] ${client.name}: skipping image for ${contentQueueId} — alternating (previous post had one)`)
-    return
+  // but before any generation work starts. Prefers the caller's
+  // precomputedWantsImage when given (fill.ts's batching fix — see
+  // seedAlternatingImageWantsImage); only re-queries here when a caller
+  // hasn't precomputed one, which is still correct for a single call.
+  if (isQuillAlternatingStream(client, platform)) {
+    const wantsImage = precomputedWantsImage !== undefined
+      ? precomputedWantsImage
+      : await seedAlternatingImageWantsImage(admin, client.id, platform)
+    if (!wantsImage) {
+      console.log(`[image] ${client.name}: skipping image for ${contentQueueId} — alternating (previous post had one)`)
+      return
+    }
   }
 
   // Provider split: CRHQ on Flux (Replicate), everyone else on Stability.
