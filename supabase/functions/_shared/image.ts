@@ -97,6 +97,87 @@ const NO_TEXT_INSTRUCTION = 'no text, no words, no letters, no typography, no la
 // the post it belongs to) doesn't go out; see the file-level comment.
 const DEFAULT_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator. Describe ONE clear subject, setting, composition and mood that captures what the post is about. Never describe any text, quotes, numbers or words that should appear in the image — the image itself must never contain readable text. Reply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
+// ── Brand rules at concept time (22 Aug 2026) ───────────────────────────────
+// Root cause of a real, measured 7/7 Quill failure rate: until now the
+// concept step could not see the client's visual_style at all. buildImagePrompt
+// assembled [concept, style, NO_TEXT_INSTRUCTION], so a brand rule like
+// Quill's "absolutely no depicted human figures of any kind" only ever reached
+// the diffusion model AFTER ~60 words vividly describing a person — a direct
+// contradiction inside one prompt. Six of the seven real concepts logged on
+// 22 Aug opened with "A person…", "A stressed business owner…", "A dedicated
+// analyst…"; all three of Quill's historical "successes" (generated before the
+// compliance gate existed) contain a clearly rendered person when viewed.
+//
+// This is exactly the failure CRHQ_CONCEPT_SYSTEM below was written to solve
+// on 2026-08-08/09 — see its own comment, which already records that the
+// default concept prompt "kept producing person-centric concepts … which a
+// visual_style rule + a Stability negative prompt downstream weren't" able to
+// stop. That fix was hardcoded to one brand. This generalises it: every
+// client's own visual_style is now stated to the concept model as a hard
+// constraint before it writes anything, and a brand with a blanket no-people
+// rule additionally gets the explicit people instruction that made CRHQ work.
+// CRHQ itself is untouched and still uses its own bespoke system prompt.
+
+// Blanket "no people" rules in a client's own visual_style. Deliberately does
+// NOT match Once Upon A You's "no specific children" — that brand is
+// illustrated children's books, where people are the point and only
+// identifiable real children are barred. Verified against all 8 non-CRHQ
+// visual_style values live: matches exactly the six that carry a blanket rule
+// (hormonely, ps, quill, quill-linkedin, riverside, yca) and neither ouay,
+// neuro-decoded nor steady.
+const STYLE_FORBIDS_PEOPLE =
+  /\bno\s+(?:illustrated\s+|depicted\s+)?(?:people|persons?|humans?)\b|\bno\s+(?:illustrated\s+|depicted\s+|ai-generated\s+)?(?:human\s+)?figures?\b|\bfaces\s+or\s+figures\b/i
+
+export function styleForbidsPeople(visualStyle: string | null): boolean {
+  return STYLE_FORBIDS_PEOPLE.test(String(visualStyle || ''))
+}
+
+// Generalisation of CRHQ_CONCEPT_SYSTEM's STEP 5, which is the part that
+// demonstrably works. The final sentence is the load-bearing one: every real
+// failure came from a post about what a person does or feels, where the
+// concept model reached for the person rather than the thing.
+const NO_PEOPLE_CONCEPT_RULE = 'This brand forbids people entirely. Describe a scene with NO people in it: no person, no figure, no silhouette, no hands, no arms, no part of a body — not even distant, blurred, out of focus, cropped, or seen from behind. Empty is the default and is almost always the right answer. If the post is about what someone does, feels, decides or experiences, describe the objects, place, materials, structures or abstract forms involved instead of the person doing it.'
+
+// Concept words that mean a person is in the frame. Grounded in the six real
+// person-centric concepts logged on 22 Aug (tradesperson, person, owner x2,
+// analyst, hands) rather than invented. Deliberately EXCLUDES words that read
+// as people but legitimately appear in compliant abstract concepts —
+// "professional" ("soft, professional lighting" appeared in a real concept),
+// "figure(s)" (a data-visualisation brand means numbers), "client(s)" ("client
+// dashboard"), "team", "face" ("rock face") — because a false positive here
+// costs three wasted model calls and degrades a good post-specific concept to
+// the generic fallback. The downstream compliance gate remains the backstop
+// for anything this misses.
+const CONCEPT_PEOPLE_SUBJECTS =
+  /\b(?:persons?|people|someone|somebody|humans?|man|men|woman|women|silhouette|portrait|workers?|tradespersons?|tradespeople|craftsm[ae]n|owners?|analysts?|employees?|founders?|entrepreneurs?|child|children|boy|girl|shoulders?|arms?)\b|\bhands?\b(?!-)/i
+
+// The matched word when a concept puts a person in frame, else null.
+export function conceptMentionsPerson(concept: string): string | null {
+  const found = CONCEPT_PEOPLE_SUBJECTS.exec(String(concept || ''))
+  return found ? found[0] : null
+}
+
+// Brand-neutral, structurally person-free and text-free last resort, for when
+// the concept model cannot produce a people-free scene. Same role
+// CRHQ_CONCEPT_FALLBACK plays for CRHQ: strictly better than letting a
+// person-centric concept through, and far better than the old non-CRHQ
+// fallback of `body.slice(0, 220)`, which pasted raw marketing copy (URLs and
+// all) into the image prompt. Stays deliberately abstract because it is
+// combined with the brand's own visual_style in the final prompt anyway.
+const NO_PEOPLE_CONCEPT_FALLBACK = 'An abstract composition of overlapping geometric planes and clean flat shapes, arranged with generous negative space under even, diffuse lighting'
+
+// The concept-stage system prompt for a given client: CRHQ keeps its bespoke
+// one, every other client now gets the default plus its own real brand rules,
+// plus the explicit people instruction when its visual_style carries a
+// blanket no-people rule.
+export function conceptSystemFor(client: Record<string, any> | undefined, visualStyle: string | null): string {
+  if (wantsHeadlineOverlay(client ?? {})) return CRHQ_CONCEPT_SYSTEM
+  const style = String(visualStyle || '').trim()
+  if (!style) return DEFAULT_CONCEPT_SYSTEM
+  const rules = `${DEFAULT_CONCEPT_SYSTEM}\n\nBRAND VISUAL RULES — the scene you describe must obey these. They are not optional and they override anything the post copy suggests:\n${style}`
+  return styleForbidsPeople(style) ? `${rules}\n\nPEOPLE — ${NO_PEOPLE_CONCEPT_RULE}` : rules
+}
+
 // CRHQ-specific concept system prompt — added after two rounds of test
 // samples (2026-08-08/09) showed the default concept prompt above kept
 // producing person-centric concepts ("a man reading a document," "officials
@@ -327,13 +408,17 @@ function conceptProblem(concept: string): string | null {
 // heavy blast doors sealed shut" — about that story, and made of materials
 // that cannot carry writing.
 //
-// `validate` is CRHQ-only. Every other client keeps the original
-// single-call-and-take-it behaviour exactly.
+// `validate` is CRHQ-only (its own banned-subject list). `requireNoPeople` is
+// the generalised equivalent for every other brand whose visual_style carries
+// a blanket no-people rule: same retry-with-a-named-reason shape, checking the
+// one thing that actually failed 6 of 7 times on 22 Aug. A client with
+// neither flag keeps the original single-call-and-take-it behaviour exactly.
 export async function summariseToVisualConcept(
   postBody: string,
   systemPrompt: string = DEFAULT_CONCEPT_SYSTEM,
   sourceTitle?: string | null,
   validate = false,
+  requireNoPeople = false,
 ): Promise<string> {
   const body = String(postBody || '').replace(/\s+/g, ' ').trim()
   if (!body) return ''
@@ -342,29 +427,54 @@ export async function summariseToVisualConcept(
     ? `Post:\n${body.slice(0, 1000)}\n\nThe post was written about this specific story: "${source.slice(0, 300)}". The scene must be about that story in particular.`
     : `Post:\n${body.slice(0, 1000)}`
 
+  // Falling back to raw post copy is right for an unconstrained brand, but for
+  // a no-people brand it is the exact disaster this function now exists to
+  // prevent — marketing copy about a business owner reliably produces a
+  // business owner.
+  const fallback = () => (requireNoPeople ? NO_PEOPLE_CONCEPT_FALLBACK : body.slice(0, 220))
+  const retrying = validate || requireNoPeople
+
   let correction = ''
-  for (let attempt = 1; attempt <= (validate ? CONCEPT_MAX_ATTEMPTS : 1); attempt++) {
+  for (let attempt = 1; attempt <= (retrying ? CONCEPT_MAX_ATTEMPTS : 1); attempt++) {
     try {
       const raw = await callAnthropic(systemPrompt, base + correction, 150)
       const concept = raw.replace(/\s+/g, ' ').trim()
-      if (!validate) return concept || body.slice(0, 220)
+      if (!retrying) return concept || body.slice(0, 220)
 
-      const problem = conceptProblem(concept)
-      if (!problem) return concept
+      if (validate) {
+        const problem = conceptProblem(concept)
+        if (!problem) return concept
 
-      console.error(`[image] concept attempt ${attempt} unusable — ${problem}`)
-      // Named explicitly. This correction is read by Claude, which handles
-      // "do not use X" correctly — it never reaches the diffusion model.
-      correction = `\n\nYour previous answer was rejected because it ${problem}. Reply with ONLY a scene description — one or two sentences, no explanation, no refusal — about this same specific story, built only from place, ground, weather, light, architecture and raw material, and containing none of the STEP 3 forbidden objects. If the post is about what someone said, describe the real-world thing they were talking about.`
+        console.error(`[image] concept attempt ${attempt} unusable — ${problem}`)
+        // Named explicitly. This correction is read by Claude, which handles
+        // "do not use X" correctly — it never reaches the diffusion model.
+        correction = `\n\nYour previous answer was rejected because it ${problem}. Reply with ONLY a scene description — one or two sentences, no explanation, no refusal — about this same specific story, built only from place, ground, weather, light, architecture and raw material, and containing none of the STEP 3 forbidden objects. If the post is about what someone said, describe the real-world thing they were talking about.`
+        continue
+      }
+
+      // requireNoPeople
+      if (!concept) {
+        console.error(`[image] concept attempt ${attempt} came back empty`)
+        correction = '\n\nYour previous answer was empty. Reply with ONLY a scene description, one or two sentences.'
+        continue
+      }
+      const person = conceptMentionsPerson(concept)
+      if (!person) return concept
+
+      console.error(`[image] concept attempt ${attempt} describes a person ("${person}") for a no-people brand — retrying`)
+      correction = `\n\nYour previous answer was rejected because it put a person in the frame (it mentioned "${person}"). ${NO_PEOPLE_CONCEPT_RULE} Reply with ONLY a scene description, one or two sentences, no explanation, describing the same subject with no person present at all.`
     } catch (e) {
       console.error(`[image] visual-concept summary failed on attempt ${attempt} — ${String((e as Error)?.message ?? e)}`)
-      if (!validate) return body.slice(0, 220)
+      if (!retrying) return body.slice(0, 220)
+      if (attempt === CONCEPT_MAX_ATTEMPTS) return fallback()
     }
   }
 
-  // Never the raw post body for CRHQ — see CRHQ_CONCEPT_FALLBACK.
+  // Never the raw post body for CRHQ (CRHQ_CONCEPT_FALLBACK) or for a
+  // no-people brand (NO_PEOPLE_CONCEPT_FALLBACK) — in both cases the raw copy
+  // is the thing that produces the banned image in the first place.
   console.error('[image] concept model produced no usable scene — using the text-free fallback frame')
-  return validate ? CRHQ_CONCEPT_FALLBACK : body.slice(0, 220)
+  return validate ? CRHQ_CONCEPT_FALLBACK : fallback()
 }
 
 // Post copy (summarised into a visual concept, not passed through raw) +
@@ -384,8 +494,12 @@ export async function buildImagePrompt(
   sourceTitle?: string | null,
 ): Promise<{ prompt: string; concept: string }> {
   const isCrhq = wantsHeadlineOverlay(client ?? {})
-  const conceptSystem = isCrhq ? CRHQ_CONCEPT_SYSTEM : DEFAULT_CONCEPT_SYSTEM
-  const concept = await summariseToVisualConcept(postBody, conceptSystem, sourceTitle, isCrhq)
+  // Was `isCrhq ? CRHQ_CONCEPT_SYSTEM : DEFAULT_CONCEPT_SYSTEM` — the
+  // non-CRHQ branch could not see visualStyle at all, which is the root cause
+  // fixed on 22 Aug (see conceptSystemFor and the notes above it).
+  const conceptSystem = conceptSystemFor(client, visualStyle)
+  const noPeople = !isCrhq && styleForbidsPeople(visualStyle)
+  const concept = await summariseToVisualConcept(postBody, conceptSystem, sourceTitle, isCrhq, noPeople)
   const style = String(visualStyle || '').trim()
   // CRHQ brackets the brand style with a medium directive first and a
   // positive restatement last — see CRHQ_MEDIUM_DIRECTIVE. `style` stays
