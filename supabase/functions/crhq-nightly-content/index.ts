@@ -115,23 +115,80 @@ const MAX_LOOKAHEAD_MS = 48 * 60 * 60 * 1000
 // Rejected posts are excluded because they never reach Facebook, so they
 // cannot be half of an alternation of what people actually saw. Counting one
 // inverts the toggle for the next real post.
-async function facebookWantsImage(admin: Admin, clientId: string): Promise<boolean> {
+//
+// Scoped to posts scheduled STRICTLY BEFORE the slot this run is filling
+// (2026-08-22 fix). It previously took the global maximum scheduled_for for
+// this client/platform and relied on the commented assumption that "the new
+// post is scheduled further into the future than every existing one". Nothing
+// enforces that: nextAvailableSlot only skips whole DAYS that already hold a
+// post, and a rejected post stops reserving its day the moment it is
+// rejected — which is exactly how CRHQ ended up with two Facebook posts on
+// 2026-08-18 (07:00 from the 14 Aug run, 18:00 from the 16 Aug run). The
+// question this function has to answer is "did the post immediately BEFORE
+// mine carry an image", so ask that directly rather than inferring it from an
+// ordering invariant the scheduler does not guarantee.
+//
+// Deliberately NOT changed: the state is still read from image_url, i.e. from
+// the OUTCOME, not from what a previous run decided. When generation is asked
+// for and fails, the row stores no image and the next run asks again. That is
+// the right behaviour — the alternative (remembering the intent) would answer
+// "no image" for a post that never got one, and drive the real ratio further
+// below 50/50 rather than toward it. It does mean this function cannot, on
+// its own, distinguish "deliberately text-only" from "tried and failed" —
+// which is what the outcome check at the call site is for.
+interface AlternationDecision {
+  wantsImage: boolean
+  // Human-readable, for the run log — the whole reason this bug took a week
+  // and two wrong fixes to pin down was that nothing anywhere recorded WHY a
+  // given post did or did not ask for an image.
+  because: string
+}
+
+async function facebookWantsImage(admin: Admin, clientId: string, beforeSlot: Date): Promise<AlternationDecision> {
   const { data, error } = await admin
     .from('mkt_content_queue')
-    .select('image_url')
+    .select('id, scheduled_for, image_url')
     .eq('client_id', clientId).eq('platform', 'facebook').eq('content_type', 'post')
     .neq('status', 'rejected')
+    .lt('scheduled_for', beforeSlot.toISOString())
     .order('scheduled_for', { ascending: false })
     .limit(1)
   if (error) {
     // Fail closed — a lookup failure must not turn into an image on every
     // Facebook post. Text-only is the safe side of this decision.
     console.error(`[crhq-nightly-content] facebook image alternation lookup failed (${error.message}) — defaulting to no image`)
-    return false
+    return { wantsImage: false, because: `alternation lookup failed (${error.message}) — defaulted to no image` }
   }
   const previous = data?.[0]
-  if (!previous) return true // no Facebook history yet — start the cycle with an image
-  return !previous.image_url
+  // no Facebook history before this slot — start the cycle with an image
+  if (!previous) return { wantsImage: true, because: 'no prior non-rejected Facebook post before this slot — starting the cycle with an image' }
+  const hadImage = !!previous.image_url
+  return {
+    wantsImage: !hadImage,
+    because: `previous non-rejected Facebook post (${previous.scheduled_for}) ${hadImage ? 'had' : 'had no'} image — this one ${hadImage ? 'goes text-only' : 'gets one'}`,
+  }
+}
+
+// Did the image actually land? generatePostImage is best-effort and returns
+// void: it swallows every failure (provider error, content-policy refusal,
+// all review attempts exhausted) into console output and image_review_events
+// and tells the caller nothing. That is why the 18 and 20 August runs both
+// wrote mkt_content_queue rows with no image, logged 11 'reject'/'exhausted'
+// review events between them, and still reported errors=null,
+// posts_generated=1 in mkt_cron_log — a clean bill of health on two nights
+// the image pipeline failed outright. A silent 100% failure rate reads
+// exactly like broken alternation from the queue table, which is what sent
+// the last two investigations after the wrong cause.
+//
+// So: re-read the row and compare against what was asked for. Only a
+// requested-but-missing image is surfaced; a deliberate text-only post is
+// the feature working.
+async function imageLanded(admin: Admin, contentQueueId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('mkt_content_queue').select('image_url').eq('id', contentQueueId).maybeSingle()
+  // Unverifiable is not the same as failed — don't invent an error.
+  if (error) return true
+  return !!data?.image_url
 }
 
 // Incident fix — last night's run found 2 videos and 0 articles but
@@ -326,7 +383,14 @@ serve(async (req) => {
 
         // Decided before the insert, deliberately — see facebookWantsImage.
         // Instagram always gets an image; Facebook gets one on alternate posts.
-        const wantsImage = platform === 'facebook' ? await facebookWantsImage(admin, client.id) : true
+        // Scoped to `slot` so the reference is the post that will actually
+        // precede this one, not whichever row happens to hold the largest
+        // scheduled_for in the queue.
+        const decision: AlternationDecision = platform === 'facebook'
+          ? await facebookWantsImage(admin, client.id, slot)
+          : { wantsImage: true, because: 'instagram — every post gets an image' }
+        const wantsImage = decision.wantsImage
+        console.log(`[crhq-nightly-content] ${platform}: image decision — wantsImage=${wantsImage} (${decision.because})`)
 
         // Step 2 (generate) — every post here is scrape-driven (the run is
         // skipped entirely above when nothing fresh was found). "CRHQ latest
@@ -401,8 +465,17 @@ serve(async (req) => {
             // and a URL, and the concepts came out generic as a result. See
             // summariseToVisualConcept in _shared/image.ts.
             await generatePostImage(admin, client, inserted.id, review.body, platform, primarySource.title)
+            // An image was asked for. If none landed, the image pipeline
+            // failed — say so, loudly, in this run's own log rather than
+            // leaving it to be reconstructed from image_review_events days
+            // later. See imageLanded's comment for why this is not optional.
+            if (!(await imageLanded(admin, inserted.id))) {
+              errors.push(`${platform}: image requested for ${inserted.id} but none was produced — image pipeline failed (see image_review_events for this post)`)
+              console.error(`[crhq-nightly-content] ${platform}: image requested for ${inserted.id} but none was produced`)
+            }
           } else if (review.body && platform === 'facebook') {
-            console.log(`[crhq-nightly-content] facebook: skipping image for ${inserted.id} — alternating (previous post had one)`)
+            notes.push(`facebook: text-only by design — ${decision.because}`)
+            console.log(`[crhq-nightly-content] facebook: skipping image for ${inserted.id} — ${decision.because}`)
           }
 
           if (review.body) recentTopics.unshift(`[${pillar}] ${review.body.replace(/\s+/g, ' ').trim().slice(0, 140)}`)
