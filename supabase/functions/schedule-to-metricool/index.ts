@@ -320,6 +320,41 @@ serve(async (req) => {
       return json({ error: msg }, 422)
     }
 
+    // Exhausted-image guard (added 22 Aug 2026). Real incident: two CRHQ
+    // posts (701fd49c, eee743fc) exhausted all 3 image-generation attempts,
+    // were still manually approved, and reached Metricool with no image —
+    // ContentQueue.jsx's "Image missing — add manually" warning is visual
+    // only, nothing there or here stopped the approve click. Both were
+    // caught and cancelled by hand; this closes the actual gap so it can't
+    // happen silently again.
+    //
+    // Deliberately scoped to a REAL exhausted verdict, not "image_url is
+    // null" alone — a null image_url is also the normal, correct shape for
+    // a platform that never wanted one this cycle (a client with images
+    // disabled, a content_type this doesn't apply to) or, for Facebook
+    // specifically, a deliberate alternation "text-only" choice (see
+    // crhq-nightly-content/index.ts's facebookWantsImage — that path never
+    // attempts generation at all, so it leaves zero image_review_events
+    // rows behind). Only a genuine 3/3 exhaustion — an image that was
+    // wanted and definitively failed — should block. Fails open (does not
+    // block) if this lookup itself errors, so a lookup failure degrades to
+    // today's behaviour rather than blocking every approval.
+    if (!item.image_url) {
+      const { data: exhausted, error: exErr } = await admin
+        .from('image_review_events')
+        .select('id')
+        .eq('content_queue_id', item.id)
+        .eq('verdict', 'exhausted')
+        .limit(1)
+      if (exErr) {
+        console.error(`[schedule-to-metricool] exhausted-image guard lookup failed for ${item.id}: ${exErr.message} — not blocking`)
+      } else if (exhausted && exhausted.length > 0) {
+        const msg = 'Image generation exhausted all 3 attempts and no image was attached — this post cannot be scheduled without a real image or an explicit manual override.'
+        await markFailed(admin, item.id, msg)
+        return json({ error: msg }, 422)
+      }
+    }
+
     const chosen = scheduled_for || item.scheduled_for
     const chosenDate = chosen ? new Date(chosen) : null
     const slot = (chosenDate && !isNaN(chosenDate.getTime()) && chosenDate > new Date())
