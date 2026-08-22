@@ -4,7 +4,7 @@
 import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, dateOnly, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { ukTimeSlotToUtc } from './ukTime.ts'
 import { generateReviewedPost } from './review.ts'
-import { generatePostImage, isQuillAlternatingStream, seedAlternatingImageWantsImage } from './image.ts'
+import { generatePostImage, isAlternatingImageStream, seedAlternatingImageWantsImage } from './image.ts'
 import { latestOptimisationNotes } from './optimisation.ts'
 import { recentRejectionFeedback } from './rejectionFeedback.ts'
 
@@ -407,7 +407,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     // Quill/Facebook in 24 minutes) alternates correctly within itself
     // instead of every post after the first seeing an imageless sibling
     // from moments earlier and getting stuck on "no image".
-    const alternatingImages = isQuillAlternatingStream(client, platform)
+    const alternatingImages = isAlternatingImageStream(client, platform)
     let nextWantsImage = alternatingImages ? await seedAlternatingImageWantsImage(admin, client.id, platform) : undefined
 
     while (generatedForPlatform < gap && generatedForPlatform < platformBudget && daysWalked < SAFETY_MAX_DAYS_WALKED) {

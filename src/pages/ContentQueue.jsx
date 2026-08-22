@@ -98,7 +98,11 @@ export function ContentQueue() {
     const [q, c, p] = await Promise.all([
       // Soonest-scheduled first so the most urgent approvals surface at the
       // top; posts with no scheduled_for sort to the bottom (nullsFirst: false).
-      supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name)').order('scheduled_for', { ascending: true, nullsFirst: false }),
+      // image_gen_platforms/image_gen_disabled_platforms let PostImage tell a
+      // genuinely-missing image apart from a brand/platform combination that
+      // was never configured to generate one in the first place — see
+      // PostImage's own comment for why this matters.
+      supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name,image_gen_platforms,image_gen_disabled_platforms)').order('scheduled_for', { ascending: true, nullsFirst: false }),
       // connected_platforms drives the "Write a post" platform dropdown — it
       // is filtered to the platforms the selected brand actually has.
       supabase.from('mkt_clients').select('id, name, short_name, content_pillars, connected_platforms').eq('active', true).order('name'),
@@ -921,10 +925,37 @@ function WritePostModal({ open, clients, form, setForm, platforms, slotLoading, 
   )
 }
 
+// Mirrors generatePostImage's own allow-list gate exactly (_shared/image.ts:
+// "Per-client platform ALLOW-list" — allowedPlatforms.some(case-insensitive
+// match) then the disabled-platforms deny-list). Must stay in sync with that
+// function's two early returns, since this is answering the same question
+// ("would this brand/platform combination ever get a generated image?") from
+// the other side of the same config.
+function imageExpectedFor(item) {
+  const client = item.client
+  const platform = String(item.platform || '').toLowerCase()
+  // An EMPTY allow-list means "no restriction" in generatePostImage — every
+  // platform is allowed by default (see _shared/image.ts: `if
+  // (allowedPlatforms.length && !allowedPlatforms.some(...))`, which is
+  // false, and so does not skip, when the array is empty). quill-linkedin
+  // runs on exactly this: image_gen_platforms is [] and it genuinely
+  // generates images. Only a NON-empty list actually restricts anything.
+  const allowed = Array.isArray(client?.image_gen_platforms) ? client.image_gen_platforms : []
+  if (allowed.length && !allowed.some((p) => String(p).toLowerCase() === platform)) return false
+  const disabled = Array.isArray(client?.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : []
+  return !disabled.includes(item.platform)
+}
+
 // The image fill.ts generates alongside each post (see _shared/image.ts),
 // shown next to the copy in every place the queue renders a post. A null
-// image_url isn't an error state to hide — it's flagged so Adrian knows to
-// add one manually rather than approving a post that will go out bare.
+// image_url is only flagged when this brand/platform was actually configured
+// to generate one — most brands currently generate images for Instagram only
+// and post Facebook text-only by design (see schedule-to-metricool's
+// facebookTextOnly), so a missing image on their Facebook posts is expected,
+// not an error state. Previously this warned on every post from every brand
+// regardless, which is exactly the kind of always-on warning that made it
+// impossible to notice the one real case (a genuinely exhausted image) that
+// mattered — see the 22 Aug CRHQ incident this was written after.
 function PostImage({ item }) {
   if (item.content_type && item.content_type !== 'post') return null
   if (item.image_url) {
@@ -932,6 +963,7 @@ function PostImage({ item }) {
       <img src={item.image_url} alt="" style={{ width: '100%', maxWidth: 320, borderRadius: 8, display: 'block', marginBottom: 12 }} />
     )
   }
+  if (!imageExpectedFor(item)) return null
   return (
     <div style={{
       fontSize: 12, color: '#92400E', background: '#FFFBEB', border: '1px dashed #F59E0B',

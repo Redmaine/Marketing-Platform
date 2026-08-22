@@ -539,18 +539,27 @@ function wantsHeadlineOverlay(client: Record<string, any>): boolean {
   return client?.slug === 'crhq'
 }
 
-// Quill's two alternating-image streams: the dedicated LinkedIn company-page
-// client (mkt_clients.slug = 'quill-linkedin', metricool_brand_id 6469945,
-// every post is LinkedIn so no platform check needed), and — since 2026-08-10
-// (Facebook/LinkedIn 50/50 image test, with vs without AI artwork) — the main
-// Quill client's own Facebook stream (slug = 'quill', platform = 'facebook'
-// only; its Instagram/other posts are untouched by this). Deliberately slug
-// checks here rather than a new mkt_clients column, same reasoning as
-// wantsHeadlineOverlay above. Revisit as a proper column if a third stream
-// wants alternating images.
-export function isQuillAlternatingStream(client: Record<string, any>, platform: string): boolean {
+// Quill's two alternating-image streams, unchanged: the dedicated LinkedIn
+// company-page client (mkt_clients.slug = 'quill-linkedin', metricool_brand_id
+// 6469945, every post is LinkedIn so no platform check needed), and — since
+// 2026-08-10 (Facebook/LinkedIn 50/50 image test, with vs without AI
+// artwork) — the main Quill client's own Facebook stream (slug = 'quill',
+// platform = 'facebook' only). Left as slug checks deliberately, matching
+// wantsHeadlineOverlay's own reasoning — these two are already live and
+// tested, so they stay exactly as they were rather than being folded into
+// the general case below purely for symmetry.
+//
+// Renamed from isQuillAlternatingStream (22 Aug 2026) and generalised — this
+// function's own comment already said "revisit as a proper column if a third
+// stream wants alternating images", and Hormonely's Facebook pilot is that
+// third stream. mkt_clients.facebook_image_alternation_enabled (migration,
+// 22 Aug) opts a client's Facebook stream in without another hardcoded slug
+// check; false/unset for every client except Hormonely, so this is a no-op
+// for everyone else until they're explicitly enabled.
+export function isAlternatingImageStream(client: Record<string, any>, platform: string): boolean {
   if (client?.slug === 'quill-linkedin') return true
-  return client?.slug === 'quill' && platform === 'facebook'
+  if (client?.slug === 'quill' && platform === 'facebook') return true
+  return platform === 'facebook' && client?.facebook_image_alternation_enabled === true
 }
 
 // Post-by-post image alternation for the two streams above — odd-numbered
@@ -1405,14 +1414,30 @@ export async function generatePostImage(
     return
   }
 
-  // Quill's alternating streams only (LinkedIn, and Facebook since the
-  // 2026-08-10 image test — see isQuillAlternatingStream). Checked after the
+  // Fail closed on an unset visual_style (22 Aug 2026). Previously an unset
+  // style meant the compliance loop further down had nothing to check
+  // against, so it accepted whatever the provider returned on attempt 1,
+  // completely unreviewed — exactly the standing rule "a brand's config
+  // being unset must never silently skip review" prohibits. Found on
+  // adrian-linkedin, which has none set; currently dormant
+  // (image_gen_disabled_platforms includes linkedin) so this has no live
+  // effect today, but the gate is general — it protects every client, not
+  // just this one, and closes the hole before a future client hits it for
+  // real. Skipping rather than generating and discarding also avoids paying
+  // for a provider call for an image that could never be checked anyway.
+  if (!String(client.visual_style || '').trim()) {
+    console.error(`[image] ${client.name}: no visual_style configured — refusing to generate an unreviewed image for ${contentQueueId}`)
+    return
+  }
+
+  // Alternating streams (see isAlternatingImageStream — Quill's two plus any
+  // client with facebook_image_alternation_enabled). Checked after the
   // allow/deny-list gates above (deliberate configuration always wins first)
   // but before any generation work starts. Prefers the caller's
   // precomputedWantsImage when given (fill.ts's batching fix — see
   // seedAlternatingImageWantsImage); only re-queries here when a caller
   // hasn't precomputed one, which is still correct for a single call.
-  if (isQuillAlternatingStream(client, platform)) {
+  if (isAlternatingImageStream(client, platform)) {
     const wantsImage = precomputedWantsImage !== undefined
       ? precomputedWantsImage
       : await seedAlternatingImageWantsImage(admin, client.id, platform)
@@ -1522,8 +1547,8 @@ export async function generatePostImage(
     // was missing entirely: passesStylePrefixCheck above only proves the style
     // text reached the prompt, and the face/text backstop only runs for CRHQ.
     //
-    // A brand with no visual_style set skips this — there is nothing to check
-    // against, and inventing rules for it would be worse than not checking.
+    // client.visual_style is guaranteed non-empty here — the early
+    // fail-closed gate above already returned if it wasn't.
     const styleRules = String(client.visual_style ?? '').trim()
     let rawBytes: Uint8Array | null = null
     let lastViolation: string | null = null
@@ -1552,8 +1577,6 @@ export async function generatePostImage(
       // Provider-level exhaustion (Flux face/text backstop) already logged and
       // already decided this post goes out image-less.
       if (!candidate) return
-
-      if (!styleRules) { rawBytes = candidate; break }
 
       let verdict: { compliant: boolean; violation: string | null }
       try {
