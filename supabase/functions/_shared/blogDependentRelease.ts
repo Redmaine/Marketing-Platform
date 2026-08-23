@@ -45,7 +45,29 @@ interface QueueRow {
   blog_id: string | null
 }
 
-async function releaseForBlogs(admin: Admin, clientId: string, blogs: BlogRow[]): Promise<{ released: number; ids: string[] }> {
+// Why a post is no longer waiting, or that it still is. A blog only ever
+// leaves the queue two ways — it publishes, or it is rejected — and until
+// 22 Aug 2026 only the first was handled, so a post whose blog was REJECTED
+// waited forever for something that could never happen. See the rejected
+// branch below.
+type Outcome = 'pass' | 'attention' | 'wait'
+
+function outcomeFor(blog: BlogRow | null): Outcome {
+  if (!blog) return 'pass'                      // nothing to wait on at all
+  if (blog.status === 'published') return 'pass' // the thing it waited for happened
+  if (blog.status === 'rejected') return 'attention' // it will never happen
+  return 'wait'                                  // genuinely still in the queue
+}
+
+export const REJECTED_BLOG_REASON =
+  'The blog this post references was rejected, so it will never publish. Decide whether to rewrite this post without the reference, or reject it.'
+
+async function releaseForBlogs(
+  admin: Admin,
+  clientId: string,
+  blogs: BlogRow[],
+): Promise<{ released: number; ids: string[]; flagged: number; flaggedIds: string[] }> {
+  const empty = { released: 0, ids: [] as string[], flagged: 0, flaggedIds: [] as string[] }
   const { data: pending, error: pErr } = await admin
     .from('mkt_content_queue')
     .select('id, blog_id')
@@ -53,29 +75,60 @@ async function releaseForBlogs(admin: Admin, clientId: string, blogs: BlogRow[])
     .eq('status', 'draft')
     .eq('review_status', 'blog_dependent')
   if (pErr) throw new Error(`load pending blog_dependent rows for client ${clientId}: ${pErr.message}`)
-  if (!pending?.length) return { released: 0, ids: [] }
+  if (!pending?.length) return empty
 
   const byId = new Map(blogs.map((b) => [b.id, b]))
   // blogs is expected newest-first (created_at desc) — same ordering
   // ContentQueue.jsx's query uses, so this fallback picks the same blog it
   // would have.
+  //
+  // Deliberately NOT narrowed to exclude rejected blogs. A post with no
+  // blog_id is a keyword-detected teaser pinned to whatever was outstanding
+  // when it was written; if that blog was then rejected, the teaser is
+  // referencing something that will never exist and a human needs to see it.
+  // Narrowing this to "genuinely pending only" would resolve such a post to
+  // null and silently mark it 'passed' — publishing a teaser for a blog that
+  // does not exist, which is worse than the stuck state being fixed here.
   const mostRecentUnpublished = blogs.find((b) => b.status !== 'published') ?? null
 
-  const toRelease = (pending as QueueRow[]).filter((row) => {
+  const ids: string[] = []
+  const flaggedIds: string[] = []
+  for (const row of pending as QueueRow[]) {
     const blog = row.blog_id ? byId.get(row.blog_id) ?? null : mostRecentUnpublished
-    return !blog || blog.status === 'published'
-  })
-  if (!toRelease.length) return { released: 0, ids: [] }
+    const outcome = outcomeFor(blog)
+    if (outcome === 'pass') ids.push(row.id)
+    else if (outcome === 'attention') flaggedIds.push(row.id)
+    // 'wait' — the blog is genuinely still in the approval queue, leave it.
+  }
 
-  const ids = toRelease.map((r) => r.id)
-  const { error: uErr } = await admin.from('mkt_content_queue').update({ review_status: 'passed' }).in('id', ids)
-  if (uErr) throw new Error(`release blog_dependent rows for client ${clientId}: ${uErr.message}`)
-  return { released: ids.length, ids }
+  if (ids.length) {
+    // It already passed content review — blog_dependent only ever gated on
+    // the blog — so it goes straight back into the normal approval queue.
+    const { error: uErr } = await admin.from('mkt_content_queue').update({ review_status: 'passed' }).in('id', ids)
+    if (uErr) throw new Error(`release blog_dependent rows for client ${clientId}: ${uErr.message}`)
+  }
+
+  if (flaggedIds.length) {
+    // NOT 'passed': the post's own copy references a blog that will never
+    // exist, so approving it unchanged would publish a dead reference. A
+    // human decides whether to rewrite or reject — which is exactly what
+    // needs_attention already means everywhere else in this queue.
+    const { error: fErr } = await admin
+      .from('mkt_content_queue')
+      .update({ review_status: 'needs_attention', review_reason: REJECTED_BLOG_REASON })
+      .in('id', flaggedIds)
+    if (fErr) throw new Error(`flag rejected-blog rows for client ${clientId}: ${fErr.message}`)
+  }
+
+  return { released: ids.length, ids, flagged: flaggedIds.length, flaggedIds }
 }
 
 // Scoped to one client — the cheap, real-time path called right after a
 // specific blog publishes. Fetches only that client's blogs.
-export async function releaseForClient(admin: Admin, clientId: string): Promise<{ released: number; ids: string[] }> {
+export async function releaseForClient(
+  admin: Admin,
+  clientId: string,
+): Promise<{ released: number; ids: string[]; flagged: number; flaggedIds: string[] }> {
   const { data: blogs, error: bErr } = await admin
     .from('mkt_blog_posts')
     .select('id, client_id, status, created_at')
@@ -88,7 +141,12 @@ export async function releaseForClient(admin: Admin, clientId: string): Promise<
 // Unscoped — the periodic sweep's backstop path. One query for every blog
 // across every client, grouped client-side, so this is a fixed two queries
 // total regardless of how many clients have blog_dependent posts.
-export async function releaseAll(admin: Admin): Promise<{ released: number; byClient: Record<string, number> }> {
+export async function releaseAll(admin: Admin): Promise<{
+  released: number
+  byClient: Record<string, number>
+  flagged: number
+  flaggedByClient: Record<string, number>
+}> {
   const { data: pendingClients, error: pcErr } = await admin
     .from('mkt_content_queue')
     .select('client_id')
@@ -96,7 +154,7 @@ export async function releaseAll(admin: Admin): Promise<{ released: number; byCl
     .eq('review_status', 'blog_dependent')
   if (pcErr) throw new Error(`load blog_dependent client list: ${pcErr.message}`)
   const clientIds: string[] = Array.from(new Set((pendingClients || []).map((r: { client_id: string }) => r.client_id)))
-  if (!clientIds.length) return { released: 0, byClient: {} }
+  if (!clientIds.length) return { released: 0, byClient: {}, flagged: 0, flaggedByClient: {} }
 
   const { data: blogs, error: bErr } = await admin
     .from('mkt_blog_posts')
@@ -112,13 +170,19 @@ export async function releaseAll(admin: Admin): Promise<{ released: number; byCl
   }
 
   let released = 0
+  let flagged = 0
   const byClient: Record<string, number> = {}
+  const flaggedByClient: Record<string, number> = {}
   for (const clientId of clientIds) {
     const result = await releaseForBlogs(admin, clientId, blogsByClient.get(clientId) ?? [])
     if (result.released) {
       released += result.released
       byClient[clientId] = result.released
     }
+    if (result.flagged) {
+      flagged += result.flagged
+      flaggedByClient[clientId] = result.flagged
+    }
   }
-  return { released, byClient }
+  return { released, byClient, flagged, flaggedByClient }
 }

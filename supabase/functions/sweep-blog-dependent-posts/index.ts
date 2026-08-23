@@ -45,13 +45,24 @@ serve(async (req) => {
   const admin: Admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
   try {
-    const { released, byClient } = await releaseAll(admin)
+    const { released, byClient, flagged, flaggedByClient } = await releaseAll(admin)
     if (released) {
       console.log(`[sweep-blog-dependent-posts] released ${released} post(s):`, JSON.stringify(byClient))
-    } else {
+    }
+    if (flagged) {
+      // Logged separately and explicitly: this is not a routine release. It
+      // means a post references a blog that was rejected, so a human now has
+      // to decide whether to rewrite or drop it. Folding it into the same
+      // "released" number would hide exactly the thing that needs a person.
+      console.log(
+        `[sweep-blog-dependent-posts] flagged ${flagged} post(s) as needs_attention — referenced blog was rejected:`,
+        JSON.stringify(flaggedByClient),
+      )
+    }
+    if (!released && !flagged) {
       console.log('[sweep-blog-dependent-posts] nothing to release — clean sweep')
     }
-    return new Response(JSON.stringify({ ok: true, released, byClient }), { headers: { 'Content-Type': 'application/json' } })
+    return new Response(JSON.stringify({ ok: true, released, byClient, flagged, flaggedByClient }), { headers: { 'Content-Type': 'application/json' } })
   } catch (e) {
     const msg = `Sweep failed: ${String((e as Error)?.message ?? e)}`
     console.error(`[sweep-blog-dependent-posts] ${msg}`)

@@ -47,6 +47,28 @@ function PlatformPill({ platform }) {
 // or it would go out advertising a post that 404s.
 const BLOG_KEYWORDS = ['blog', 'latest post', 'we wrote', 'read more']
 const BLOG_WAIT_MESSAGE = 'Waiting for blog to publish before this post can be approved.'
+const BLOG_REJECTED_MESSAGE = 'The blog this post references was rejected, so it will never publish. Rewrite this post without the reference, or reject it.'
+
+// A blog only ever leaves the approval queue two ways — it publishes, or it
+// is rejected. Until 22 Aug 2026 both this file and the server-side sweep
+// only handled the first, so a post whose blog was REJECTED waited forever
+// for something that could never happen.
+//
+// MUST stay in agreement with outcomeFor() in
+// supabase/functions/_shared/blogDependentRelease.ts. A given post can be
+// evaluated by either path depending on when it was created and which runs
+// first, so if the two rules ever disagree a post's state would flip
+// depending on who looked at it last.
+//   'pass'      — nothing left to wait on (no blog, or it published)
+//   'attention' — the blog was rejected; a human has to decide
+//   'wait'      — genuinely still in the approval queue
+function blogOutcome(blog) {
+  if (!blog) return 'pass'
+  if (blog.status === 'published') return 'pass'
+  if (blog.status === 'rejected') return 'attention'
+  return 'wait'
+}
+
 function referencesBlog(item) {
   if (item.review_status === 'blog_dependent') return true
   const body = (item.body || '').toLowerCase()
@@ -117,25 +139,45 @@ export function ContentQueue() {
     let itemRows = q.data || []
     const blogRows = b.data || []
 
-    // Hidden posts — a blog_dependent post whose linked (or client's most
-    // recent) blog has since published is no longer actually dependent on
-    // anything; release it back into the main approval queue by resetting
-    // review_status to 'passed' (it already passed content review —
-    // blog_dependent only ever gates on the blog, see blogGate below). Same
-    // "no blog, or the blog is live → nothing to wait for" rule blogGate uses.
-    const toRelease = itemRows.filter((i) => {
-      if (i.status !== 'draft' || i.review_status !== 'blog_dependent') return false
+    // Hidden posts — a blog_dependent post is no longer actually dependent on
+    // anything once its blog reaches a terminal state, and there are TWO of
+    // those, not one:
+    //   published → release to 'passed' (it already passed content review;
+    //               blog_dependent only ever gated on the blog, see blogGate)
+    //   rejected  → 'needs_attention', because the post's own copy references
+    //               a blog that will never exist. Releasing it to 'passed'
+    //               would let it be approved and go out advertising a page
+    //               that 404s — the precise thing blog_dependent exists to
+    //               prevent — so a human decides instead.
+    // Mirrors releaseForBlogs() in _shared/blogDependentRelease.ts; see
+    // blogOutcome above on why the two must not drift apart.
+    const releaseIds = []
+    const attentionIds = []
+    for (const i of itemRows) {
+      if (i.status !== 'draft' || i.review_status !== 'blog_dependent') continue
       const blog = i.blog_id
         ? blogRows.find((b) => b.id === i.blog_id)
         : blogRows.filter((b) => b.client_id === i.client_id && b.status !== 'published')[0]
-      return !blog || blog.status === 'published'
-    })
-    if (toRelease.length) {
-      const releaseIds = toRelease.map((i) => i.id)
+      const outcome = blogOutcome(blog)
+      if (outcome === 'pass') releaseIds.push(i.id)
+      else if (outcome === 'attention') attentionIds.push(i.id)
+    }
+    if (releaseIds.length) {
       const { error: releaseError } = await supabase.from('mkt_content_queue').update({ review_status: 'passed' }).in('id', releaseIds)
       if (!releaseError) {
         const releasedSet = new Set(releaseIds)
         itemRows = itemRows.map((i) => releasedSet.has(i.id) ? { ...i, review_status: 'passed' } : i)
+      }
+    }
+    if (attentionIds.length) {
+      const { error: attentionError } = await supabase.from('mkt_content_queue')
+        .update({ review_status: 'needs_attention', review_reason: BLOG_REJECTED_MESSAGE })
+        .in('id', attentionIds)
+      if (!attentionError) {
+        const attentionSet = new Set(attentionIds)
+        itemRows = itemRows.map((i) => attentionSet.has(i.id)
+          ? { ...i, review_status: 'needs_attention', review_reason: BLOG_REJECTED_MESSAGE }
+          : i)
       }
     }
 
@@ -209,12 +251,21 @@ export function ContentQueue() {
     if (item.blog_id) return blogs.find((b) => b.id === item.blog_id) || null
     return blogs.filter((b) => b.client_id === item.client_id && b.status !== 'published')[0] || null
   }
-  // Render-time state: is this post blog-dependent, and is it currently blocked
-  // (dependent + the blog isn't published yet)?
+  // Render-time state: is this post blog-dependent, is it currently blocked,
+  // and is it blocked on something that can never resolve?
+  //
+  // `dead` (blog rejected) still blocks approval — approving would publish a
+  // reference to a page that will never exist — but it must not be presented
+  // as "waiting", because waiting implies it will sort itself out and this
+  // never will. The UI branches on it to say so plainly.
   function blogBlockState(item) {
-    if (!referencesBlog(item)) return { dependent: false, blocked: false }
-    const blog = relatedBlog(item)
-    return { dependent: true, blocked: !!blog && blog.status !== 'published' }
+    if (!referencesBlog(item)) return { dependent: false, blocked: false, dead: false }
+    const outcome = blogOutcome(relatedBlog(item))
+    return {
+      dependent: true,
+      blocked: outcome === 'wait' || outcome === 'attention',
+      dead: outcome === 'attention',
+    }
   }
   // Authoritative gate used at approval time. Returns the wait message if the
   // post must not be approved yet, else null. Also durably marks a
@@ -233,8 +284,30 @@ export function ContentQueue() {
         .order('created_at', { ascending: false }).limit(1)
       blog = data?.[0] || null
     }
+    const outcome = blogOutcome(blog)
     // No blog, or the blog is live → nothing to wait for.
-    if (!blog || blog.status === 'published') return null
+    if (outcome === 'pass') return null
+
+    // The blog was rejected. Before 22 Aug 2026 this branch did not exist and
+    // this function was the ACTIVE way the stuck state got created: the query
+    // above asks only for a blog that is not published, a rejected blog
+    // satisfies that, so the post was stamped 'blog_dependent' against a blog
+    // that would never publish and then blocked forever. Now it is marked
+    // needs_attention for a human instead — still not approvable (the copy
+    // references a page that will never exist), but no longer waiting on
+    // something that cannot happen.
+    if (outcome === 'attention') {
+      if (item.review_status !== 'needs_attention') {
+        await supabase.from('mkt_content_queue')
+          .update({ review_status: 'needs_attention', review_reason: BLOG_REJECTED_MESSAGE })
+          .eq('id', item.id)
+        setItems((p) => p.map((i) => i.id === item.id
+          ? { ...i, review_status: 'needs_attention', review_reason: BLOG_REJECTED_MESSAGE }
+          : i))
+      }
+      return BLOG_REJECTED_MESSAGE
+    }
+
     if (item.review_status !== 'blog_dependent') {
       await supabase.from('mkt_content_queue').update({ review_status: 'blog_dependent' }).eq('id', item.id)
       setItems((p) => p.map((i) => i.id === item.id ? { ...i, review_status: 'blog_dependent' } : i))
@@ -649,9 +722,13 @@ export function ContentQueue() {
                           <span className="pill" style={{ background: '#FEE2E2', color: '#991B1B' }}>Needs attention</span>
                         )}
                         {blk.dependent && (
-                          <span className="pill" title={blk.blocked ? BLOG_WAIT_MESSAGE : 'References a blog — its post is published.'}
-                            style={{ background: blk.blocked ? '#E0E7FF' : '#DCFCE7', color: blk.blocked ? '#3730A3' : '#166534' }}>
-                            {blk.blocked ? '⏳ Waiting for blog' : '✓ Blog live'}
+                          <span className="pill"
+                            title={blk.dead ? BLOG_REJECTED_MESSAGE : blk.blocked ? BLOG_WAIT_MESSAGE : 'References a blog — its post is published.'}
+                            style={{
+                              background: blk.dead ? '#FEE2E2' : blk.blocked ? '#E0E7FF' : '#DCFCE7',
+                              color: blk.dead ? '#991B1B' : blk.blocked ? '#3730A3' : '#166534',
+                            }}>
+                            {blk.dead ? '⚠ Blog rejected' : blk.blocked ? '⏳ Waiting for blog' : '✓ Blog live'}
                           </span>
                         )}
                         {/* Task 2 — any pending post with no review timestamp never
@@ -684,8 +761,14 @@ export function ContentQueue() {
                     )}
 
                     {blk.blocked && (
-                      <p style={{ fontSize: 12, color: '#3730A3', background: '#EEF2FF', border: '1px solid #C7D2FE', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
-                        {BLOG_WAIT_MESSAGE}
+                      <p style={{
+                        fontSize: 12,
+                        color: blk.dead ? '#991B1B' : '#3730A3',
+                        background: blk.dead ? '#FEF2F2' : '#EEF2FF',
+                        border: `1px solid ${blk.dead ? '#FECACA' : '#C7D2FE'}`,
+                        borderRadius: 6, padding: '8px 10px', marginBottom: 10,
+                      }}>
+                        {blk.dead ? BLOG_REJECTED_MESSAGE : BLOG_WAIT_MESSAGE}
                       </p>
                     )}
 
@@ -710,8 +793,9 @@ export function ContentQueue() {
                         </div>
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                           <button className="btn btn-primary btn-sm" style={{ flex: 1 }} disabled={blk.blocked}
-                            title={blk.blocked ? BLOG_WAIT_MESSAGE : undefined} onClick={() => approve(item)}>
-                            {blk.blocked ? 'Waiting for blog' : 'Approve & schedule'}
+                            title={blk.dead ? BLOG_REJECTED_MESSAGE : blk.blocked ? BLOG_WAIT_MESSAGE : undefined}
+                            onClick={() => approve(item)}>
+                            {blk.dead ? 'Blog rejected' : blk.blocked ? 'Waiting for blog' : 'Approve & schedule'}
                           </button>
                           <button className="btn btn-ghost btn-sm" onClick={() => { setEditing(item.id); setDraft(item.body) }}>
                             Edit
