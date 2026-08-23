@@ -1671,6 +1671,34 @@ export async function generatePostImage(
     const { error: updErr } = await admin.from('mkt_content_queue').update({ image_url: imageUrl }).eq('id', contentQueueId)
     if (updErr) throw new Error(`writing image_url back to mkt_content_queue failed: ${updErr.message}`)
 
+    // Clear a STALE image-failure flag left by an earlier run (23 Aug 2026).
+    // A post that exhausted its attempts is flagged needs_attention by
+    // flagImageNeedsAttention; if a later run then succeeds, image_url was
+    // updated but the flag and its reason were left behind, so the queue kept
+    // showing "Image failed visual-style compliance: …" on a post that now has
+    // a perfectly compliant image. Confirmed live on Quill post 94688f07,
+    // which was regenerated successfully on 22 Aug (review event verdict
+    // 'pass') yet still read as needs_attention while scheduled to publish.
+    //
+    // Deliberately matched on the exact prefix flagImageNeedsAttention writes,
+    // and scoped with .eq() rather than read-then-write: a post flagged by the
+    // TEXT review gate ("repeat topic", "missing disclaimer: … without a cited
+    // source") must keep that flag — those are unrelated to the image and a
+    // human still has to act on them. Clearing them here would silently
+    // dismiss a real content-compliance catch.
+    const { data: cleared, error: clearErr } = await admin
+      .from('mkt_content_queue')
+      .update({ review_status: 'passed', review_reason: null })
+      .eq('id', contentQueueId)
+      .eq('review_status', 'needs_attention')
+      .like('review_reason', 'Image failed visual-style compliance:%')
+      .select('id')
+    if (clearErr) {
+      console.error(`[image] ${client.name}: could not clear stale image-failure flag for ${contentQueueId} — ${clearErr.message}`)
+    } else if (cleared?.length) {
+      console.log(`[image] ${client.name}: cleared stale image-failure flag for ${contentQueueId} — image now compliant`)
+    }
+
     console.log(`[image] ${client.name}: image generated for ${contentQueueId}`)
   } catch (e) {
     const msg = String((e as Error)?.message ?? e)
