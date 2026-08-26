@@ -204,6 +204,51 @@ function bannedPhraseViolation(client: Record<string, any>, body: string): strin
   return null
 }
 
+function isOuay(client: Record<string, any>): boolean {
+  const slug = String(client.slug || '').toLowerCase()
+  const name = String(client.name || '').toLowerCase()
+  return slug === 'ouay' || name.includes('once upon a you')
+}
+
+// Deterministic backstop (26 Aug 2026) — OUAY's illustrations are 100%
+// AI-generated from a customer's photo, not drawn by a person. Content
+// claiming otherwise ("illustrator", "hand-drawn", "hand-drawing") has been
+// generated and caught TWICE despite the master_prompt already telling the
+// model not to; OUAY's master_prompt has now been corrected with an
+// explicit HARD RULE section, but prompt-only reliance has already failed
+// twice, so this backstop does not trust instruction-following a third
+// time — same escalation as personalFabricationViolation below, once for
+// this brand's own recurring incident. Unlike that check, there is no
+// "grounded in real events" exception to weigh: there is no context in
+// which this claim is ever true for OUAY, so any match is a violation.
+// Deliberately does NOT match the bare stem "illustrat*": OUAY's own
+// master_prompt legitimately and correctly describes the AI-generated
+// artwork as "photo-matched illustrations" — that noun is accurate and
+// approved. What is banned is a claim that a PERSON produced them: the role
+// noun ("illustrator(s)") and the human-attribution phrase ("illustrated
+// by"), not the plain product noun.
+const OUAY_ILLUSTRATOR_PATTERNS: { label: string; pattern: RegExp }[] = [
+  { label: 'illustrator claim', pattern: /\billustrators?\b/i },
+  { label: 'illustrator claim', pattern: /\billustrated by\b/i },
+  { label: 'hand-illustrated claim', pattern: /\bhand[\s-]?illustrat\w*\b/i },
+  // hand-drawn, hand-drawing, hand drawn, hand drawing, handdrawn,
+  // handdrawing, hand-drew, hand drew — hyphen/space between "hand" and the
+  // draw-verb is optional so both spellings and no separator all match.
+  { label: 'hand-drawn/hand-drawing claim', pattern: /\bhand[\s-]?(?:drawn|drawing|draws?|drew)\b/i },
+  // Same claim, reversed word order — "drawn/drawing/drew ... by hand".
+  { label: 'hand-drawn/hand-drawing claim', pattern: /\bdraw\w* by hand\b/i },
+  { label: 'hand-drawn/hand-drawing claim', pattern: /\bdrew by hand\b/i },
+]
+
+function ouayIllustratorClaimViolation(client: Record<string, any>, body: string): string | null {
+  if (!isOuay(client)) return null
+  for (const { label, pattern } of OUAY_ILLUSTRATOR_PATTERNS) {
+    const match = body.match(pattern)
+    if (match) return `banned phrase — ${label} (matched "${match[0]}")`
+  }
+  return null
+}
+
 // ── Layer 1: deterministic content rules ────────────────────────────────────
 // Returns the specific rule broken, or null if clean.
 export function contentRuleViolation(body: string): string | null {
@@ -303,6 +348,9 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
 
   const bannedPhrase = bannedPhraseViolation(client, body)
   if (bannedPhrase) return { pass: false, reason: bannedPhrase }
+
+  const ouayIllustratorClaim = ouayIllustratorClaimViolation(client, body)
+  if (ouayIllustratorClaim) return { pass: false, reason: ouayIllustratorClaim }
 
   const personalFabrication = personalFabricationViolation(client, body)
   if (personalFabrication) return { pass: false, reason: personalFabrication }
