@@ -1,0 +1,33 @@
+-- =============================================================================
+-- 20260826130000_document_daily_status_30min_cron.sql
+--
+-- Documentation only — no schema/data change. Records a pg_cron job that
+-- already exists live (jobid 39, name "generate-daily-status",
+-- schedule '*/30 * * * *') but was never created by any committed migration
+-- — a real gap between this repo's history and the live database found while
+-- investigating the 33-error spike of 25 Aug 2026 (see
+-- supabase/functions/generate-daily-status/index.ts's throttle comment for
+-- the full incident writeup).
+--
+-- 48_daily_status_cron.sql documents ONE call/day (07:30, via the shared
+-- "morning-digest" job). Job 39 is a SEPARATE, additional job calling the
+-- same function every 30 minutes — 47 extra calls/day this repo's own
+-- migration history gives no account of. It has been running successfully
+-- since at least 14 Aug 2026 (582 real runs, 581 succeeded at the pg_cron
+-- level) with no apparent issue until 25 Aug, when the account's Anthropic
+-- usage cap turned every one of those 48 daily calls' summary-generation
+-- step into a logged error instead of the expected 1.
+--
+-- Deliberately NOT unscheduling it here: 12 days of stable, successful runs
+-- and refresh-status.js's own "so Quill can refresh without waiting for the
+-- morning cron" framing suggest SOME intraday-freshness need exists, and
+-- this repo's migration history has no record of who added it or why —
+-- removing working infrastructure on a guess is worse than leaving it. The
+-- actual fix for the error volume this caused is in generate-daily-status/
+-- index.ts (throttles the expensive Anthropic summary call to once per UK
+-- day; the cheap, real rest of the status file still refreshes every run).
+--
+-- If job 39 is later found to be unwanted, drop it explicitly:
+--   select cron.unschedule(39);
+-- =============================================================================
+select 1; -- no-op: this migration exists to document, not to change, cron.job

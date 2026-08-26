@@ -414,33 +414,88 @@ serve(async (req) => {
       crhq_scrape_status,
       brands_with_no_content_this_week,
       summary: null as string | null,
+      // UK date (YYYY-MM-DD) the current `summary` text was actually
+      // generated on — see the throttle below.
+      summary_date: null as string | null,
     }
 
-    // Fresh, factual pipeline summary for Quill (claude-haiku-4-5) — built
-    // from a compact snapshot (counts and per-brand stats only, never full
-    // post copy). Best-effort: a failure here must never block the rest of
-    // the status file from being written.
+    // Throttle (26 Aug 2026 incident) — this function is called every 30
+    // minutes (cron job 39, "generate-daily-status", *_/30 * * * *_ —
+    // separate from and in addition to the once-daily 07:30 morning-digest
+    // call in 48_daily_status_cron.sql) but a fresh AI paragraph is only
+    // ever useful once a day: the underlying numbers it summarises don't
+    // meaningfully change run-to-run within the same day, yet every run
+    // was calling claude-haiku-4-5 again regardless. On 25 Aug the account's
+    // Anthropic usage cap was hit — one real, single cause — and because
+    // this function alone runs 48x/day, that ONE cap produced 33
+    // "summary generation failed" rows in edge_function_errors in a single
+    // day (vs. crhq-nightly-content's 1, which only runs once nightly),
+    // reading as a 33-error spike when it was one root cause amplified
+    // 33-48x by call frequency. Deliberately NOT touching the every-30-min
+    // schedule itself here — the rest of this function's output (scheduled
+    // posts, pending approvals, errors, etc.) is genuinely cheap and may be
+    // relied on for intraday freshness; only the expensive, rarely-changing
+    // AI paragraph is throttled.
+    //
+    // Reads the file this same run is about to overwrite, so "already
+    // generated today" survives across runs without a new table. Best-effort
+    // and fails open to "regenerate" — a read error must never turn into a
+    // silently stale summary that can never refresh again.
+    let previousSummary: string | null = null
+    let previousSummaryDate: string | null = null
     try {
-      status.summary = await generateSummary({
-        scheduled_today_count: status.scheduled_today.length,
-        pending_approval_count: status.pending_approval.length,
-        rejected_last_24h_count: status.rejected_last_24h.length,
-        edge_function_errors_last_24h: status.edge_function_errors_last_24h.map((e: Record<string, any>) => ({ function_name: e.function_name, message: String(e.error_message || '').slice(0, 150) })),
-        brand_counts: status.brand_counts,
-        blogs_pending_approval_count: status.blogs_pending_approval.length,
-        blogs_published_last_7d_count: status.blogs_published_last_7d.length,
-        blog_dependent_posts_blocked: status.blog_dependent_posts_blocked,
-        content_quality: status.content_quality,
-        crhq_scrape_status: status.crhq_scrape_status,
-        brands_with_no_content_this_week: status.brands_with_no_content_this_week,
-      }) || null
+      const { data: existing } = await admin.storage.from(BUCKET).download(FILE)
+      if (existing) {
+        const prev = JSON.parse(await existing.text())
+        previousSummary = typeof prev.summary === 'string' ? prev.summary : null
+        previousSummaryDate = typeof prev.summary_date === 'string' ? prev.summary_date : null
+      }
     } catch (e) {
-      const msg = String((e as Error)?.message ?? e)
-      console.error(`[generate-daily-status] summary generation failed: ${msg}`)
+      console.error(`[generate-daily-status] could not read previous ${FILE} for summary throttle: ${String((e as Error)?.message ?? e)}`)
+    }
+
+    if (previousSummary && previousSummaryDate === todayStr) {
+      // Already generated once today — carry it forward verbatim rather
+      // than spending another Anthropic call (and, during an outage like
+      // this one, another failed one) for text that would barely differ.
+      status.summary = previousSummary
+      status.summary_date = previousSummaryDate
+      console.log(`[generate-daily-status] summary reused from earlier today (${previousSummaryDate}) — not regenerated`)
+    } else {
+      // Fresh, factual pipeline summary for Quill (claude-haiku-4-5) — built
+      // from a compact snapshot (counts and per-brand stats only, never full
+      // post copy). Best-effort: a failure here must never block the rest of
+      // the status file from being written.
       try {
-        await admin.from('edge_function_errors').insert({ function_name: 'generate-daily-status', error_message: `summary generation failed: ${msg}` })
-      } catch (logErr) {
-        console.error(`[generate-daily-status] failed to write edge_function_errors: ${String((logErr as Error)?.message ?? logErr)}`)
+        status.summary = await generateSummary({
+          scheduled_today_count: status.scheduled_today.length,
+          pending_approval_count: status.pending_approval.length,
+          rejected_last_24h_count: status.rejected_last_24h.length,
+          edge_function_errors_last_24h: status.edge_function_errors_last_24h.map((e: Record<string, any>) => ({ function_name: e.function_name, message: String(e.error_message || '').slice(0, 150) })),
+          brand_counts: status.brand_counts,
+          blogs_pending_approval_count: status.blogs_pending_approval.length,
+          blogs_published_last_7d_count: status.blogs_published_last_7d.length,
+          blog_dependent_posts_blocked: status.blog_dependent_posts_blocked,
+          content_quality: status.content_quality,
+          crhq_scrape_status: status.crhq_scrape_status,
+          brands_with_no_content_this_week: status.brands_with_no_content_this_week,
+        }) || null
+        status.summary_date = status.summary ? todayStr : null
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e)
+        console.error(`[generate-daily-status] summary generation failed: ${msg}`)
+        try {
+          await admin.from('edge_function_errors').insert({ function_name: 'generate-daily-status', error_message: `summary generation failed: ${msg}` })
+        } catch (logErr) {
+          console.error(`[generate-daily-status] failed to write edge_function_errors: ${String((logErr as Error)?.message ?? logErr)}`)
+        }
+        // Show yesterday's real summary rather than nothing — still clearly
+        // stale via summary_date, which the frontend/digest can compare
+        // against todayStr, but a stale factual paragraph beats a blank one.
+        if (previousSummary) {
+          status.summary = previousSummary
+          status.summary_date = previousSummaryDate
+        }
       }
     }
 
