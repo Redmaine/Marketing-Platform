@@ -1112,8 +1112,8 @@ function competitionReality(o) {
 
 function card(o, i) {
   const totalScore = typeof o.total_score === 'number' ? o.total_score : null
-  // Table, not flexbox — same fix as competitionReality() and prospectCard()
-  // above, same bug: a flex:1 title next to a white-space:nowrap badge can
+  // Table, not flexbox — same fix as competitionReality() above, same bug:
+  // a flex:1 title next to a white-space:nowrap badge can
   // get squeezed to a razor-thin width in Outlook/mobile mail clients,
   // producing the vertical, one-letter-per-line rendering.
   const header = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:14px">
@@ -1233,45 +1233,6 @@ function legislationCard(o, i) {
   </div>`
 }
 
-// ── YCA Prospects card — Section B's own card, distinct from replicateCard
-// (different fields: trade/incorporated/signal/why_yca vs what_they_sell/
-// vulnerability/how_to_beat_them/effort). Prospects are also inserted
-// straight into outreach_prospects (see insertProspects) — this card is
-// purely for visibility in the Section B email, not the only place they end
-// up.
-function prospectCard(o, i) {
-  const titleHtml = o.website
-    ? `<a href="${esc(o.website)}" style="color:#111827;text-decoration:none">${esc(o.name)}</a>`
-    : esc(o.name)
-  const titleCell = `<div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4">${i + 1}. ${titleHtml}</div>`
-  // Table, not flexbox — same fix as competitionReality() above, same bug.
-  // display:flex has no support in Outlook and is inconsistent across mobile
-  // mail clients; a flex:1 title next to a white-space:nowrap badge can get
-  // squeezed to a razor-thin width there, and once a client can't fit even
-  // one word it falls back to breaking between every character — the
-  // reported vertical, one-letter-per-line rendering. width="1" on the badge
-  // <td> gives that column only the minimum width its non-wrapping content
-  // needs and lets the title column take the rest, with no way to be
-  // squeezed. Only wrapped in the table when a badge actually exists (o.trade)
-  // — the title alone has no sibling to be squeezed by.
-  const header = o.trade
-    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:4px">
-      <tr>
-        <td style="vertical-align:top">${titleCell}</td>
-        <td width="1" style="vertical-align:top;padding-left:12px;white-space:nowrap"><span style="display:inline-block;background:#f3f4f6;color:#6b7280;font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(o.trade)}</span></td>
-      </tr>
-    </table>`
-    : `<div style="margin-bottom:4px">${titleCell}</div>`
-  return `
-  <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:24px;margin-bottom:20px">
-    ${header}
-    ${o.website ? `<div style="font-size:12px;color:#6b7280;font-family:sans-serif;margin-bottom:12px;word-break:break-all">${esc(o.website)}</div>` : ''}
-    ${field('Incorporated', o.incorporated)}
-    ${field('Signal', o.signal)}
-    ${field('Why YCA', o.why_yca)}
-  </div>`
-}
-
 // Regulatory-driven opportunity card — a legislation change that cleared the
 // full buildability bar and 8-criteria scoring, so it belongs with the scored
 // opportunities rather than in the informational watch list. Reuses Section
@@ -1293,16 +1254,22 @@ function regulatoryOpportunityCard(o, i) {
 // Prospects still render an explicit "nothing today" line when empty, so a
 // quiet day still reads as "it ran and checked". Legislation deliberately
 // does NOT: see the omission note on legislationSection below.
+//
+// Reduced to a count-only line (26 Aug 2026) — this used to render a full
+// card per prospect (name, trade, website, incorporated date, signal, why
+// YCA) via prospectCard(), which had a recurring Outlook/mobile vertical
+// one-letter-per-line rendering bug that was "fixed" once (8e29bee) and kept
+// recurring. Per-entry detail here also had no review value: every prospect
+// is already auto-inserted into outreach_prospects (see insertProspects)
+// before this email is even built, so this section was never the place a
+// prospect got acted on — the outreach platform's own pipeline is. A count
+// is the only thing worth showing; prospectCard() has been removed entirely
+// rather than patched again, so there is no per-entry markup left to break.
 function buildProspectsLegislationEmail(prospects, legislationItems, dateStr, opts = {}) {
   const banner = opts.partial ? partialResultsBanner('B', opts.elapsedMs) : ''
   const regulatoryOpportunities = opts.regulatoryOpportunities ?? []
   const prospectsSection = prospects.length
-    ? `
-  <div style="margin-bottom:20px">
-    <div style="font-size:20px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">YCA Prospects</div>
-    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${prospects.length} recently started UK trade business${prospects.length === 1 ? '' : 'es'} with no software in place — also added to the outreach pipeline</div>
-    ${prospects.map(prospectCard).join('')}
-  </div>`
+    ? `<div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${prospects.length} new prospect${prospects.length === 1 ? '' : 's'} added to outreach today.</div>`
     : `<div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">No new YCA prospects found today.</div>`
 
   // Scored opportunities that happen to be driven by a regulatory change.
