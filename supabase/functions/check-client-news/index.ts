@@ -22,6 +22,25 @@ type Admin = any
 
 const MAX_NEWS_POSTS_PER_CLIENT_PER_DAY = 2
 const KEYWORD_SCORE_THRESHOLD = 3
+// Real gap fixed (26 Aug 2026, Anthropic spend audit) — the loop below used
+// to break ONLY on dailyCount >= MAX_NEWS_POSTS_PER_CLIENT_PER_DAY, and
+// dailyCount only increments on a successful, warranting post (see
+// `if (!result?.warrants_post...) continue` — every non-warranting or
+// failed assessment call left dailyCount untouched and the loop kept going).
+// A busy news day with many keyword-matched but non-post-worthy headlines
+// could call Anthropic once per headline, completely unbounded — capping
+// successes was not capping cost.
+//
+// This caps ATTEMPTS instead — every call to callAnthropicStructured below,
+// whether or not it results in a post — at 5x the success target: generous
+// enough that a real day (mixed relevant/irrelevant headlines) can still
+// find its 2 warranting posts, while giving a hard, real ceiling on a
+// genuinely noisy day. In-run only, not a persistent cross-run counter —
+// this function is cron-only, once/day (see the file header and
+// 25_check_client_news_cron.sql), so the real risk is entirely WITHIN one
+// run's headline loop, not across separate invocations the way ai-proxy's
+// caps had to be.
+const MAX_NEWS_ASSESS_ATTEMPTS_PER_CLIENT_PER_DAY = 10
 
 // Hardcoded per-industry RSS feed. Falls back to BBC Business for anything
 // not explicitly listed.
@@ -130,11 +149,19 @@ serve(async (req) => {
         if (scored.length === 0) continue
 
         let dailyCount = await todaysNewsPostCount(admin, client.id)
+        let assessAttempts = 0
         const connected: string[] = client.connected_platforms?.length ? client.connected_platforms : ['facebook']
         const platform = connected[0]
 
         for (const { h } of scored) {
           if (dailyCount >= MAX_NEWS_POSTS_PER_CLIENT_PER_DAY) break
+          // The real fix: checked BEFORE the call, so the cap bounds attempts
+          // regardless of outcome — see the constant's own comment above.
+          if (assessAttempts >= MAX_NEWS_ASSESS_ATTEMPTS_PER_CLIENT_PER_DAY) {
+            console.log(`[check-client-news] ${client.name}: reached ${MAX_NEWS_ASSESS_ATTEMPTS_PER_CLIENT_PER_DAY} assessment attempts for today (${scored.length - assessAttempts} keyword-matched headline(s) left unassessed) — stopping`)
+            break
+          }
+          assessAttempts++
 
           const system = buildSystemPrompt(client)
           const userMessage = [
