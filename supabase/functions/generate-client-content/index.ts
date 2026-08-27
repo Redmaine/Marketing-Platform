@@ -19,10 +19,20 @@
 // midnight-cron header for why generate-content, the admin-gated function,
 // was never an option here).
 //
+// checkCronAuth added (27 Aug 2026, header-fixes audit) — this was the one
+// function in the checkCronAuth family with no code-level gate at all,
+// relying solely on the platform's verify_jwt:true. That only proves "some
+// valid signed JWT was presented" — the anon key is itself a valid JWT by
+// design, so anyone holding the (public, client-side) anon key could invoke
+// this and trigger real AI content generation. Same pattern as every other
+// cron-only function in this repo (see check-client-news, midnight-cron,
+// etc.) — checked first, before any other work.
+//
 // Deploy:  supabase functions deploy generate-client-content
 // Secrets (vault): ANTHROPIC_API_KEY.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
+import { checkCronAuth } from '../_shared/cronAuth.ts'
 import { sundayOfWeek } from '../_shared/generate.ts'
 import { ensureWeeklyBlog } from '../_shared/blog.ts'
 import { fillClientGap } from '../_shared/fill.ts'
@@ -151,6 +161,9 @@ function applySeasonalPosting(client: Record<string, unknown>, now: Date): { cli
 }
 
 serve(async (req) => {
+  const auth = await checkCronAuth(req, 'generate-client-content')
+  if (!auth.authorised) return auth.response!
+
   const started = Date.now()
   const errors: string[] = []
   const notes: string[] = []
