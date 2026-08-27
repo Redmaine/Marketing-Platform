@@ -94,6 +94,18 @@ serve(async (req) => {
     // empty array, so a total loss of database access was presented to the
     // reader as a calm, factual "nothing to do today".
     //
+    // UPDATE (27 Aug 2026, later same day) — the underlying fault is now
+    // identified: PostgREST rejecting the token with PGRST303 ("JWT issued
+    // at future"), an intermittent clock desync between Supabase's own
+    // GoTrue and PostgREST services, not anything in our code or config. It
+    // recurred hours later on a completely different token type (a user's
+    // freshly-issued session token via AuthContext.jsx, not this function's
+    // service-role token), confirming it's platform-wide, not specific to
+    // this credential or this function. Reported to Supabase support with
+    // both occurrences as evidence — see AuthContext.jsx's note for the full
+    // writeup. This fail-loudly guard stays regardless of how that ticket
+    // resolves — a failed query must never render as a trusted zero.
+    //
     // A count derived from a failed query is not a zero, it is an unknown, and
     // the two must never render the same. Every query feeding this digest is
     // now checked before anything is rendered: if any of them failed, the
