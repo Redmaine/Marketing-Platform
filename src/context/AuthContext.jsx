@@ -13,7 +13,14 @@ export function AuthProvider({ children }) {
     setUser(u)
     if (u) {
       // mkt_is_admin() reads the agency admin list under RLS-safe SECURITY DEFINER.
-      const { data } = await supabase.rpc('mkt_is_admin')
+      // Logged on error (27 Aug 2026) — this call failing (an expired/invalid
+      // token, a network error, anything) used to be indistinguishable from a
+      // real "not an admin" result: data comes back null either way, so a
+      // signed-in admin landed on the agency-view gate with zero trace of why.
+      const { data, error } = await supabase.rpc('mkt_is_admin')
+      if (error) {
+        console.error(`[AuthContext] mkt_is_admin RPC failed for ${u.email}: ${error.message} (code: ${error.code ?? 'none'})`)
+      }
       setIsAdmin(data === true)
     } else {
       setIsAdmin(false)
