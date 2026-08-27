@@ -111,46 +111,52 @@ Then analyse everything against the competitor-research-and-scoring process abov
 
 After your opportunity analysis, add a separate section titled "BUSINESSES TO REPLICATE".
 
-This section has exactly TWO valid shapes. Every entry must fit cleanly into one of them. If a finding fits neither — or you have to stretch it to make it fit — drop it. There is no third category, and "interesting business" is not a category.
+Rebuilt 26 Aug 2026 to work in evidence-first order: find real, already-trading UK businesses with hard proof of traction FIRST, then evaluate each one — never start from a business idea and go looking for someone doing it. That backwards order is what produced this section's past failures: plausible-sounding ideas dressed up with a thin competitor check, not real businesses Adrian could act on.
 
-CATEGORY A — a foreign business with proven demand and no UK equivalent
-A real, named, currently-trading business operating in another market (US, Australia, Canada, elsewhere) with hard evidence of traction, AND no meaningful UK-native equivalent serving the same need.
-The UK-competitor check is a gate you run BEFORE deciding to include it, not a sentence you write afterwards to justify a decision you already made. Search explicitly for UK players in that exact space: the obvious UK brand names, "UK alternative to [name]", the category plus "UK". If the space is already served in the UK by anyone credible, DROP the entry. Do not include it anyway with a note acknowledging some UK competition exists — that is precisely the failure this section keeps producing.
+THE EVIDENCE BAR — every candidate must clear ONE of these before you spend any more time on it:
+- Companies House filed accounts showing turnover or profit (small company disclosure).
+- Sustained review volume: 200+ genuine reviews spanning at least 2 years on Trustpilot, Google, or an industry-specific platform.
+- Active hiring: real job postings live right now.
+- Documented growth: LinkedIn headcount growth, press coverage, or an industry award/nomination.
+A business with no verifiable signal is discarded, not included with a caveat.
 
-CATEGORY B — a UK business with proven demand and a specific, defensible edge
-A real, named, currently-trading UK business with hard evidence of demand, where you can state a SPECIFIC, evidenced edge over what already exists: cheaper (name the actual price gap), faster (name what's slow about the alternative), or better (name the specific missing or weak feature).
-A crowded market is not a reason to drop this. Adrian does not require an empty space — good, well-reviewed competitors existing is fine and expected. What is NOT fine is an edge that can't survive contact with those competitors: "their product could be better", "the UX is dated", "no AI integration", "more modern", "more UK-focused" are not edges, they are the absence of one. A real edge is stated specifically enough that a competitor could be shown it and would have to concede the point — a named price, a named missing feature, a named speed difference — not a vibe. If the best you can manage after finding the real competitors is that the whole space feels a bit tired, drop it.
+ADRIAN'S THREE QUESTIONS — every surviving candidate must answer all three with a concrete, evidenced field, not prose colour:
+- REPLICATE: the exact mechanism — the specific customer and the actual differentiator, not a category description.
+- IMPROVE: a specific, evidenced gap — a real review complaint, a missing feature, a price gap, or a named UX problem. "We could do it better" is not an answer. Before finalising it, check whether your own cited evidence names a competitor that already offers the thing you're proposing — if it does, the gap is disproved, not supported. Drop or rewrite rather than ship it.
+- LOW CAPITAL: the business model must be SaaS, service, marketplace, or content/subscription — never anything requiring inventory, manufacturing, or meaningful working capital before first revenue. State why THIS business's actual model qualifies, don't just assert it.
 
-HARD REQUIREMENTS FOR BOTH CATEGORIES
-- A named, real, currently-operating business with a working URL you found via search. Never a category, never a whole market — "CV builders are weak" is not a finding — and never a hypothetical.
-- Evidence for the demand claim, cited. State the actual metric and where it came from: monthly traffic estimate, review count, funding raised, app-store rating with volume, published or reported revenue. Asserting something is "clearly popular" with nothing behind it does not qualify.
-- A competitor check that searches the SOLUTION, not just the subject. Before naming any specific competitor to rule in or out, search broadly for what the finding actually proposes solving or building — the problem category itself ("UK allergen labelling software", "UK recipe costing app", "UK CV builder"), not just obvious rivals of the one business you already have in mind. Naming two or three competitors you already knew about and moving on is a spot-check, not a search, and it is exactly how this scanner has missed real matches before (see the worked rejection below). Only once that broader search is done do you name specific competitors, engage with the closest matches directly, and decide whether the gap or the edge survives.
-- ONE IDEA, ONE ENTRY. If two candidate entries would lead to building the same underlying product, they are one finding aimed at two different incumbents. Keep the strongest and drop the other. Never use near-identical competitors to pad towards a quota.
+HARD REQUIREMENTS
+- A named, real, currently-trading UK business with a working URL you found via search. Never a category, never a hypothetical.
+- The evidence signal above must be a real figure, count, or fact you actually found via search, with its source — not an assertion that it's "popular" or "growing".
+- ONE IDEA, ONE ENTRY. If two candidates are the same underlying business model aimed at different incumbents, keep the strongest and drop the other.
 
 DO THE WORK BEFORE YOU JUDGE
-These gates are a filter applied to real research, not a reason to skip the research. Run the discovery searches, find candidate businesses, and run the competitor checks on them. Only then apply the gates. Concluding "nothing qualifies" without having searched is not a strict answer, it is an empty one — and it is just as useless to Adrian as the padded list it replaced. Expect to examine several candidates and discard most of them.
+This bar is a filter applied to real research, not a reason to skip the research. Search broadly for real candidates, check each one against the evidence bar, and only then evaluate the survivors against the three questions above. Concluding "nothing qualifies" without having searched is not a strict answer, it is an empty one. Expect to examine several candidates and discard most of them.
 
 One rigorously evidenced entry beats three thin ones, and an honest empty section beats a padded list. But an empty section arrived at without searching is a failure, not a high standard.`
-
-// The competitor-check contract, defined once and interpolated into
-// RESEARCH_USER_A below. Extracted 27 Aug 2026 so the temporary
-// competitor-check harness exercises the EXACT instruction text the real run
-// uses — a test against a paraphrase of the prompt proves nothing about the
-// prompt.
-export const COMPETITOR_CHECK_SPEC = `- competitor_check: {"solution_searches":{"category":"...","segment":"...","capability":"..."},"searched":["every other search you ran, including the named-competitor ones"],"found":[{"name":"...","url":"...","why_not_equivalent":"..."}],"gap_survives":true|false,"reasoning":"..."}
-    solution_searches is THREE searches you actually ran for the SOLUTION itself, before naming anyone. They come FIRST, before any named-competitor search, and they attack the same solution from three different angles — because the thing that keeps being missed is never missing from the market, it is missing from ONE phrasing of the query:
-      category   — the bare solution category plus UK. e.g. "UK meal plan software"
-      segment    — the same solution, named for the CUSTOMER it actually serves. e.g. "meal planning software for personal trainers UK"
-      capability — the specific feature, data source or integration that defines THIS finding. e.g. "meal planner Tesco Sainsbury's basket integration UK"
-    segment and capability must each introduce real words the category search does not contain. Re-running the category query with a synonym is not a second angle. If a finding is "white-label X for Y that does Z", then Y is the segment and Z is the capability — you already have both, use them.
-    Why three: incumbents describe themselves by WHO they serve and WHAT they plug into, not by the generic category an outsider would name them with. A category-only search returns the consumer-facing brands and the market leaders; the direct competitor is usually two words away, under a phrasing only the segment or capability query reaches.
-    found must include whatever those three searches actually returned — including close matches, especially close matches. Ruling out three names you already had in mind is not a competitor check.
-    BUDGET PRIORITY: the three angles come out of the same search budget as everything else, and they outrank named-competitor spot-checks for it. If budget is tight, run all three angles for every entry and reason about the results, rather than running one angle and spending the rest confirming names you already had. searched may legitimately be short — what it must never be is long while solution_searches is thin.`
 
 // Section A — scored opportunities + businesses to replicate. Runs on odd
 // UTC days of the month. Everything below is Section A's own instructions
 // only — the prospects/legislation instructions live in RESEARCH_USER_B.
-const RESEARCH_USER_A = `Your job today is to find SPECIFIC NAMED BUSINESSES making money right now — not categories, not trends, not archetypes. Every opportunity and every business to replicate must be a real named company or seller with a real URL that you have searched for and verified exists.
+//
+// Now a builder rather than a flat string (26 Aug 2026 replicate rebuild) —
+// the replicate section needs its own live exclusion list, injected the same
+// way buildResearchUserB already does for legislation, backed by the same
+// opportunity_scanner_seen_items table rather than the hand-maintained name
+// list further down. That list still exists and still applies (it also
+// covers Adrian's existing portfolio spaces, which are a permanent
+// exclusion, not a "recently sent" one) — this is an addition, not a
+// replacement.
+function buildResearchUserA(recentReplicateNames = []) {
+  const replicateExclusions = recentReplicateNames.length
+    ? `
+ALREADY SURFACED — DO NOT RETURN THESE AGAIN
+The following businesses have already been sent as a "Businesses to Replicate" finding recently. Do not return any of them again, under any name variant:
+${recentReplicateNames.map((n) => `- ${n}`).join('\n')}
+`
+    : ''
+
+  return `Your job today is to find SPECIFIC NAMED BUSINESSES making money right now — not categories, not trends, not archetypes. Every opportunity and every business to replicate must be a real named company or seller with a real URL that you have searched for and verified exists.
 
 EXCLUSION LIST — DO NOT RECOMMEND THESE
 The following businesses have already been featured in recent emails. Do not recommend them, reference them as opportunities, or include them in the Businesses to Replicate section under any circumstances:
@@ -175,7 +181,7 @@ Prioritise finding UK-registered businesses with verifiable UK revenue. Search s
 - UK Shopify stores with strong organic presence
 - US/AU/CA businesses succeeding in a space with no UK equivalent yet
 
-US and Australian businesses are acceptable for the Businesses to Replicate section only if no strong UK equivalent exists. Always prefer a real UK business over a generic US example.
+US and Australian businesses are acceptable for the scored-opportunities section above only, per the "not yet mainstream in the UK" model in your instructions. The Businesses to Replicate section below is UK-only — see its own instructions.
 
 PHASE 1 — NAMED BUSINESS DISCOVERY (do this before anything else)
 
@@ -218,43 +224,48 @@ Output ONLY a JSON array wrapped in a \`\`\`json fenced block. Only include oppo
 
 BUSINESSES TO REPLICATE
 
-Apply the two-category rule from your instructions. Every entry is either Category A (foreign, proven demand, no UK equivalent) or Category B (UK, proven demand, a specific evidenced edge). Anything fitting neither is dropped, not softened into one of them.
+Rebuilt 26 Aug 2026. The old version of this section worked backwards — generate a business idea, then search for competitors to see if it survives. That produced thin, unverifiable findings: an idea dressed up with a plausible-sounding competitor check, not a real business Adrian could act on. This section now works in the opposite direction: find real, already-proven UK businesses FIRST, using hard evidence of traction, THEN evaluate each one. If you catch yourself starting from a product idea and searching for someone doing it, stop — that is the old, broken direction.
+${replicateExclusions}
+PHASE 1 — FIND REAL BUSINESSES WITH PROVEN TRACTION
+Search broadly for real, named, currently-trading UK businesses — SaaS, service, marketplace, content/subscription. Every candidate must clear ONE of these four evidence bars before you spend any more time on it. If you cannot find one of these signals for a candidate, drop it immediately and move to the next one — do not include it with a caveat like "seems to be doing well" or "appears popular":
+- Companies House filed accounts showing turnover or profit (small company disclosure) — search "[business name] Companies House accounts", read the actual filed figures.
+- Sustained review volume: 200+ genuine reviews spanning at least 2 years on Trustpilot, Google, or an industry-specific review platform — search "[business name] Trustpilot reviews" / "[business name] Google reviews".
+- Active hiring: real job postings live right now, indicating real revenue being spent on headcount — search "[business name] jobs" / "[business name] careers hiring".
+- Documented growth: LinkedIn headcount growth, press coverage, or an industry award/nomination — search "[business name] LinkedIn" / "[business name] press" / "[business name] award".
 
-WORKED REJECTIONS — real output from this scanner that should never have shipped. Do not reproduce these, or anything shaped like them:
-- "CVwizard" and "Kickresume" — rejected twice over. First, the claim that no UK-specific CV builder exists is simply false: StandOut CV, ApplyArc and Reed's own CV builder all operate in the UK today, so the Category A gap does not survive a competitor check. Second, the two entries are the same underlying idea — an AI CV builder — aimed at two different incumbents, which is exactly the padding the one-idea-one-entry rule forbids.
-- "LawDepot UK" — rejected because the competitor check was never really run. Rocket Lawyer UK has traded in the UK since 2012 with real traction. Any finding that treats UK online legal documents as an open space has not searched the space at all.
-- "Meez" — the failure this section's search rule exists to stop. The entry proposed allergen-compliant labelling generated from recipe data as a novel UK angle, and its competitor check named Jelly, RecipeCostCalculator.net and Ratatool, ruled all three out, and declared the gap survived. FoodCore, MenuIQ and MenuSano all already do exactly that, all UK-built and UK-priced, and none of the three was even looked at. The check never failed on judgement — it failed because it only ever spot-checked competitors of the named business instead of searching for the SOLUTION ("UK allergen labelling software", "generate allergen labels from recipes UK"), which would have returned all three immediately.
+You must find at least 6-8 real candidate businesses this way, each with one of the four signals above actually found via search, before evaluating any of them in Phase 2.
 
-- "UK white-label meal plan SaaS for personal trainers" — the failure the THREE-ANGLE rule exists to stop, and the most instructive of the four because the category search DID work and the check still shipped. Searching the category ("UK meal plan software") really does return real UK meal-planning products: Meal Matcher, MUNCH, Cherrypick, Kitche. Every one of them is consumer-facing, so a check that stops there can look at them, correctly observe that none is a white-label B2B tool for trainers, rule them out as not equivalent, and conclude the space is open. That is precisely what happened, and it is why this failure is so hard to see from the inside: the category angle does not return nothing, it returns plausible near-misses that are genuinely dismissible, which makes the check feel complete. The angle that kills the finding is the SEGMENT one — "meal planning software for personal trainers UK white label" returns Coachway (UK-built, trainer-facing) along with Foodzilla, Promealplan, Everfit and Nutritio, all doing white-label meal planning for coaches, none of them dismissible. The CAPABILITY angle then adds a third distinct set the other two never surface — "meal planner Tesco Sainsbury's basket integration UK" returns Mealia and Lollipop, both built on exactly the supermarket-basket integration the finding treated as its novel hook. Three angles, three different competitor sets, and no single angle returns all of them.
+PHASE 2 — EVALUATE EACH CANDIDATE AGAINST ADRIAN'S THREE QUESTIONS
+For every candidate that cleared Phase 1, answer all three of these with a concrete evidenced field — not prose colour. A generic or vague answer to any one of them is an automatic drop for that candidate, not a reason to soften the wording:
 
-The lesson across all four is the same: the competitor check IS the work, not a formality to complete after choosing. Search the solution first and from all three angles, engage with whatever the real search turns up, and let it kill entries. The most dangerous finding is the one where the category search honestly returns nothing — that is the shape of both Meez and the meal-plan miss, and it is exactly when the segment and capability angles matter most.
+REPLICATE — the exact mechanism. Who is the actual customer (the specific buyer, not "small businesses" or "consumers")? What specifically do they do — the real differentiator, not a category description. "Meal planning software" is a category. "Auto-generates a week of trainer-branded meal plans from a client's macros and syncs the shopping list to Tesco/Sainsbury's" is a mechanism.
 
-Still applies to every entry here: all three buildability tests from your instructions, the exclusion list above, and Adrian's existing portfolio spaces above. A business that is clearly profitable but needs premises, licensing, headcount or a sales team to replicate must be DROPPED.
+IMPROVE — a specific, evidenced gap. Search the business's own reviews for a real, recurring complaint. Search their pricing page for a stateable price gap against what a comparable tool costs. Search their feature list or help docs for something a real competitor has that they don't. "We could do it better" is not an answer — the gap must be something a person could point to and start building against today.
+    SELF-REFUTATION CHECK — before finalising improve, re-read your own evidence_source. If it names ANY competitor — including one you found purely to source the evidence, not as the main candidate — check whether that competitor already offers the exact thing you are proposing as the gap. If it does, the gap does not survive: either drop the candidate entirely, or find a different, still-genuinely-open gap for it. Do not ship an improve angle whose own cited source describes someone already doing it. Worked example of the failure this check exists to stop: a finding proposed "add Sage accounting-software support" as competitor X's fixable gap, and cited a comparison article as evidence — but that same article named competitor Y as already offering Sage support at a similar price. The finding still shipped the Sage gap as if open. That is exactly backwards: the cited evidence didn't support the gap, it disproved it.
 
-For each entry return:
-- category: exactly "A" or "B"
-- idea_key: short kebab-case slug naming the UNDERLYING product idea, not the company — e.g. "ai-cv-builder", "uk-will-writing", "trade-invoice-app". Two entries may never share one.
+LOW CAPITAL — the business model must be one of: SaaS, service, marketplace, or content/subscription. Explicitly EXCLUDE anything requiring inventory, manufacturing, warehousing, or meaningful working capital before first revenue — this rules out most print-on-demand, dropshipping needing stock financing, and any physical-product business. State WHY this specific business's actual model qualifies as low-capital to replicate — the real mechanism (e.g. "hosted SaaS, no physical component, a first customer can be onboarded with zero inventory"), not an assertion that it's software so it must be low-capital.
+
+Only output a candidate that clears Phase 1's evidence bar AND gets a genuine, specific answer to all three questions above. If you cannot write a real, specific answer to any one of them, drop the candidate — do not include it with a caveat.
+
+For each surviving entry, return:
 - name: actual business name
 - url: real URL verified via search today
-- what_they_sell: what it is, and the actual price point
-- demand_evidence: {"metric":"what you measured — monthly visits / review count / funding raised / app rating and volume / reported revenue","value":"the actual figure","source":"where it came from, with URL"}
-${COMPETITOR_CHECK_SPEC}
-    Category A: gap_survives MUST be true. If a credible UK equivalent exists, drop the entry rather than output it with gap_survives false.
-    Category B: gap_survives may be false — a crowded market is fine. What is recorded here is who genuinely serves these customers, found by real search, so the edge below can be stated against them rather than against a straw man.
-- edge: CATEGORY B ONLY — {"type":"cheaper" | "faster" | "better","what":"the edge in one specific, checkable sentence","evidence":"the real price, the real complaint, the real missing feature, and where you saw it","versus":"the closest real competitors this edge is claimed against, by name — the ones your solution_searches actually surfaced, not weaker ones you picked because they are easier to beat"}. Omit entirely for Category A.
-    "cheaper" must name the actual price gap. "faster" must name what is slow about the alternative. "better" must name the specific missing or weak feature. "more modern", "more UK-focused", "better UX" and "AI-powered" are not edges and will be rejected. If, once the real competitors are on the table, you cannot state an edge that survives being shown to them, drop the entry — that is the correct outcome, not a failure of the run.
-- buildability: {"redmaine_can_build":"...","quill_can_market":"...","one_percent_better":"..."}
+- idea_key: short kebab-case slug for the underlying business MODEL, not the company — e.g. "trainer-meal-plan-saas", "b2b-invoice-chasing-saas". Two entries may never share one — if two candidates are the same underlying model aimed at different incumbents, keep the strongest and drop the other.
+- traction_evidence: {"type":"companies_house"|"reviews"|"hiring"|"growth_signal","detail":"the actual figure, count, or fact found — a real number or real quote, never a description","source_url":"the specific page you found it on"}
+- replicate: {"customer":"the specific real buyer","mechanism":"the actual differentiator — what they specifically do, not a category"}
+- improve: {"gap_type":"review_complaint"|"missing_feature"|"price_gap"|"ux_problem","detail":"the specific gap, named","evidence_source":"the specific review, page, or listing where you found it"}
+- low_capital: {"model":"saas"|"service"|"marketplace"|"content_subscription","why":"the real mechanism that makes THIS business low-capital to replicate, not an assertion"}
+- search_trail: {"discovery_queries":["the real searches that found this business in Phase 1"],"verification_queries":["the real searches that confirmed the evidence and the gap in Phase 2"]}
 - effort: "Low", "Medium", or "High"
 - verdict: "CLONE IT", "WORTH STUDYING", or "LEAVE IT"
 
-Before concluding this section, you must have actually searched: run the solution-category searches first, then name at least the candidate businesses you considered and rejected, in competitor_check.found or in your working, so it is visible that the search happened. An empty section with no evidence of searching is a failed run, not a strict one.
-
-Output as a second JSON array in a \`\`\`replicate fenced block. Maximum 3 entries — a ceiling, not a target. Aim to surface the one or two strongest that genuinely clear the bar.
+Output as a second JSON array in a \`\`\`replicate fenced block. Maximum 3 entries — a ceiling, not a target. Aim to surface the one or two strongest that genuinely clear the bar. Zero is a correct and expected answer on a day when nothing does — an honest empty section beats a padded one.
 
 ---
 
 REPEAT PREVENTION
-Before finalising output, check every business name against the exclusion list. If any match — exactly or approximately — remove and replace. Never output the same named business twice across consecutive emails.`
+Before finalising output, check every business name against the exclusion lists above — the hand-maintained one and the "already surfaced" one. If any match — exactly or approximately — remove and replace. Never output the same named business twice across consecutive emails.`
+}
 
 // Section B — YCA prospects (Companies House intelligence) + UK legislation
 // watch. Runs on even UTC days of the month. Its own intro, not reused from
@@ -395,11 +406,13 @@ function sectionForDate(now) {
   return now.getUTCDate() % 2 === 1 ? 'A' : 'B'
 }
 
-// userPrompt is a builder rather than a string: Section B's prompt now embeds
+// userPrompt is a builder rather than a string: Section B's prompt embeds
 // the live already-sent legislation exclusion list (see buildResearchUserB),
 // so it can only be assembled once that list has been read from the database.
-// Section A's builder ignores its argument — its exclusion list is still the
-// hardcoded one in RESEARCH_USER_A (see the note in the handler).
+// Section A's builder (26 Aug 2026 replicate rebuild) now does the same for
+// the replicate section's live already-surfaced-business exclusion list (see
+// buildResearchUserA) — it still also carries the hand-maintained hardcoded
+// exclusion list further down for the permanent portfolio-space exclusions.
 //
 // Section B raised from 8000/8 to 12000/10: it now has to score
 // regulatory-driven opportunities through the full 8-criteria process on top
@@ -429,16 +442,15 @@ export const SECTION_CONFIG = {
   // section with a mandatory competitor check per entry, on the same 8000 it
   // had before any of that existed. stop_reason is now logged, so if this is
   // still being hit it will say so instead of silently losing a section.
-  // maxUses 16 -> 20 (27 Aug 2026). The three-angle competitor check costs
-  // three searches per replicate entry where the old gate's floor was one, so
-  // at the 2 entries this run typically keeps that is +4 searches. Measured:
-  // the 27 Aug run used 14 of 16, leaving 2 spare — not enough headroom, and a
-  // run that hits the cap mid-check degrades exactly the step this fix exists
-  // to strengthen. 20 is sized to the measured 14 + 4, plus 2 spare. At
-  // Anthropic's $10/1,000 searches and ~15.5 Section A runs a month, the cap
-  // moves this line from at most $2.48/mo to at most $3.10/mo; on measured
-  // usage, $2.17 -> ~$2.79/mo.
-  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 12000, maxUses: 20 },
+  // maxUses 20 -> 30 (26 Aug 2026 replicate rebuild). The old three-angle
+  // competitor check searched around 2 pre-chosen ideas; the new evidence-
+  // first approach has to discover 6-8 real candidate businesses from
+  // scratch, then run a traction-evidence search AND a gap/improve-evidence
+  // search per surviving candidate — materially more search volume for the
+  // same section. 30 is a starting budget, not a measured one; check
+  // web_searches on the first real runs and raise again if it's regularly
+  // hitting the cap before the model finishes evaluating its candidates.
+  A: { buildUserPrompt: buildResearchUserA, maxTokens: 12000, maxUses: 30 },
   B: { buildUserPrompt: buildResearchUserB, maxTokens: 12000, maxUses: 10 },
 }
 
@@ -448,6 +460,11 @@ export const SECTION_CONFIG = {
 // extended: there was no exclusion table anywhere in this codebase.
 
 const SEEN_SECTION_LEGISLATION = 'legislation'
+// 26 Aug 2026 replicate rebuild — same table, same generic loadSeenItems/
+// recordSeenItems/normaliseKey/titlesSimilar infra, just a new section value.
+// opportunity_scanner_seen_items was explicitly built with a free-text
+// `section` column anticipating exactly this (see migration 100's header).
+const SEEN_SECTION_REPLICATE = 'replicate'
 // How far back to consider an item "already reported" — for an item that has
 // only ever been sent ONCE. Legislation has a long shelf life — Making Tax
 // Digital was announced years before its in-force date — so a short window
@@ -660,6 +677,47 @@ async function recordSeenItems(admin, section, items) {
   return { recorded }
 }
 
+// Persists the FULL replicate evidence trail for a run — one row per
+// candidate the model actually examined, kept or dropped, with the real
+// search queries and evidence found. See migration
+// 103_opportunity_scanner_replicate_findings.sql for why this exists: the
+// per-run JSON blob on opportunity_scanner_runs (replicate_dropped) is not
+// queryable per-candidate, which is the exact evidence-gap pattern that
+// already broke diagnosis twice on this scanner (legislation before
+// opportunity_scanner_seen_items existed, this section before search_queries
+// existed). Best-effort per row, same as recordSeenItems — one bad row must
+// never drop the rest.
+async function persistReplicateFindings(admin, runId, findings) {
+  if (!admin || !findings?.length) return { persisted: 0 }
+  let persisted = 0
+
+  for (const f of findings) {
+    const { error } = await admin.from('opportunity_scanner_replicate_findings').insert({
+      run_id: runId,
+      name: isStr(f?.name) ? f.name : '(unnamed)',
+      url: isStr(f?.url) ? f.url : null,
+      idea_key: isStr(f?.idea_key) ? f.idea_key : null,
+      kept: !!f?.kept,
+      drop_reasons: f?.drop_reasons?.length ? f.drop_reasons : null,
+      evidence_type: f?.traction_evidence?.type ?? null,
+      evidence_detail: f?.traction_evidence?.detail ?? null,
+      evidence_source: f?.traction_evidence?.source_url ?? null,
+      replicate: f?.replicate ?? null,
+      improve: f?.improve ?? null,
+      low_capital: f?.low_capital ?? null,
+      discovery_queries: f?.search_trail?.discovery_queries ?? null,
+      verification_queries: f?.search_trail?.verification_queries ?? null,
+    })
+    if (error) {
+      console.error(`[opportunity-scanner-worker-background] replicate finding persist failed for "${f?.name}": ${error.message}`)
+      continue
+    }
+    persisted++
+  }
+
+  return { persisted }
+}
+
 // Streams the response instead of waiting for one final JSON blob, purely
 // so that IF the abort fires, whatever text the model had already produced
 // is still in `accumulated` and can be handed to the caller (via
@@ -835,182 +893,158 @@ export const REPLICATE_MAX = 3
 const isStr = (v) => typeof v === 'string' && v.trim().length > 0
 const isUrl = (v) => isStr(v) && /^https?:\/\/[^\s]+\.[^\s]+/i.test(v.trim())
 
-// Why this exists as CODE and not only as prompt wording: the previous prompt
-// already demanded real named businesses with real URLs and verifiable revenue
-// evidence, and the scanner still shipped CVwizard, Kickresume and LawDepot UK
-// — two of them the same idea aimed at different incumbents, all three with a
-// competitor check that was never really run. Instructions alone demonstrably
-// did not hold. These checks are structural: an entry that does not carry its
-// own evidence cannot reach the email regardless of how convincing its prose is.
+// Why this exists as CODE and not only as prompt wording: instructions alone
+// have not held in the past for this section (see the migration notes on
+// opportunity_scanner_replicate_findings for the section's history). These
+// checks are structural: an entry that does not carry its own evidence
+// cannot reach the email regardless of how convincing its prose is.
 //
-// Deliberately checks for the PRESENCE and SHAPE of evidence, never the truth
-// of it — code cannot know whether Rocket Lawyer UK competes with LawDepot. It
-// can know whether the model recorded searching, what it found, and whether it
-// concluded the gap survived. That is the measure-then-judge split used for the
-// image backstop: the model measures, fixed rules decide.
-const EDGE_TYPES = new Set(['cheaper', 'faster', 'better'])
+// Deliberately checks for the PRESENCE and SHAPE of evidence, never the
+// truth of it — code cannot know whether a Trustpilot count is accurate. It
+// can know whether the model recorded a real evidence type, a real detail,
+// and a real source. That is the measure-then-judge split used everywhere
+// else in this file: the model measures, fixed rules decide.
+const EVIDENCE_TYPES = new Set(['companies_house', 'reviews', 'hiring', 'growth_signal'])
+const GAP_TYPES = new Set(['review_complaint', 'missing_feature', 'price_gap', 'ux_problem'])
+const LOW_CAPITAL_MODELS = new Set(['saas', 'service', 'marketplace', 'content_subscription'])
 
-// The three angles every solution search must cover — see the meal-plan
-// worked rejection in RESEARCH_USER_A, and the note in
-// replicateRejectionReasons, for why one broad query is not enough.
-export const SOLUTION_SEARCH_ANGLES = ['category', 'segment', 'capability']
+// Catches the improve field's equivalent of "more modern" — a whole-string
+// non-answer with no named specific behind it. Same crude, deliberately
+// narrow match as VAGUE_EDGE used to be: it only fires when the phrase IS
+// essentially the whole claim, so a real evidenced sentence that happens to
+// contain the word "better" is not caught by it.
+const VAGUE_IMPROVE = /^(?:we\s+could\s+|you\s+could\s+|it\s+could\s+be\s+|they\s+could\s+)?(?:make\s+it\s+|do\s+it\s+)?(?:better|cheaper|faster|simpler|easier(?:\s+to\s+use)?|more\s+modern|more\s+user[- ]friendly|improved?(?:\s+ux)?)\b[\s.!]*$/i
 
-// Words too common to count as a new angle. "uk" especially: every query in
-// this scanner carries it, so it can never be what distinguishes two of them.
-const SEARCH_STOPWORDS = new Set([
-  'uk', 'the', 'a', 'an', 'and', 'or', 'for', 'of', 'to', 'in', 'on', 'with',
-  'app', 'apps', 'software', 'tool', 'tools', 'platform', 'saas', 'online', 'best', 'top',
-])
+// Catches the low-capital "why" field asserting rather than reasoning — "it's
+// software" restates the model, it doesn't explain why THIS business is
+// low-capital to replicate.
+const VAGUE_LOW_CAPITAL = /^(?:it'?s?\s+|this\s+is\s+)?(?:just\s+)?(?:software|a\s+saas(?:\s+product)?|an?\s+app|digital)\b[\s.!]*$/i
 
-// True when `query` introduces at least one real word that `reference` does
-// not already contain. Deliberately crude — it is not judging search quality,
-// only catching the specific observed failure of submitting the same query
-// under three different angle names. Substring-matched so plurals and simple
-// inflections ("trainer"/"trainers") do not read as new vocabulary.
-function addsVocabulary(query, reference) {
-  const words = (s) => String(s ?? '').toLowerCase().match(/[a-z0-9']+/g) ?? []
-  const ref = words(reference)
-  return words(query).some((w) => (
-    w.length >= 4 && !SEARCH_STOPWORDS.has(w) && !ref.some((r) => r.includes(w) || w.includes(r))
-  ))
-}
-
-// The phrases that, on their own, mean an edge was never actually found — the
-// vocabulary a finding reaches for when the honest answer is "it feels a bit
-// tired". Deliberately matches only when the phrase IS essentially the whole
-// claim, so "cheaper because FoodCore starts at £99/mo and this is £29" is not
-// caught by "more modern" appearing later in the sentence.
-const VAGUE_EDGE = /^(?:it(?:'s| is)\s+|a\s+|more\s+)?(?:more\s+)?(?:modern|modernised|up[- ]to[- ]date|uk[- ]focused|uk[- ]first|user[- ]friendly|intuitive|streamlined|simpler|slicker|cleaner|ai[- ]powered|ai[- ]driven|better\s+ux|better\s+ui|better\s+design|better\s+experience)\b[\s.!]*$/i
-
-export function replicateRejectionReasons(o) {
+export function replicateFindingRejectionReasons(o) {
   if (!o || typeof o !== 'object') return ['not an object']
   const reasons = []
-  const cat = String(o.category ?? '').trim().toUpperCase()
 
-  if (cat !== 'A' && cat !== 'B') reasons.push(`category must be "A" or "B", got ${JSON.stringify(o.category ?? null)}`)
   if (!isStr(o.name)) reasons.push('no business name')
   if (!isUrl(o.url)) reasons.push('no usable URL')
   if (!isStr(o.idea_key)) reasons.push('no idea_key — cannot enforce one-idea-one-entry without it')
 
-  const d = o.demand_evidence
-  if (!d || typeof d !== 'object') reasons.push('no demand_evidence — the "proven demand" claim is unsupported')
-  else {
-    if (!isStr(d.metric)) reasons.push('demand_evidence.metric missing')
-    if (!isStr(d.value)) reasons.push('demand_evidence.value missing — no actual figure')
-    if (!isStr(d.source)) reasons.push('demand_evidence.source missing — figure cited to nothing')
+  const t = o.traction_evidence
+  if (!t || typeof t !== 'object') {
+    reasons.push('no traction_evidence — the evidence-of-traction bar is unsupported')
+  } else {
+    const type = String(t.type ?? '').trim().toLowerCase()
+    if (!EVIDENCE_TYPES.has(type)) reasons.push(`traction_evidence.type must be one of ${[...EVIDENCE_TYPES].join('/')}, got ${JSON.stringify(t.type ?? null)}`)
+    if (!isStr(t.detail)) reasons.push('traction_evidence.detail missing — no actual figure or fact')
+    if (!isUrl(t.source_url)) reasons.push('traction_evidence.source_url missing or not a usable URL — evidence cited to nothing checkable')
   }
 
-  const c = o.competitor_check
-  if (!c || typeof c !== 'object') reasons.push('no competitor_check')
+  const r = o.replicate
+  if (!r || typeof r !== 'object') reasons.push('no replicate — the REPLICATE question was not answered')
   else {
-    if (!Array.isArray(c.searched) || !c.searched.some(isStr)) {
-      reasons.push('competitor_check.searched is empty — the check was not actually run')
+    if (!isStr(r.customer)) reasons.push('replicate.customer missing — who the actual buyer is was not named')
+    if (!isStr(r.mechanism)) reasons.push('replicate.mechanism missing — the actual differentiator was not stated')
+  }
+
+  const im = o.improve
+  if (!im || typeof im !== 'object') reasons.push('no improve — the IMPROVE question was not answered')
+  else {
+    const gapType = String(im.gap_type ?? '').trim().toLowerCase()
+    if (!GAP_TYPES.has(gapType)) reasons.push(`improve.gap_type must be one of ${[...GAP_TYPES].join('/')}, got ${JSON.stringify(im.gap_type ?? null)}`)
+    if (!isStr(im.detail)) reasons.push('improve.detail missing')
+    else if (VAGUE_IMPROVE.test(im.detail)) reasons.push(`improve.detail is a vague claim, not a specific evidenced gap: "${im.detail}"`)
+    if (!isStr(im.evidence_source)) reasons.push('improve.evidence_source missing — the gap is asserted, not evidenced')
+  }
+
+  const lc = o.low_capital
+  if (!lc || typeof lc !== 'object') reasons.push('no low_capital — the LOW CAPITAL question was not answered')
+  else {
+    const model = String(lc.model ?? '').trim().toLowerCase()
+    if (!LOW_CAPITAL_MODELS.has(model)) reasons.push(`low_capital.model must be one of ${[...LOW_CAPITAL_MODELS].join('/')}, got ${JSON.stringify(lc.model ?? null)}`)
+    if (!isStr(lc.why)) reasons.push('low_capital.why missing')
+    else if (VAGUE_LOW_CAPITAL.test(lc.why)) reasons.push(`low_capital.why asserts rather than reasons: "${lc.why}"`)
+  }
+
+  const st = o.search_trail
+  if (!st || typeof st !== 'object') {
+    reasons.push('no search_trail — the discovery/verification queries were not recorded')
+  } else {
+    if (!Array.isArray(st.discovery_queries) || !st.discovery_queries.some(isStr)) {
+      reasons.push('search_trail.discovery_queries is empty — no evidence the candidate was actually found via search')
     }
-    // The Meez failure: a competitor check made entirely of named spot-checks
-    // never searches the solution category, so the three real UK matches were
-    // never seen at all. Code cannot tell a good search from a bad one, but it
-    // can tell whether the broad search was recorded as having happened.
-    //
-    // The 27 Aug meal-plan failure then showed that "the category was searched"
-    // is itself too weak a gate. That check DID search its category — "UK meal
-    // plan software" — and the category honestly returns consumer apps, so it
-    // concluded the space was open while Meal Matcher, Coachway, MUNCH and
-    // Cherrypick all traded in it. They were reachable only by the customer
-    // segment ("for personal trainers") or the defining capability ("Tesco /
-    // Sainsbury's basket integration"), because that is how they describe
-    // themselves. One angle is not a search of the solution, it is a search of
-    // one phrasing of the solution.
-    //
-    // So the shape is now enforced, the same way edge's specificity is: three
-    // named angles, each of which must contribute vocabulary the category
-    // angle does not already contain. Code still cannot judge whether a query
-    // was any good — but it can refuse a "broad search" that is the same query
-    // three times, which is the failure actually observed.
-    const ss = c.solution_searches
-    if (!ss || typeof ss !== 'object' || Array.isArray(ss)) {
-      reasons.push('competitor_check.solution_searches must be {category, segment, capability} — a single broad query is what missed Meal Matcher/Coachway')
-    } else {
-      for (const angle of SOLUTION_SEARCH_ANGLES) {
-        if (!isStr(ss[angle])) reasons.push(`competitor_check.solution_searches.${angle} missing — the solution was not searched from that angle`)
-      }
-      if (SOLUTION_SEARCH_ANGLES.every((a) => isStr(ss[a]))) {
-        for (const angle of ['segment', 'capability']) {
-          if (!addsVocabulary(ss[angle], ss.category)) {
-            reasons.push(`competitor_check.solution_searches.${angle} adds nothing the category search did not already contain ("${ss[angle]}" vs "${ss.category}") — that is one angle twice, not two`)
-          }
-        }
-      }
-    }
-    if (!isStr(c.reasoning)) reasons.push('competitor_check.reasoning missing')
-    // The LawDepot UK / CVwizard failure in one line: a Category A entry whose
-    // own competitor check says the UK gap does not survive is self-refuting,
-    // and must never be surfaced with the contradiction left as a caveat.
-    if (cat === 'A' && c.gap_survives !== true) {
-      reasons.push('Category A but the UK gap did not survive its own competitor check')
+    if (!Array.isArray(st.verification_queries) || !st.verification_queries.some(isStr)) {
+      reasons.push('search_trail.verification_queries is empty — no evidence the traction/gap claims were actually verified')
     }
   }
 
-  // Category B's bar is no longer "the market is empty" — a crowded market is
-  // fine. It is "the edge is specific enough to state against the real
-  // competitors". So the code checks the shape that specificity has to take:
-  // a named axis, a named piece of evidence, and named rivals it holds against.
-  if (cat === 'B') {
-    const e = o.edge
-    if (!e || typeof e !== 'object') reasons.push('Category B with no edge — "could be better" is not a finding')
-    else {
-      const type = String(e.type ?? '').trim().toLowerCase()
-      if (!EDGE_TYPES.has(type)) {
-        reasons.push(`edge.type must be one of ${[...EDGE_TYPES].join('/')}, got ${JSON.stringify(e.type ?? null)}`)
-      }
-      if (!isStr(e.what)) reasons.push('edge.what missing')
-      if (!isStr(e.evidence)) reasons.push('edge.evidence missing — the edge is asserted, not evidenced')
-      if (!isStr(e.versus)) reasons.push('edge.versus missing — an edge stated against nobody in particular is not an edge')
-      if (isStr(e.what) && VAGUE_EDGE.test(e.what)) {
-        reasons.push(`edge.what is a vague claim, not a specific edge: "${e.what}"`)
-      }
-    }
-  }
+  const effort = String(o.effort ?? '').trim()
+  if (!['Low', 'Medium', 'High'].includes(effort)) reasons.push(`effort must be Low/Medium/High, got ${JSON.stringify(o.effort ?? null)}`)
+
+  const verdict = String(o.verdict ?? '').trim().toUpperCase()
+  if (!['CLONE IT', 'WORTH STUDYING', 'LEAVE IT'].includes(verdict)) reasons.push(`verdict must be CLONE IT/WORTH STUDYING/LEAVE IT, got ${JSON.stringify(o.verdict ?? null)}`)
 
   return reasons
 }
 
-// Applies the per-entry rules above, then the two cross-entry rules that a
-// single-entry check structurally cannot catch: one idea per email, and one
-// business per email. CVwizard + Kickresume passed every per-entry test and
-// were still wrong together, because they were one idea twice.
-export function filterReplicateBusinesses(entries) {
-  const kept = []
-  const dropped = []
+// Applies the per-entry rules above, then the two cross-entry rules a
+// single-entry check structurally cannot catch: one business model per
+// email, one business per email. Returns EVERY candidate examined, annotated
+// kept/drop_reasons, rather than the old {kept, dropped} split — dropped
+// candidates keep their full evidence fields so the whole batch can be
+// persisted as one evidence trail (see persistReplicateFindings), not just
+// the ones that shipped.
+export function filterReplicateFindings(entries) {
   const seenIdea = new Set()
   const seenName = new Set()
+  const annotated = []
 
   for (const o of Array.isArray(entries) ? entries : []) {
-    const reasons = replicateRejectionReasons(o)
+    const reasons = replicateFindingRejectionReasons(o)
     const ideaKey = String(o?.idea_key ?? '').trim().toLowerCase()
     const nameKey = String(o?.name ?? '').trim().toLowerCase()
 
     if (!reasons.length) {
-      if (seenIdea.has(ideaKey)) reasons.push(`same underlying idea as an earlier entry ("${ideaKey}") — one idea, one entry`)
-      else if (seenName.has(nameKey)) reasons.push(`duplicate business "${o.name}"`)
+      if (ideaKey && seenIdea.has(ideaKey)) reasons.push(`same underlying business model as an earlier entry ("${ideaKey}") — one idea, one entry`)
+      else if (nameKey && seenName.has(nameKey)) reasons.push(`duplicate business "${o.name}"`)
     }
 
     if (reasons.length) {
-      dropped.push({ name: isStr(o?.name) ? o.name : '(unnamed)', reasons })
+      annotated.push({ ...o, kept: false, drop_reasons: reasons })
       continue
     }
 
     seenIdea.add(ideaKey)
     seenName.add(nameKey)
-    kept.push(o)
+    annotated.push({ ...o, kept: true, drop_reasons: null })
   }
 
-  // Truncation is recorded rather than silent — an over-quota entry was valid,
-  // it just lost on ordering, and that reads very differently in a log from an
-  // entry that failed the evidence bar.
-  const overflow = kept.slice(REPLICATE_MAX)
-  for (const o of overflow) dropped.push({ name: o.name, reasons: [`over the ${REPLICATE_MAX}-entry ceiling`] })
+  // Ceiling applied last, over entries that already passed everything else —
+  // an over-quota entry was valid, it just lost on ordering, and that reads
+  // very differently in the evidence trail from an entry that failed the bar.
+  let keptCount = 0
+  for (const a of annotated) {
+    if (!a.kept) continue
+    keptCount++
+    if (keptCount > REPLICATE_MAX) {
+      a.kept = false
+      a.drop_reasons = [`over the ${REPLICATE_MAX}-entry ceiling`]
+    }
+  }
 
-  return { kept: kept.slice(0, REPLICATE_MAX), dropped }
+  return annotated
+}
+
+// Repeat-prevention against opportunity_scanner_seen_items (section
+// 'replicate') — the SAME normaliseKey/titlesSimilar dedup logic legislation
+// already uses, not a parallel implementation. filterUnseenLegislation only
+// ever reads item.title, so a thin adapter mapping name -> title is enough
+// to reuse it exactly rather than re-deriving the same rules a second time.
+export function filterUnseenReplicate(items, seen) {
+  const titled = items.map((it) => ({ ...it, title: it.name }))
+  const { kept, dropped } = filterUnseenLegislation(titled, seen)
+  return {
+    kept: kept.map(({ title, ...rest }) => rest),
+    dropped: dropped.map((d) => ({ name: d.title, reason: d.reason })),
+  }
 }
 
 export function parseReplicateBusinesses(text) {
@@ -1018,16 +1052,16 @@ export function parseReplicateBusinesses(text) {
   // without this a parse failure would leave the PREVIOUS invocation's audit
   // in place and the run log would attribute it to this run.
   lastReplicateAudit = { kept: 0, dropped: [] }
+  lastReplicateFindings = []
 
   let jsonStr = null
   const fenced = [...text.matchAll(/```replicate\s*([\s\S]*?)```/g)]
   if (fenced.length) jsonStr = fenced[fenced.length - 1][1].trim()
   if (!jsonStr) {
     // Recorded, not just thrown. An empty section has three quite different
-    // causes — the model returned no block, it returned an empty array, or the
-    // filter rejected everything — and they call for opposite responses
+    // causes — the model returned no block, it returned an empty array, or
+    // the filter rejected everything — and they call for opposite responses
     // (the prompt is broken / the bar is too high / the bar is working).
-    // Collapsing them all into "0" is what made the first live check ambiguous.
     lastReplicateAudit = { kept: 0, dropped: [{ name: '(none)', reasons: ['model returned no ```replicate block at all'] }] }
     throw new Error('No ```replicate block found in the model response')
   }
@@ -1039,7 +1073,12 @@ export function parseReplicateBusinesses(text) {
     return []
   }
 
-  const { kept, dropped } = filterReplicateBusinesses(parsed)
+  const annotated = filterReplicateFindings(parsed)
+  const kept = annotated.filter((a) => a.kept)
+  const dropped = annotated
+    .filter((a) => !a.kept)
+    .map((a) => ({ name: isStr(a?.name) ? a.name : '(unnamed)', reasons: a.drop_reasons ?? [] }))
+
   for (const d of dropped) {
     console.log(`[opportunity-scanner-worker-background] replicate entry dropped — ${d.name}: ${d.reasons.join('; ')}`)
   }
@@ -1047,10 +1086,12 @@ export function parseReplicateBusinesses(text) {
     console.log(`[opportunity-scanner-worker-background] all ${parsed.length} replicate entr${parsed.length === 1 ? 'y' : 'ies'} failed the evidence bar — section will be omitted`)
   }
   // Handed to the run log so the outcome survives the request. Console output
-  // from a background function is not reliably retrievable afterwards, and
-  // "what did the filter refuse, and why" is the question worth being able to
-  // answer about this section on any given day.
+  // from a background function is not reliably retrievable afterwards.
   lastReplicateAudit = { kept: kept.length, dropped }
+  // The full annotated batch (kept AND dropped, every field intact) — handed
+  // to persistReplicateFindings so the evidence trail covers every candidate
+  // examined, not just what shipped. See takeReplicateFindings.
+  lastReplicateFindings = annotated
   return kept
 }
 
@@ -1063,6 +1104,16 @@ export function takeReplicateAudit() {
   lastReplicateAudit = { kept: 0, dropped: [] }
   return audit
 }
+
+// Same take-once pattern as takeReplicateAudit, for the full per-candidate
+// evidence trail persisted to opportunity_scanner_replicate_findings.
+let lastReplicateFindings = []
+export function takeReplicateFindings() {
+  const findings = lastReplicateFindings
+  lastReplicateFindings = []
+  return findings
+}
+
 
 // Parses the "UK COMPANIES HOUSE INTELLIGENCE" section — a distinctly fenced
 // ```prospects block (never ```json or ```replicate, so it can never
@@ -1260,15 +1311,18 @@ function verdictBadgeReplicate(v) {
   return `<span style="display:inline-block;background:${style.bg};color:${style.fg};font-weight:700;font-size:12px;padding:3px 10px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(v)}</span>`
 }
 
-// Category chip — states which of the two shapes this entry is, so the claim
-// being made is legible before reading the detail. A is "nobody serves this in
-// the UK"; B is "somebody does, and here is the one thing they get wrong".
-function categoryChipReplicate(cat) {
-  const c = String(cat || '').trim().toUpperCase()
-  const style = c === 'A'
-    ? { bg: '#e0f2fe', fg: '#075985', label: 'A · Not in the UK yet' }
-    : { bg: '#f3e8ff', fg: '#6b21a8', label: 'B · UK, one fixable weakness' }
-  return `<span style="display:inline-block;background:${style.bg};color:${style.fg};font-weight:700;font-size:11px;padding:3px 9px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(style.label)}</span>`
+// Evidence-type chip — names which of the four evidence-of-traction signals
+// this finding cleared, so the claim being made is legible before reading
+// the detail rather than buried inside a field nobody reads.
+function evidenceChipReplicate(type) {
+  const labels = {
+    companies_house: 'Companies House filed accounts',
+    reviews: 'Sustained review volume',
+    hiring: 'Active hiring',
+    growth_signal: 'Documented growth',
+  }
+  const label = labels[String(type || '').trim().toLowerCase()] ?? String(type || 'unverified')
+  return `<span style="display:inline-block;background:#e0f2fe;color:#075985;font-weight:700;font-size:11px;padding:3px 9px;border-radius:4px;font-family:sans-serif;white-space:nowrap">${esc(label)}</span>`
 }
 
 function replicateCard(o, i) {
@@ -1276,45 +1330,39 @@ function replicateCard(o, i) {
     ? `<a href="${esc(o.url)}" style="color:#111827;text-decoration:none">${esc(o.name)}</a>`
     : esc(o.name)
 
-  // Demand evidence is rendered as figure-then-source rather than prose, so a
+  // Traction evidence rendered as figure-then-source rather than prose, so a
   // claim with nothing behind it would look conspicuously empty instead of
   // reading as confident copy. That asymmetry is the point.
-  const d = o.demand_evidence
-  const demandHtml = d && typeof d === 'object'
-    ? field('Evidence of demand', `${d.value ?? ''} — ${d.metric ?? ''} (${d.source ?? 'no source given'})`)
+  const t = o.traction_evidence
+  const tractionHtml = t && typeof t === 'object'
+    ? field('Evidence of traction', `${t.detail ?? ''}${t.source_url ? ` — ${t.source_url}` : ' (no source given)'}`)
     : ''
 
-  const e = o.edge
-  const edgeHtml = e && typeof e === 'object'
-    ? field(`The edge — ${String(e.type ?? '').toLowerCase()}`, `${e.what ?? ''} — ${e.evidence ?? ''}`) + field('Held against', e.versus ?? '')
+  const r = o.replicate
+  const replicateHtml = r && typeof r === 'object'
+    ? field('Replicate — the customer', r.customer ?? '') + field('Replicate — the mechanism', r.mechanism ?? '')
     : ''
 
-  const c = o.competitor_check
-  const rivals = c && Array.isArray(c.found) && c.found.length
-    ? c.found.map((f) => f?.name).filter(Boolean).join(', ')
-    : 'none found'
-  // The solution-category searches are surfaced in the email, not just recorded
-  // in the JSON, so a check made of nothing but named spot-checks is visible on
-  // the page rather than only inside a field nobody reads.
-  // Now the three named angles rather than a flat list, and labelled as such,
-  // so a check that only ever really ran the category angle is visible on the
-  // page — that was the shape of the 27 Aug meal-plan miss.
-  const ssObj = c && c.solution_searches && typeof c.solution_searches === 'object' && !Array.isArray(c.solution_searches)
-    ? c.solution_searches
-    : null
-  const solutionSearches = ssObj
-    ? SOLUTION_SEARCH_ANGLES
-      .filter((a) => typeof ssObj[a] === 'string' && ssObj[a].trim())
-      .map((a) => `${a}: ${ssObj[a].trim()}`)
-      .join(' · ')
-    // Tolerates the pre-27-Aug array shape so an older entry still renders
-    // rather than silently losing the field.
-    : (c && Array.isArray(c.solution_searches)
-      ? c.solution_searches.filter((x) => typeof x === 'string' && x.trim()).join('; ')
-      : '')
-  const competitorHtml = c && typeof c === 'object'
-    ? field('Competitor check', `${c.reasoning ?? ''} (found: ${rivals})`) +
-      (solutionSearches ? field('Searched the solution from three angles', solutionSearches) : '')
+  const im = o.improve
+  const gapLabels = {
+    review_complaint: 'Review complaint',
+    missing_feature: 'Missing feature',
+    price_gap: 'Price gap',
+    ux_problem: 'UX problem',
+  }
+  const improveHtml = im && typeof im === 'object'
+    ? field(`Improve — ${gapLabels[String(im.gap_type || '').toLowerCase()] ?? im.gap_type ?? ''}`, `${im.detail ?? ''}${im.evidence_source ? ` (${im.evidence_source})` : ''}`)
+    : ''
+
+  const lc = o.low_capital
+  const lowCapitalHtml = lc && typeof lc === 'object'
+    ? field(`Low capital — ${lc.model ?? ''}`, lc.why ?? '')
+    : ''
+
+  const st = o.search_trail
+  const searchTrailHtml = st && typeof st === 'object'
+    ? field('Discovery searches', Array.isArray(st.discovery_queries) ? st.discovery_queries.filter(isStr).join(' · ') : '') +
+      field('Verification searches', Array.isArray(st.verification_queries) ? st.verification_queries.filter(isStr).join(' · ') : '')
     : ''
 
   return `
@@ -1323,13 +1371,13 @@ function replicateCard(o, i) {
       <div style="font-size:17px;font-weight:700;color:#111827;font-family:sans-serif;line-height:1.4;flex:1">${i + 1}. ${titleHtml}</div>
       ${verdictBadgeReplicate(String(o.verdict ?? ''))}
     </div>
-    <div style="margin-bottom:10px">${categoryChipReplicate(o.category)}</div>
+    <div style="margin-bottom:10px">${evidenceChipReplicate(o.traction_evidence?.type)}</div>
     ${o.url ? `<div style="font-size:12px;color:#6b7280;font-family:sans-serif;margin-bottom:12px;word-break:break-all">${esc(o.url)}</div>` : ''}
-    ${field('What they sell', o.what_they_sell)}
-    ${demandHtml}
-    ${edgeHtml}
-    ${competitorHtml}
-    ${o.buildability?.one_percent_better ? field('Your angle', o.buildability.one_percent_better) : ''}
+    ${tractionHtml}
+    ${replicateHtml}
+    ${improveHtml}
+    ${lowCapitalHtml}
+    ${searchTrailHtml}
     ${field('Effort to replicate', o.effort)}
   </div>`
 }
@@ -1449,7 +1497,7 @@ function buildEmail(opportunities, dateStr, replicateBusinesses = [], opts = {})
   const replicateSection = replicateBusinesses.length ? `
   <div style="margin-top:8px;margin-bottom:20px;padding-top:28px;border-top:2px solid #e5e7eb">
     <div style="font-size:20px;font-weight:700;color:#111827;font-family:sans-serif;margin-bottom:4px">Businesses to Replicate</div>
-    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${replicateBusinesses.length} named business${replicateBusinesses.length === 1 ? '' : 'es'} that survived a competitor check &mdash; each either absent from the UK, or here with one specific fixable weakness</div>
+    <div style="font-size:13px;color:#6b7280;font-family:sans-serif;margin-bottom:20px">${replicateBusinesses.length} named UK business${replicateBusinesses.length === 1 ? '' : 'es'} with verified proof of traction &mdash; each evaluated against replicate, improve and low-capital</div>
     ${replicateBusinesses.map(replicateCard).join('')}
   </div>` : ''
   return `<!DOCTYPE html>
@@ -1607,8 +1655,11 @@ export async function handler(event) {
     ? createClient(SUPABASE_URL, SERVICE_KEY, { global: { fetch }, realtime: { transport: undefined } })
     : null
 
+  // Returns the new run's id (or null on failure/no admin) so the caller can
+  // thread it into persistReplicateFindings — the evidence-trail rows need a
+  // run_id FK, and this is the one place that id is ever generated.
   const logRun = async (itemsFound, emailSent, error) => {
-    if (!admin) return
+    if (!admin) return null
     // Replicate outcome recorded alongside the opportunity count so the two
     // are distinguishable after the fact — see the migration note on these
     // columns for why a bare opportunities_found of 0 was ambiguous.
@@ -1618,7 +1669,7 @@ export async function handler(event) {
     // WITHOUT having to fire synthetic runs to find out. web_searches is the
     // one that actually settles it.
     const t = takeResearchTelemetry()
-    const { error: logErr } = await admin.from('opportunity_scanner_runs')
+    const { data, error: logErr } = await admin.from('opportunity_scanner_runs')
       .insert({
         opportunities_found: itemsFound,
         email_sent: emailSent,
@@ -1635,7 +1686,13 @@ export async function handler(event) {
         // real queries were unrecoverable after the fact.
         search_queries: t.search_queries?.length ? t.search_queries : null,
       })
-    if (logErr) console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
+      .select('id')
+      .single()
+    if (logErr) {
+      console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
+      return null
+    }
+    return data?.id ?? null
   }
 
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY
@@ -1644,6 +1701,7 @@ export async function handler(event) {
   // direction: Section B never parses a replicate block, so on a reused
   // container its run log would otherwise inherit Section A's audit.
   takeReplicateAudit()
+  takeReplicateFindings()
 
   const section = sectionForDate(new Date())
 
@@ -1652,6 +1710,7 @@ export async function handler(event) {
   // email, so it must not be allowed to resend items the reader has already
   // had — the timeout is not a reason to drop the guarantee.
   let seenLegislation = []
+  let seenReplicate = []
 
   try {
     if (!admin) throw new Error('SUPABASE_URL / SUPABASE_SERVICE_KEY not configured')
@@ -1661,19 +1720,28 @@ export async function handler(event) {
     const config = SECTION_CONFIG[section]
     console.log(`[opportunity-scanner-worker-background] starting run ${dateStr} — section ${section}`)
 
-    // Already-sent legislation, loaded BEFORE the research call so the titles
-    // can be injected into Section B's prompt as an exclusion list. Section A
-    // ignores this (its builder takes no argument) — its exclusion list is
-    // still the hardcoded one inside RESEARCH_USER_A, which is a separate,
-    // known limitation rather than something this fix changes.
+    // Already-sent items for whichever section is running today, loaded
+    // BEFORE the research call so the titles/names can be injected into the
+    // prompt as a live exclusion list — both buildResearchUserA (26 Aug 2026
+    // replicate rebuild) and buildResearchUserB take the same shape of
+    // argument now, so this is symmetric across sections rather than a
+    // Section-B-only path.
     seenLegislation = section === 'B'
       ? await loadSeenItems(admin, SEEN_SECTION_LEGISLATION)
+      : []
+    seenReplicate = section === 'A'
+      ? await loadSeenItems(admin, SEEN_SECTION_REPLICATE)
       : []
     if (section === 'B') {
       console.log(`[opportunity-scanner-worker-background] ${seenLegislation.length} previously-sent legislation item(s) will be excluded`)
     }
+    if (section === 'A') {
+      console.log(`[opportunity-scanner-worker-background] ${seenReplicate.length} previously-surfaced replicate business(es) will be excluded`)
+    }
     const userPrompt = config.buildUserPrompt(
-      seenLegislation.slice(0, SEEN_PROMPT_LIMIT).map((s) => s.title),
+      section === 'A'
+        ? seenReplicate.slice(0, SEEN_PROMPT_LIMIT).map((s) => s.title)
+        : seenLegislation.slice(0, SEEN_PROMPT_LIMIT).map((s) => s.title),
     )
 
     const researchText = await fetchResearchText(ANTHROPIC_API_KEY, userPrompt, config.maxTokens, config.maxUses)
@@ -1685,10 +1753,30 @@ export async function handler(event) {
 
       // Best-effort: a failure to parse the "Businesses to Replicate"
       // section must never affect the opportunity analysis or email.
+      // Two filters applied in sequence: parseReplicateBusinesses already
+      // applied the evidence bar (filterReplicateFindings) and returns only
+      // what survived it; filterUnseenReplicate then applies the SAME
+      // repeat-prevention this scanner already uses for legislation, against
+      // opportunity_scanner_seen_items (section 'replicate'). Both outcomes
+      // are folded back into one evidence trail so every candidate examined
+      // — evidence-bar drop, repeat drop, or kept — persists as one row.
       let replicateBusinesses = []
+      let replicateEvidenceTrail = []
       try {
-        replicateBusinesses = parseReplicateBusinesses(researchText)
-        console.log(`[opportunity-scanner-worker-background] ${replicateBusinesses.length} businesses to replicate surfaced`)
+        const evidenceKept = parseReplicateBusinesses(researchText)
+        const evidenceAnnotated = takeReplicateFindings()
+        const { kept: freshReplicate, dropped: repeatDropped } = filterUnseenReplicate(evidenceKept, seenReplicate)
+        for (const d of repeatDropped) {
+          console.log(`[opportunity-scanner-worker-background] replicate entry dropped as repeat — "${d.name}" (${d.reason})`)
+        }
+        const repeatReasonByName = new Map(repeatDropped.map((d) => [d.name, d.reason]))
+        replicateEvidenceTrail = evidenceAnnotated.map((a) => (
+          a.kept && repeatReasonByName.has(a.name)
+            ? { ...a, kept: false, drop_reasons: [repeatReasonByName.get(a.name)] }
+            : a
+        ))
+        replicateBusinesses = freshReplicate
+        console.log(`[opportunity-scanner-worker-background] ${replicateBusinesses.length} businesses to replicate surfaced (${repeatDropped.length} dropped as repeats)`)
       } catch (e) {
         console.error('[opportunity-scanner-worker-background] could not parse Businesses to Replicate section:', String(e?.message ?? e))
       }
@@ -1698,7 +1786,8 @@ export async function handler(event) {
         // Not an error, but worth telling Adrian the scan ran and found nothing.
         await sendEmail(resendKey, fromEmail, toEmail, subject,
           failureEmail('The research completed but surfaced no opportunities or businesses to replicate worth sending.', dateStr))
-        await logRun(0, true, null)
+        const runId = await logRun(0, true, null)
+        if (runId) await persistReplicateFindings(admin, runId, replicateEvidenceTrail)
         console.log('[opportunity-scanner-worker-background] section A: nothing today, notice sent, run logged')
         return json(200, { ok: true, section, opportunitiesFound: 0, emailSent: true })
       }
@@ -1706,7 +1795,15 @@ export async function handler(event) {
       const html = buildEmail(opportunities, prettyDate, replicateBusinesses)
       await sendEmail(resendKey, fromEmail, toEmail, subject, html)
 
-      await logRun(opportunities.length, true, null)
+      const runId = await logRun(opportunities.length, true, null)
+      if (runId) await persistReplicateFindings(admin, runId, replicateEvidenceTrail)
+      // Recorded only AFTER the send has actually succeeded — same rule
+      // legislation follows (see recordSeenItems) — so a business is never
+      // permanently excluded without Adrian actually having received it.
+      if (replicateBusinesses.length) {
+        const { recorded } = await recordSeenItems(admin, SEEN_SECTION_REPLICATE, replicateBusinesses.map((b) => ({ title: b.name })))
+        console.log(`[opportunity-scanner-worker-background] recorded ${recorded} replicate business(es) as sent`)
+      }
       console.log('[opportunity-scanner-worker-background] section A: email sent, run logged')
       return json(200, { ok: true, section, opportunitiesFound: opportunities.length, emailSent: true })
     }
@@ -1794,6 +1891,11 @@ export async function handler(event) {
     let emailSent = false
     let itemsFound = 0
     let loggedError = errMsg
+    // Hoisted out of the section==='A' branch below so the single shared
+    // logRun() call at the foot of this catch can persist it regardless of
+    // which branch ran — mirrors seenLegislation/seenReplicate being hoisted
+    // above the try block for the same reason.
+    let replicateEvidenceTrail = []
 
     // Partial-results recovery — only possible for a genuine research
     // timeout, since that's the only error carrying whatever text had
@@ -1810,12 +1912,34 @@ export async function handler(event) {
           let opportunities = []
           let replicateBusinesses = []
           try { opportunities = parseOpportunities(e.partialText) } catch { /* not recovered */ }
-          try { replicateBusinesses = parseReplicateBusinesses(e.partialText) } catch { /* not recovered */ }
+          try {
+            // Same two-filter sequence as the normal path — a partial run
+            // must not become a loophole that resends an already-surfaced
+            // replicate business.
+            const evidenceKept = parseReplicateBusinesses(e.partialText)
+            const evidenceAnnotated = takeReplicateFindings()
+            const { kept: freshReplicate, dropped: repeatDropped } = filterUnseenReplicate(evidenceKept, seenReplicate)
+            const repeatReasonByName = new Map(repeatDropped.map((d) => [d.name, d.reason]))
+            replicateEvidenceTrail = evidenceAnnotated.map((a) => (
+              a.kept && repeatReasonByName.has(a.name)
+                ? { ...a, kept: false, drop_reasons: [repeatReasonByName.get(a.name)] }
+                : a
+            ))
+            replicateBusinesses = freshReplicate
+            if (repeatDropped.length) {
+              console.log(`[opportunity-scanner-worker-background] partial-recovery dropped ${repeatDropped.length} replicate business(es) as repeats`)
+            }
+          } catch { /* not recovered */ }
           if (opportunities.length || replicateBusinesses.length) {
             const html = buildEmail(opportunities, prettyDate, replicateBusinesses, { partial: true, elapsedMs: e.elapsedMs })
             if (resendKey) {
               await sendEmail(resendKey, fromEmail, toEmail, `Opportunity scan (partial — cut off after ${Math.round(e.elapsedMs / 1000)}s) — ${dateStr}`, html)
               emailSent = true
+            }
+            // Again, only after a successful send.
+            if (emailSent && replicateBusinesses.length) {
+              const { recorded } = await recordSeenItems(admin, SEEN_SECTION_REPLICATE, replicateBusinesses.map((b) => ({ title: b.name })))
+              console.log(`[opportunity-scanner-worker-background] partial-recovery recorded ${recorded} replicate business(es) as sent`)
             }
             itemsFound = opportunities.length
             loggedError = `partial: aborted after ${Math.round(e.elapsedMs / 1000)}s during research — recovered ${opportunities.length} opportunity(ies), ${replicateBusinesses.length} business(es) to replicate`
@@ -1875,7 +1999,8 @@ export async function handler(event) {
         console.error('[opportunity-scanner-worker-background] failure email also failed:', String(notifyErr?.message ?? notifyErr))
       }
     }
-    await logRun(itemsFound, emailSent, loggedError)
+    const runId = await logRun(itemsFound, emailSent, loggedError)
+    if (runId && replicateEvidenceTrail.length) await persistReplicateFindings(admin, runId, replicateEvidenceTrail)
     return json(500, { ok: false, error: errMsg, emailSent, partialRecovered: itemsFound > 0 })
   }
 }
