@@ -69,10 +69,77 @@ serve(async (req) => {
         : Promise.resolve({ data: [] }),
     ])
 
-    const tasks = tasksRes.data || []
-    const overdue = overdueRes.data || []
-    const posts = postsRes.data || []
-    const competitorFindings = competitorRes.data || []
+    const to = Deno.env.get('DIGEST_RECIPIENT_EMAIL') || DEFAULT_RECIPIENT
+    const resendKey = Deno.env.get('RESEND_API_KEY')
+    if (!resendKey) {
+      console.error('[send-digest] RESEND_API_KEY not configured — cannot send')
+      return json({ error: 'RESEND_API_KEY not configured' }, 500)
+    }
+    const deliver = (subject: string, body: string) =>
+      fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: FROM, to, subject, html: body }),
+      })
+
+    // ── Fail loudly, never report a fabricated zero ───────────────────────────
+    // Real incident, 27 Aug 2026: this digest emailed "0 posts waiting for
+    // approval" and "0 active clients" when the true figures were 25 and 11.
+    // Nothing was wrong with the queries themselves — every REST call the
+    // Supabase Edge runtime made was being rejected with HTTP 401 (the
+    // service-role credential injected into edge functions stopped being
+    // accepted at 2026-08-26 15:29 UTC; Netlify functions, which carry their
+    // own separately-configured key, were unaffected). The queries returned
+    // { data: null, error: <401> } and `|| []` quietly rewrote that into an
+    // empty array, so a total loss of database access was presented to the
+    // reader as a calm, factual "nothing to do today".
+    //
+    // A count derived from a failed query is not a zero, it is an unknown, and
+    // the two must never render the same. Every query feeding this digest is
+    // now checked before anything is rendered: if any of them failed, the
+    // digest is replaced by an explicit failure notice naming the broken
+    // queries, and the function returns 500 so the run is recorded as failed
+    // rather than silently "sent". Treats a null/non-array `data` with no
+    // `error` set as a failure too — the point is that only a genuinely
+    // returned row set is ever allowed to become a number.
+    const queryErrors: string[] = []
+    const rowsOf = (label: string, res: { data?: unknown; error?: { message?: string } | null }) => {
+      if (res?.error) {
+        queryErrors.push(`${label} — ${res.error.message ?? 'unknown error'}`)
+        return []
+      }
+      if (!Array.isArray(res?.data)) {
+        queryErrors.push(`${label} — query returned no row set (data was ${res?.data === null ? 'null' : typeof res?.data})`)
+        return []
+      }
+      return res.data as Record<string, any>[]
+    }
+
+    const clients = rowsOf('active clients (mkt_clients)', clientsRes)
+    const tasks = rowsOf('tasks due today (mkt_tasks)', tasksRes)
+    const overdue = rowsOf('overdue tasks (mkt_tasks)', overdueRes)
+    const posts = rowsOf('posts awaiting approval (mkt_content_queue)', postsRes)
+    // Monday-only and already self-reporting ("Competitor search did not
+    // run…"), so a failure here degrades that one section rather than
+    // invalidating the whole digest.
+    const competitorFindings = Array.isArray(competitorRes?.data) ? competitorRes.data : []
+
+    if (queryErrors.length) {
+      const failHtml =
+        `<div style="font-family:Arial,sans-serif;color:#1C2B3A;max-width:560px">` +
+        `<h2 style="color:#B91C1C;margin:0 0 4px">Digest could not be produced</h2>` +
+        `<p style="color:#8FA3B1;margin:0 0 16px">${formatUkDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' })}</p>` +
+        `<p style="font-size:14px;margin:0 0 12px">The database refused ${queryErrors.length} of the queries this digest is built from, so today's figures are <strong>unknown, not zero</strong>. No counts are shown below on purpose — reporting a zero here would be a fabrication.</p>` +
+        `<div style="background:#FEE2E2;border-radius:10px;padding:12px 14px;margin:0 0 16px">` +
+        queryErrors.map((e) => `<div style="color:#991B1B;font-size:13px;margin-top:4px">${String(e).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`).join('') +
+        `</div>` +
+        `<p style="font-size:13px;color:#2E4057;margin:0 0 16px">Check the send-digest function logs and the Supabase service-role credential the edge runtime is using. Approvals and clients still need attention — open the platform directly.</p>` +
+        `<p><a href="${OPS_URL}" style="background:#E8410A;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:700">Open the platform</a></p></div>`
+      const fr = await deliver(`Digest FAILED — could not read the database · ${formatUkDate(new Date(), { weekday: 'long', day: 'numeric', month: 'long' })}`, failHtml)
+      if (!fr.ok) console.error(`[send-digest] failure-notice email also rejected by Resend: ${await fr.text()}`)
+      console.error(`[send-digest] ABORTED — ${queryErrors.length} query failure(s): ${queryErrors.join(' | ')}`)
+      return json({ error: 'digest queries failed', queryErrors, notified: fr.ok }, 500)
+    }
     const overdueIds = new Set(overdue.map((o) => o.id))
     const todayTasks = tasks.filter((t) => !overdueIds.has(t.id))
     const pendingCount = posts.length
@@ -165,19 +232,13 @@ serve(async (req) => {
     // ── Section 3: Open the platform ──────────────────────────────────────────
     html += `<p style="margin-top:18px;font-size:14px">${pendingCount} post${pendingCount === 1 ? '' : 's'} waiting for approval.</p>`
     html += `<p style="margin-top:14px"><a href="${OPS_URL}" style="background:#E8410A;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:700">Open the platform</a></p>`
-    html += `<p style="color:#8FA3B1;font-size:12px;margin-top:18px">${clientsRes.data?.length || 0} active clients · ${OPS_URL.replace('https://', '')}</p></div>`
+    // clients.length, not clientsRes.data?.length || 0 — by this point the
+    // query is known to have genuinely returned a row set (see the
+    // fail-loudly block above), so this number can be trusted to mean what
+    // it says.
+    html += `<p style="color:#8FA3B1;font-size:12px;margin-top:18px">${clients.length} active clients · ${OPS_URL.replace('https://', '')}</p></div>`
 
-    const to = Deno.env.get('DIGEST_RECIPIENT_EMAIL') || DEFAULT_RECIPIENT
-    const resendKey = Deno.env.get('RESEND_API_KEY')
-    if (!resendKey) {
-      console.error('[send-digest] RESEND_API_KEY not configured — cannot send')
-      return json({ error: 'RESEND_API_KEY not configured' }, 500)
-    }
-    const r = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: FROM, to, subject: `Good morning — here's your day · ${dateLabel}`, html }),
-    })
+    const r = await deliver(`Good morning — here's your day · ${dateLabel}`, html)
     if (!r.ok) {
       const detail = await r.text()
       console.error(`[send-digest] Resend rejected the email (to=${to}): ${detail}`)
