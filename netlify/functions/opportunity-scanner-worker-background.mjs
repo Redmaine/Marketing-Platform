@@ -132,6 +132,21 @@ These gates are a filter applied to real research, not a reason to skip the rese
 
 One rigorously evidenced entry beats three thin ones, and an honest empty section beats a padded list. But an empty section arrived at without searching is a failure, not a high standard.`
 
+// The competitor-check contract, defined once and interpolated into
+// RESEARCH_USER_A below. Extracted 27 Aug 2026 so the temporary
+// competitor-check harness exercises the EXACT instruction text the real run
+// uses — a test against a paraphrase of the prompt proves nothing about the
+// prompt.
+export const COMPETITOR_CHECK_SPEC = `- competitor_check: {"solution_searches":{"category":"...","segment":"...","capability":"..."},"searched":["every other search you ran, including the named-competitor ones"],"found":[{"name":"...","url":"...","why_not_equivalent":"..."}],"gap_survives":true|false,"reasoning":"..."}
+    solution_searches is THREE searches you actually ran for the SOLUTION itself, before naming anyone. They come FIRST, before any named-competitor search, and they attack the same solution from three different angles — because the thing that keeps being missed is never missing from the market, it is missing from ONE phrasing of the query:
+      category   — the bare solution category plus UK. e.g. "UK meal plan software"
+      segment    — the same solution, named for the CUSTOMER it actually serves. e.g. "meal planning software for personal trainers UK"
+      capability — the specific feature, data source or integration that defines THIS finding. e.g. "meal planner Tesco Sainsbury's basket integration UK"
+    segment and capability must each introduce real words the category search does not contain. Re-running the category query with a synonym is not a second angle. If a finding is "white-label X for Y that does Z", then Y is the segment and Z is the capability — you already have both, use them.
+    Why three: incumbents describe themselves by WHO they serve and WHAT they plug into, not by the generic category an outsider would name them with. A category-only search returns the consumer-facing brands and the market leaders; the direct competitor is usually two words away, under a phrasing only the segment or capability query reaches.
+    found must include whatever those three searches actually returned — including close matches, especially close matches. Ruling out three names you already had in mind is not a competitor check.
+    BUDGET PRIORITY: the three angles come out of the same search budget as everything else, and they outrank named-competitor spot-checks for it. If budget is tight, run all three angles for every entry and reason about the results, rather than running one angle and spending the rest confirming names you already had. searched may legitimately be short — what it must never be is long while solution_searches is thin.`
+
 // Section A — scored opportunities + businesses to replicate. Runs on odd
 // UTC days of the month. Everything below is Section A's own instructions
 // only — the prospects/legislation instructions live in RESEARCH_USER_B.
@@ -210,7 +225,9 @@ WORKED REJECTIONS — real output from this scanner that should never have shipp
 - "LawDepot UK" — rejected because the competitor check was never really run. Rocket Lawyer UK has traded in the UK since 2012 with real traction. Any finding that treats UK online legal documents as an open space has not searched the space at all.
 - "Meez" — the failure this section's search rule exists to stop. The entry proposed allergen-compliant labelling generated from recipe data as a novel UK angle, and its competitor check named Jelly, RecipeCostCalculator.net and Ratatool, ruled all three out, and declared the gap survived. FoodCore, MenuIQ and MenuSano all already do exactly that, all UK-built and UK-priced, and none of the three was even looked at. The check never failed on judgement — it failed because it only ever spot-checked competitors of the named business instead of searching for the SOLUTION ("UK allergen labelling software", "generate allergen labels from recipes UK"), which would have returned all three immediately.
 
-The lesson across all three is the same: the competitor check IS the work, not a formality to complete after choosing. Search the solution category first, engage with whatever the real search turns up, and let it kill entries.
+- "UK white-label meal plan SaaS for personal trainers" — the failure the THREE-ANGLE rule exists to stop, and the most instructive of the four because the category search DID work and the check still shipped. Searching the category ("UK meal plan software") really does return real UK meal-planning products: Meal Matcher, MUNCH, Cherrypick, Kitche. Every one of them is consumer-facing, so a check that stops there can look at them, correctly observe that none is a white-label B2B tool for trainers, rule them out as not equivalent, and conclude the space is open. That is precisely what happened, and it is why this failure is so hard to see from the inside: the category angle does not return nothing, it returns plausible near-misses that are genuinely dismissible, which makes the check feel complete. The angle that kills the finding is the SEGMENT one — "meal planning software for personal trainers UK white label" returns Coachway (UK-built, trainer-facing) along with Foodzilla, Promealplan, Everfit and Nutritio, all doing white-label meal planning for coaches, none of them dismissible. The CAPABILITY angle then adds a third distinct set the other two never surface — "meal planner Tesco Sainsbury's basket integration UK" returns Mealia and Lollipop, both built on exactly the supermarket-basket integration the finding treated as its novel hook. Three angles, three different competitor sets, and no single angle returns all of them.
+
+The lesson across all four is the same: the competitor check IS the work, not a formality to complete after choosing. Search the solution first and from all three angles, engage with whatever the real search turns up, and let it kill entries. The most dangerous finding is the one where the category search honestly returns nothing — that is the shape of both Meez and the meal-plan miss, and it is exactly when the segment and capability angles matter most.
 
 Still applies to every entry here: all three buildability tests from your instructions, the exclusion list above, and Adrian's existing portfolio spaces above. A business that is clearly profitable but needs premises, licensing, headcount or a sales team to replicate must be DROPPED.
 
@@ -221,8 +238,7 @@ For each entry return:
 - url: real URL verified via search today
 - what_they_sell: what it is, and the actual price point
 - demand_evidence: {"metric":"what you measured — monthly visits / review count / funding raised / app rating and volume / reported revenue","value":"the actual figure","source":"where it came from, with URL"}
-- competitor_check: {"solution_searches":["the broad searches you ran for the SOLUTION category itself, before naming anyone — e.g. \\"UK allergen labelling software\\", \\"UK recipe costing app\\""],"searched":["every other search you ran, including the named-competitor ones"],"found":[{"name":"...","url":"...","why_not_equivalent":"..."}],"gap_survives":true|false,"reasoning":"..."}
-    solution_searches must be genuinely about the thing being built, not about the named business or its obvious rivals, and it must come FIRST. found must include whatever those searches actually returned — including close matches, especially close matches. Ruling out three names you already had in mind is not a competitor check.
+${COMPETITOR_CHECK_SPEC}
     Category A: gap_survives MUST be true. If a credible UK equivalent exists, drop the entry rather than output it with gap_survives false.
     Category B: gap_survives may be false — a crowded market is fine. What is recorded here is who genuinely serves these customers, found by real search, so the edge below can be stated against them rather than against a straw man.
 - edge: CATEGORY B ONLY — {"type":"cheaper" | "faster" | "better","what":"the edge in one specific, checkable sentence","evidence":"the real price, the real complaint, the real missing feature, and where you saw it","versus":"the closest real competitors this edge is claimed against, by name — the ones your solution_searches actually surfaced, not weaker ones you picked because they are easier to beat"}. Omit entirely for Category A.
@@ -413,7 +429,16 @@ export const SECTION_CONFIG = {
   // section with a mandatory competitor check per entry, on the same 8000 it
   // had before any of that existed. stop_reason is now logged, so if this is
   // still being hit it will say so instead of silently losing a section.
-  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 12000, maxUses: 16 },
+  // maxUses 16 -> 20 (27 Aug 2026). The three-angle competitor check costs
+  // three searches per replicate entry where the old gate's floor was one, so
+  // at the 2 entries this run typically keeps that is +4 searches. Measured:
+  // the 27 Aug run used 14 of 16, leaving 2 spare — not enough headroom, and a
+  // run that hits the cap mid-check degrades exactly the step this fix exists
+  // to strengthen. 20 is sized to the measured 14 + 4, plus 2 spare. At
+  // Anthropic's $10/1,000 searches and ~15.5 Section A runs a month, the cap
+  // moves this line from at most $2.48/mo to at most $3.10/mo; on measured
+  // usage, $2.17 -> ~$2.79/mo.
+  A: { buildUserPrompt: () => RESEARCH_USER_A, maxTokens: 12000, maxUses: 20 },
   B: { buildUserPrompt: buildResearchUserB, maxTokens: 12000, maxUses: 10 },
 }
 
@@ -642,7 +667,7 @@ async function recordSeenItems(admin, section, items) {
 // parse — see the handler's catch block. On a normal, unaborted run this
 // returns exactly the same concatenated text the old non-streaming version
 // did, just assembled incrementally instead of read from one response body.
-export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, maxUses) {
+export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, maxUses, systemOverride = null) {
   const controller = new AbortController()
   const startedAt = Date.now()
   const timeoutId = setTimeout(() => controller.abort(), RESEARCH_TIMEOUT_MS)
@@ -650,6 +675,9 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
   let accumulated = ''
   let webSearches = 0
   let stopReason = null
+  const searchQueries = []
+  let activeToolIndex = null
+  let activeToolJson = ''
   // Written even on the timeout/abort path, so a partial run still reports how
   // much searching it had done before it ran out of time.
   const publish = () => {
@@ -658,6 +686,7 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
       research_chars: accumulated.length,
       web_searches: webSearches,
       stop_reason: stopReason,
+      search_queries: searchQueries.slice(),
     }
   }
   try {
@@ -671,7 +700,7 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
       body: JSON.stringify({
         model: MODEL,
         max_tokens: maxTokens,
-        system: RESEARCH_SYSTEM,
+        system: systemOverride || RESEARCH_SYSTEM,
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: maxUses }],
         messages: [{ role: 'user', content: userPrompt }],
         stream: true,
@@ -717,6 +746,28 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
           accumulated += evt.delta.text
         } else if (evt.type === 'content_block_start' && evt.content_block?.type === 'server_tool_use') {
           webSearches += 1
+          // Capture the query itself, not just the count. Until now this
+          // branch incremented a counter and threw the query away, so the one
+          // question that actually diagnoses a missed competitor — "what did
+          // it actually search?" — had no answer anywhere: not in the run log,
+          // not in the email, not in the database. Every investigation into a
+          // miss had to reason backwards from the prompt about what the model
+          // probably searched. The query arrives streamed as input_json_delta
+          // (content_block_start carries an empty input), so it is accumulated
+          // per-block below and parsed on content_block_stop.
+          activeToolIndex = evt.index
+          activeToolJson = ''
+          const direct = evt.content_block?.input?.query
+          if (typeof direct === 'string' && direct.trim()) searchQueries.push(direct.trim())
+        } else if (evt.type === 'content_block_delta' && evt.delta?.type === 'input_json_delta' && evt.index === activeToolIndex) {
+          activeToolJson += evt.delta.partial_json ?? ''
+        } else if (evt.type === 'content_block_stop' && evt.index === activeToolIndex) {
+          try {
+            const q = JSON.parse(activeToolJson)?.query
+            if (typeof q === 'string' && q.trim()) searchQueries.push(q.trim())
+          } catch { /* partial or non-JSON input — the count still stands */ }
+          activeToolIndex = null
+          activeToolJson = ''
         } else if (evt.type === 'message_delta' && evt.delta?.stop_reason) {
           stopReason = evt.delta.stop_reason
         }
@@ -737,16 +788,19 @@ export async function fetchResearchText(anthropicKey, userPrompt, maxTokens, max
   }
 
   console.log(`[opportunity-scanner-worker-background] research: ${webSearches} web search(es), ${accumulated.length} chars, stop_reason=${stopReason}, ${Date.now() - startedAt}ms`)
+  if (searchQueries.length) {
+    console.log(`[opportunity-scanner-worker-background] queries actually run:\n${searchQueries.map((q, i) => `  ${i + 1}. ${q}`).join('\n')}`)
+  }
   return accumulated
 }
 
 // Same take-once pattern as takeReplicateAudit — see its note on why this is
 // module-level rather than threaded through the return value (fetchResearchText
 // has a timeout/partial-recovery path that must keep its current shape).
-let lastResearchTelemetry = { research_ms: null, research_chars: null, web_searches: null, stop_reason: null }
+let lastResearchTelemetry = { research_ms: null, research_chars: null, web_searches: null, stop_reason: null, search_queries: null }
 export function takeResearchTelemetry() {
   const t = lastResearchTelemetry
-  lastResearchTelemetry = { research_ms: null, research_chars: null, web_searches: null, stop_reason: null }
+  lastResearchTelemetry = { research_ms: null, research_chars: null, web_searches: null, stop_reason: null, search_queries: null }
   return t
 }
 
@@ -796,6 +850,31 @@ const isUrl = (v) => isStr(v) && /^https?:\/\/[^\s]+\.[^\s]+/i.test(v.trim())
 // image backstop: the model measures, fixed rules decide.
 const EDGE_TYPES = new Set(['cheaper', 'faster', 'better'])
 
+// The three angles every solution search must cover — see the meal-plan
+// worked rejection in RESEARCH_USER_A, and the note in
+// replicateRejectionReasons, for why one broad query is not enough.
+export const SOLUTION_SEARCH_ANGLES = ['category', 'segment', 'capability']
+
+// Words too common to count as a new angle. "uk" especially: every query in
+// this scanner carries it, so it can never be what distinguishes two of them.
+const SEARCH_STOPWORDS = new Set([
+  'uk', 'the', 'a', 'an', 'and', 'or', 'for', 'of', 'to', 'in', 'on', 'with',
+  'app', 'apps', 'software', 'tool', 'tools', 'platform', 'saas', 'online', 'best', 'top',
+])
+
+// True when `query` introduces at least one real word that `reference` does
+// not already contain. Deliberately crude — it is not judging search quality,
+// only catching the specific observed failure of submitting the same query
+// under three different angle names. Substring-matched so plurals and simple
+// inflections ("trainer"/"trainers") do not read as new vocabulary.
+function addsVocabulary(query, reference) {
+  const words = (s) => String(s ?? '').toLowerCase().match(/[a-z0-9']+/g) ?? []
+  const ref = words(reference)
+  return words(query).some((w) => (
+    w.length >= 4 && !SEARCH_STOPWORDS.has(w) && !ref.some((r) => r.includes(w) || w.includes(r))
+  ))
+}
+
 // The phrases that, on their own, mean an edge was never actually found — the
 // vocabulary a finding reaches for when the honest answer is "it feels a bit
 // tired". Deliberately matches only when the phrase IS essentially the whole
@@ -831,8 +910,36 @@ export function replicateRejectionReasons(o) {
     // never searches the solution category, so the three real UK matches were
     // never seen at all. Code cannot tell a good search from a bad one, but it
     // can tell whether the broad search was recorded as having happened.
-    if (!Array.isArray(c.solution_searches) || !c.solution_searches.some(isStr)) {
-      reasons.push('competitor_check.solution_searches is empty — the solution category itself was never searched, only named competitors spot-checked')
+    //
+    // The 27 Aug meal-plan failure then showed that "the category was searched"
+    // is itself too weak a gate. That check DID search its category — "UK meal
+    // plan software" — and the category honestly returns consumer apps, so it
+    // concluded the space was open while Meal Matcher, Coachway, MUNCH and
+    // Cherrypick all traded in it. They were reachable only by the customer
+    // segment ("for personal trainers") or the defining capability ("Tesco /
+    // Sainsbury's basket integration"), because that is how they describe
+    // themselves. One angle is not a search of the solution, it is a search of
+    // one phrasing of the solution.
+    //
+    // So the shape is now enforced, the same way edge's specificity is: three
+    // named angles, each of which must contribute vocabulary the category
+    // angle does not already contain. Code still cannot judge whether a query
+    // was any good — but it can refuse a "broad search" that is the same query
+    // three times, which is the failure actually observed.
+    const ss = c.solution_searches
+    if (!ss || typeof ss !== 'object' || Array.isArray(ss)) {
+      reasons.push('competitor_check.solution_searches must be {category, segment, capability} — a single broad query is what missed Meal Matcher/Coachway')
+    } else {
+      for (const angle of SOLUTION_SEARCH_ANGLES) {
+        if (!isStr(ss[angle])) reasons.push(`competitor_check.solution_searches.${angle} missing — the solution was not searched from that angle`)
+      }
+      if (SOLUTION_SEARCH_ANGLES.every((a) => isStr(ss[a]))) {
+        for (const angle of ['segment', 'capability']) {
+          if (!addsVocabulary(ss[angle], ss.category)) {
+            reasons.push(`competitor_check.solution_searches.${angle} adds nothing the category search did not already contain ("${ss[angle]}" vs "${ss.category}") — that is one angle twice, not two`)
+          }
+        }
+      }
     }
     if (!isStr(c.reasoning)) reasons.push('competitor_check.reasoning missing')
     // The LawDepot UK / CVwizard failure in one line: a Category A entry whose
@@ -1189,12 +1296,25 @@ function replicateCard(o, i) {
   // The solution-category searches are surfaced in the email, not just recorded
   // in the JSON, so a check made of nothing but named spot-checks is visible on
   // the page rather than only inside a field nobody reads.
-  const solutionSearches = c && Array.isArray(c.solution_searches)
-    ? c.solution_searches.filter((s) => typeof s === 'string' && s.trim()).join('; ')
-    : ''
+  // Now the three named angles rather than a flat list, and labelled as such,
+  // so a check that only ever really ran the category angle is visible on the
+  // page — that was the shape of the 27 Aug meal-plan miss.
+  const ssObj = c && c.solution_searches && typeof c.solution_searches === 'object' && !Array.isArray(c.solution_searches)
+    ? c.solution_searches
+    : null
+  const solutionSearches = ssObj
+    ? SOLUTION_SEARCH_ANGLES
+      .filter((a) => typeof ssObj[a] === 'string' && ssObj[a].trim())
+      .map((a) => `${a}: ${ssObj[a].trim()}`)
+      .join(' · ')
+    // Tolerates the pre-27-Aug array shape so an older entry still renders
+    // rather than silently losing the field.
+    : (c && Array.isArray(c.solution_searches)
+      ? c.solution_searches.filter((x) => typeof x === 'string' && x.trim()).join('; ')
+      : '')
   const competitorHtml = c && typeof c === 'object'
     ? field('Competitor check', `${c.reasoning ?? ''} (found: ${rivals})`) +
-      (solutionSearches ? field('Searched the category for', solutionSearches) : '')
+      (solutionSearches ? field('Searched the solution from three angles', solutionSearches) : '')
     : ''
 
   return `
@@ -1509,6 +1629,11 @@ export async function handler(event) {
         research_chars: t.research_chars,
         web_searches: t.web_searches,
         stop_reason: t.stop_reason,
+        // The queries themselves, not just how many. Without this, a missed
+        // competitor could only ever be diagnosed by guessing at what the
+        // model probably searched — see the 27 Aug meal-plan miss, where the
+        // real queries were unrecoverable after the fact.
+        search_queries: t.search_queries?.length ? t.search_queries : null,
       })
     if (logErr) console.error('[opportunity-scanner-worker-background] failed to write run log:', logErr.message)
   }
