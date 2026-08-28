@@ -106,6 +106,28 @@ serve(async (req) => {
     // writeup. This fail-loudly guard stays regardless of how that ticket
     // resolves — a failed query must never render as a trusted zero.
     //
+    // UPDATE 2 (28 Aug 2026) — measured properly, and the "intermittent clock
+    // desync" description above is WRONG. Probed live: 12 PostgREST calls 5s
+    // apart with the service-role credential returned PGRST303 twelve times
+    // out of twelve, and the service-role path has now failed continuously
+    // for ~14 hours. It is deterministic, not transient.
+    //
+    // What actually fails, measured the same morning:
+    //   legacy anon JWT        -> 200 (rows RLS-filtered to [], but accepted)
+    //   new publishable key    -> 200
+    //   new sb_secret_ key     -> 401 PGRST303 on EVERY /rest/v1 path
+    //   same sb_secret_ key on /storage/v1 -> 200
+    // So the key is valid and the gateway accepts it; only PostgREST rejects
+    // the token minted from it, and only for service-role privilege. Both
+    // key formats fail at service-role, so this is not a legacy-vs-new-key
+    // problem and rotating keys again will not fix it.
+    //
+    // CONSEQUENCE: a retry-with-backoff around these queries would be
+    // useless — there is no window to retry into. It would add ~13s of
+    // latency per call and still fail. Deliberately not built; see the
+    // 28 Aug investigation. The only real options are a direct Postgres
+    // connection (bypassing PostgREST entirely) or waiting on Supabase.
+    //
     // A count derived from a failed query is not a zero, it is an unknown, and
     // the two must never render the same. Every query feeding this digest is
     // now checked before anything is rendered: if any of them failed, the
