@@ -111,6 +111,108 @@ async function generateSummary(context: Record<string, unknown>): Promise<string
   return text.trim()
 }
 
+// The single fact-snapshot the paragraph is written from. Built by one
+// function so the model prompt and the reuse-fingerprint below can never
+// end up describing different things.
+function buildSummaryContext(status: Record<string, any>) {
+  return {
+    scheduled_today_count: status.scheduled_today.length,
+    pending_approval_count: status.pending_approval.length,
+    rejected_last_24h_count: status.rejected_last_24h.length,
+    edge_function_errors_last_24h: status.edge_function_errors_last_24h.map((e: Record<string, any>) => ({ function_name: e.function_name, message: String(e.error_message || '').slice(0, 150) })),
+    brand_counts: status.brand_counts,
+    blogs_pending_approval_count: status.blogs_pending_approval.length,
+    blogs_published_last_7d_count: status.blogs_published_last_7d.length,
+    blog_dependent_posts_blocked: status.blog_dependent_posts_blocked,
+    content_quality: status.content_quality,
+    crhq_scrape_status: status.crhq_scrape_status,
+    brands_with_no_content_this_week: status.brands_with_no_content_this_week,
+  }
+}
+
+// Fingerprint of those facts, used as the summary-reuse key (28 Aug 2026 —
+// see the throttle below for why the date alone was not enough).
+//
+// The rolling 24h error list is reduced to the DISTINCT function names that
+// errored: another occurrence of a failure already being reported does not
+// change what the paragraph would say, but a newly-failing function does.
+// Without that reduction the every-30-min run would regenerate constantly as
+// timestamps churn, defeating the cost control the throttle exists for.
+function summaryFingerprint(ctx: ReturnType<typeof buildSummaryContext>): string {
+  const errored = [...new Set((ctx.edge_function_errors_last_24h || []).map((e) => e.function_name))].sort()
+  return JSON.stringify({ ...ctx, edge_function_errors_last_24h: errored })
+}
+
+// Deterministic guard against publishing a paragraph that contradicts the
+// very counts it was supposed to describe (28 Aug 2026).
+//
+// Real incident this closes: daily-status.json carried summary_date =
+// today alongside "zero scheduled posts today, no pending approvals ... all
+// queues are clear", while the SAME file's data showed 9 scheduled, 25
+// pending and 9 blog drafts. The model had not invented anything — it was
+// handed a genuine 00:00 snapshot when those counts really were zero, and
+// the date-keyed throttle then carried that text forward through the rest of
+// the day's 48 runs while the real numbers moved underneath it.
+//
+// The fingerprint above is the actual fix. This is the belt-and-braces:
+// a summary is never SHOWN without checking its zero-claims against the live
+// counts first, so no future change to the throttle, the prompt, or the model
+// can put visibly false text in front of someone again. Checks only explicit
+// "no/zero X" assertions against a non-zero X — deliberately narrow, because
+// a false positive here silently suppresses a correct summary.
+export function summaryContradictions(text: string, ctx: ReturnType<typeof buildSummaryContext>): string[] {
+  const t = String(text ?? '')
+  if (!t.trim()) return []
+  const found: string[] = []
+
+  // Patterns are deliberately TIGHT — adjacent wording only, and anchored to
+  // the metric the count actually measures. An earlier, looser version
+  // ("no ... <40 chars> ... scheduled") flagged the sentence "Hormonely has
+  // no content scheduled this week", which is both true and exactly what the
+  // system prompt asks the model to call out — suppressing a correct summary
+  // is a worse outcome than the stale one this guards against, so the checks
+  // only fire on the specific global claims the counts can actually refute.
+  const checks: Array<{ label: string; actual: number; res: RegExp[] }> = [
+    {
+      label: 'scheduled posts today',
+      actual: ctx.scheduled_today_count,
+      res: [/\b(?:zero|no)\s+scheduled\s+posts?\b/i, /\b(?:zero|no)\s+posts?\s+(?:are\s+)?scheduled\s+(?:for\s+)?today\b/i, /\bnothing\s+(?:is\s+)?scheduled\s+(?:for\s+)?today\b/i],
+    },
+    {
+      label: 'pending approvals',
+      actual: ctx.pending_approval_count,
+      res: [/\b(?:zero|no)\s+(?:posts?\s+)?pending\s+approvals?\b/i, /\b(?:zero|no)\s+posts?\s+(?:are\s+)?(?:pending|awaiting)\s+approval\b/i, /\bnothing\s+(?:is\s+)?awaiting\s+approval\b/i],
+    },
+    {
+      label: 'rejections in the last 24h',
+      actual: ctx.rejected_last_24h_count,
+      res: [/\b(?:zero|no)\s+rejections?\b/i, /\bno\s+posts?\s+(?:were\s+)?rejected\b/i],
+    },
+    {
+      label: 'blog drafts pending approval',
+      actual: ctx.blogs_pending_approval_count,
+      res: [/\b(?:zero|no)\s+blog\s+(?:posts?|drafts?)\b/i, /\b(?:zero|no)\s+blog\s+(?:posts?|drafts?)\s+(?:pending|awaiting)\b/i],
+    },
+    {
+      label: 'edge function errors',
+      actual: (ctx.edge_function_errors_last_24h || []).length,
+      res: [/\b(?:zero|no)\s+edge[\s-]?function\s+errors?\b/i, /\b(?:zero|no)\s+errors?\b/i],
+    },
+  ]
+
+  for (const c of checks) {
+    if (c.actual > 0 && c.res.some((re) => re.test(t))) found.push(`claims no ${c.label}, but there are ${c.actual}`)
+  }
+
+  // "all queues are clear" style all-clear, asserted while real work is queued.
+  const queued = ctx.scheduled_today_count + ctx.pending_approval_count + ctx.blogs_pending_approval_count
+  if (queued > 0 && /\b(?:all\s+)?queues?\s+(?:are\s+)?clear\b|\beverything\s+is\s+clear\b/i.test(t)) {
+    found.push(`claims queues are clear, but ${queued} item(s) are queued`)
+  }
+
+  return found
+}
+
 serve(async (req) => {
   const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } })
 
@@ -417,6 +519,10 @@ serve(async (req) => {
       // UK date (YYYY-MM-DD) the current `summary` text was actually
       // generated on — see the throttle below.
       summary_date: null as string | null,
+      // Fingerprint of the counts the current `summary` was written from.
+      // The throttle reuses a summary only while this is unchanged, so the
+      // paragraph can never outlive the numbers it describes.
+      summary_fingerprint: null as string | null,
     }
 
     // Throttle (26 Aug 2026 incident) — this function is called every 30
@@ -443,44 +549,64 @@ serve(async (req) => {
     // silently stale summary that can never refresh again.
     let previousSummary: string | null = null
     let previousSummaryDate: string | null = null
+    let previousFingerprint: string | null = null
     try {
       const { data: existing } = await admin.storage.from(BUCKET).download(FILE)
       if (existing) {
         const prev = JSON.parse(await existing.text())
         previousSummary = typeof prev.summary === 'string' ? prev.summary : null
         previousSummaryDate = typeof prev.summary_date === 'string' ? prev.summary_date : null
+        previousFingerprint = typeof prev.summary_fingerprint === 'string' ? prev.summary_fingerprint : null
       }
     } catch (e) {
       console.error(`[generate-daily-status] could not read previous ${FILE} for summary throttle: ${String((e as Error)?.message ?? e)}`)
     }
 
-    if (previousSummary && previousSummaryDate === todayStr) {
-      // Already generated once today — carry it forward verbatim rather
-      // than spending another Anthropic call (and, during an outage like
-      // this one, another failed one) for text that would barely differ.
+    // Keyed on the FACTS, not just the date (28 Aug 2026). Keying on the
+    // calendar day alone meant the first run of the day — typically 00:00,
+    // before that day's content is generated or scheduled — froze a
+    // legitimately-all-zero paragraph and carried it through the remaining
+    // 47 runs while the real counts climbed underneath it. summary_date was
+    // still today, so nothing downstream could tell the text was obsolete.
+    // Reusing only while the underlying numbers are unchanged keeps the cost
+    // control (the counts sit still for long stretches) without ever
+    // outliving the facts it describes.
+    const summaryCtx = buildSummaryContext(status)
+    const fingerprint = summaryFingerprint(summaryCtx)
+    status.summary_fingerprint = fingerprint
+
+    if (previousSummary && previousSummaryDate === todayStr && previousFingerprint === fingerprint) {
+      // Already generated today for these exact numbers — carry it forward
+      // verbatim rather than spending another Anthropic call (and, during an
+      // outage, another failed one) for text that would be identical.
       status.summary = previousSummary
       status.summary_date = previousSummaryDate
-      console.log(`[generate-daily-status] summary reused from earlier today (${previousSummaryDate}) — not regenerated`)
+      console.log(`[generate-daily-status] summary reused from earlier today (${previousSummaryDate}, facts unchanged) — not regenerated`)
     } else {
       // Fresh, factual pipeline summary for Quill (claude-haiku-4-5) — built
       // from a compact snapshot (counts and per-brand stats only, never full
       // post copy). Best-effort: a failure here must never block the rest of
       // the status file from being written.
       try {
-        status.summary = await generateSummary({
-          scheduled_today_count: status.scheduled_today.length,
-          pending_approval_count: status.pending_approval.length,
-          rejected_last_24h_count: status.rejected_last_24h.length,
-          edge_function_errors_last_24h: status.edge_function_errors_last_24h.map((e: Record<string, any>) => ({ function_name: e.function_name, message: String(e.error_message || '').slice(0, 150) })),
-          brand_counts: status.brand_counts,
-          blogs_pending_approval_count: status.blogs_pending_approval.length,
-          blogs_published_last_7d_count: status.blogs_published_last_7d.length,
-          blog_dependent_posts_blocked: status.blog_dependent_posts_blocked,
-          content_quality: status.content_quality,
-          crhq_scrape_status: status.crhq_scrape_status,
-          brands_with_no_content_this_week: status.brands_with_no_content_this_week,
-        }) || null
-        status.summary_date = status.summary ? todayStr : null
+        const fresh = await generateSummary(summaryCtx) || null
+        // Verified BEFORE it is written, never after — see
+        // summaryContradictions. A paragraph that contradicts its own counts
+        // is dropped rather than shown: no summary at all is honest, a
+        // confidently false one is not.
+        const bad = fresh ? summaryContradictions(fresh, summaryCtx) : []
+        if (bad.length) {
+          console.error(`[generate-daily-status] summary contradicted its own data, discarded: ${bad.join('; ')}`)
+          try {
+            await admin.from('edge_function_errors').insert({ function_name: 'generate-daily-status', error_message: `summary contradicted its own data, discarded: ${bad.join('; ')}` })
+          } catch (logErr) {
+            console.error(`[generate-daily-status] failed to write edge_function_errors: ${String((logErr as Error)?.message ?? logErr)}`)
+          }
+          status.summary = null
+          status.summary_date = null
+        } else {
+          status.summary = fresh
+          status.summary_date = status.summary ? todayStr : null
+        }
       } catch (e) {
         const msg = String((e as Error)?.message ?? e)
         console.error(`[generate-daily-status] summary generation failed: ${msg}`)
@@ -489,12 +615,23 @@ serve(async (req) => {
         } catch (logErr) {
           console.error(`[generate-daily-status] failed to write edge_function_errors: ${String((logErr as Error)?.message ?? logErr)}`)
         }
-        // Show yesterday's real summary rather than nothing — still clearly
+        // Show the previous real summary rather than nothing — still clearly
         // stale via summary_date, which the frontend/digest can compare
         // against todayStr, but a stale factual paragraph beats a blank one.
+        //
+        // Only if it is still factually true, though (28 Aug 2026): this
+        // fallback is exactly how an obsolete all-zero paragraph outlived its
+        // own numbers during the PGRST303 outage, when generation failed for
+        // ~43h straight. Stale-but-true is a reasonable fallback; stale-and-
+        // false is the bug.
         if (previousSummary) {
-          status.summary = previousSummary
-          status.summary_date = previousSummaryDate
+          const staleBad = summaryContradictions(previousSummary, summaryCtx)
+          if (staleBad.length) {
+            console.error(`[generate-daily-status] previous summary no longer matches the data, not carried forward: ${staleBad.join('; ')}`)
+          } else {
+            status.summary = previousSummary
+            status.summary_date = previousSummaryDate
+          }
         }
       }
     }
