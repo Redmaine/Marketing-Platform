@@ -11,6 +11,8 @@
 // Secrets (Supabase vault): RESEND_API_KEY, DIGEST_RECIPIENT_EMAIL
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+// Direct Postgres client, used ONLY as the PGRST303 fallback below.
+import postgres from 'https://deno.land/x/postgresjs@v3.4.4/mod.js'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 // Display-only UK-local formatting — see _shared/ukTime.ts. Both labels
 // below used a bare toLocaleDateString, which formats in the RUNTIME's own
@@ -68,6 +70,87 @@ serve(async (req) => {
         ? admin.from('competitor_intelligence').select('search_query, result_summary').eq('run_date', today).order('created_at', { ascending: true })
         : Promise.resolve({ data: [] }),
     ])
+
+    // ── Direct-Postgres fallback (28 Aug 2026) ────────────────────────────────
+    // PROTOTYPE, deliberately scoped to this one function while we decide
+    // whether to roll it out more widely.
+    //
+    // Why it exists: PostgREST has been rejecting EVERY service-role request
+    // with PGRST303 ("JWT issued at future") since 2026-08-26 15:29 UTC. It is
+    // deterministic, not transient — 12 probes 5s apart all failed — so a
+    // retry/backoff would have nothing to retry into. Measured at the same
+    // moment from inside this runtime: PostgREST 401, direct Postgres OK.
+    // The fault is in PostgREST's validation of the token the gateway mints
+    // for service-role; a direct connection never involves PostgREST or that
+    // token, so it is unaffected.
+    //
+    // SUPABASE_DB_URL is auto-injected into every Supabase edge function, so
+    // this needs no new secret and no config change.
+    //
+    // Ordering is deliberate: PostgREST is still tried FIRST and this only
+    // runs when it actually failed. When Supabase fix the fault this path
+    // simply stops being reached, with no further change needed — it is a
+    // fallback, not a migration.
+    const restResults = { clientsRes, tasksRes, overdueRes, postsRes, competitorRes }
+    const restFailed = [clientsRes, tasksRes, overdueRes, postsRes].some(
+      (r: { error?: unknown; data?: unknown }) => r?.error || !Array.isArray(r?.data),
+    )
+
+    let usedDirect = false
+    if (restFailed) {
+      const dbUrl = Deno.env.get('SUPABASE_DB_URL') ?? ''
+      const restReason = String((clientsRes as { error?: { message?: string } })?.error?.message ?? 'unknown')
+      console.log(`[send-digest] PostgREST unusable (${restReason}) — falling back to a direct Postgres connection`)
+      if (!dbUrl) {
+        console.error('[send-digest] SUPABASE_DB_URL not set — cannot fall back; the fail-loudly guard below will fire')
+      } else {
+        let sql: ReturnType<typeof postgres> | null = null
+        try {
+          sql = postgres(dbUrl, { prepare: false, max: 1, idle_timeout: 5, connect_timeout: 10 })
+          // Shaped to match PostgREST's output exactly — including the nested
+          // `client` object the renderer reads — so nothing downstream of this
+          // block needs to know which path the data came from.
+          const [clients, tasks, overdue, posts, competitor] = await Promise.all([
+            sql`select id, name, short_name, brand_primary_color
+                  from public.mkt_clients where active = true`,
+            sql`select t.*, json_build_object('short_name', c.short_name, 'name', c.name) as client
+                  from public.mkt_tasks t left join public.mkt_clients c on c.id = t.client_id
+                 where t.completed = false and t.due_date <= ${today}`,
+            sql`select t.*, json_build_object('short_name', c.short_name, 'name', c.name) as client
+                  from public.mkt_tasks t left join public.mkt_clients c on c.id = t.client_id
+                 where t.completed = false and t.due_date < ${today}`,
+            // Mirrors the canonical awaiting-approval definition above.
+            sql`select q.id, q.platform, q.body, q.status, q.review_status, q.scheduled_for, q.is_manual,
+                       json_build_object('short_name', c.short_name, 'name', c.name,
+                                         'brand_primary_color', c.brand_primary_color) as client
+                  from public.mkt_content_queue q
+                  left join public.mkt_clients c on c.id = q.client_id
+                 where q.status in ('draft','pending')
+                 order by q.scheduled_for asc nulls last`,
+            isMondayUK
+              ? sql`select search_query, result_summary from public.competitor_intelligence
+                     where run_date = ${today} order by created_at asc`
+              : Promise.resolve([] as unknown[]),
+          ])
+          restResults.clientsRes = { data: clients } as typeof clientsRes
+          restResults.tasksRes = { data: tasks } as typeof tasksRes
+          restResults.overdueRes = { data: overdue } as typeof overdueRes
+          restResults.postsRes = { data: posts } as typeof postsRes
+          restResults.competitorRes = { data: competitor } as typeof competitorRes
+          usedDirect = true
+          // Deliberately loud and specific: this line is the evidence of how
+          // often the fault is actually being hit and how long it lasts, which
+          // is what the open Supabase ticket needs.
+          console.log(`[send-digest] RECOVERED via direct Postgres — ${(clients as unknown[]).length} clients, ${(posts as unknown[]).length} awaiting approval. PostgREST error was: ${restReason}`)
+        } catch (e) {
+          // Falls through to the fail-loudly guard below rather than being
+          // swallowed — a failed fallback must not become a silent zero either.
+          console.error(`[send-digest] direct Postgres fallback ALSO failed: ${String((e as Error)?.message ?? e)}`)
+        } finally {
+          try { await sql?.end({ timeout: 5 }) } catch { /* ignore */ }
+        }
+      }
+    }
 
     const to = Deno.env.get('DIGEST_RECIPIENT_EMAIL') || DEFAULT_RECIPIENT
     const resendKey = Deno.env.get('RESEND_API_KEY')
@@ -149,14 +232,16 @@ serve(async (req) => {
       return res.data as Record<string, any>[]
     }
 
-    const clients = rowsOf('active clients (mkt_clients)', clientsRes)
-    const tasks = rowsOf('tasks due today (mkt_tasks)', tasksRes)
-    const overdue = rowsOf('overdue tasks (mkt_tasks)', overdueRes)
-    const posts = rowsOf('posts awaiting approval (mkt_content_queue)', postsRes)
+    // restResults.* not the raw consts — these carry the direct-Postgres
+    // recovery when PostgREST failed, and are identical to it when it did not.
+    const clients = rowsOf('active clients (mkt_clients)', restResults.clientsRes)
+    const tasks = rowsOf('tasks due today (mkt_tasks)', restResults.tasksRes)
+    const overdue = rowsOf('overdue tasks (mkt_tasks)', restResults.overdueRes)
+    const posts = rowsOf('posts awaiting approval (mkt_content_queue)', restResults.postsRes)
     // Monday-only and already self-reporting ("Competitor search did not
     // run…"), so a failure here degrades that one section rather than
     // invalidating the whole digest.
-    const competitorFindings = Array.isArray(competitorRes?.data) ? competitorRes.data : []
+    const competitorFindings = Array.isArray(restResults.competitorRes?.data) ? restResults.competitorRes.data : []
 
     if (queryErrors.length) {
       const failHtml =
@@ -279,7 +364,7 @@ serve(async (req) => {
       return json({ error: 'Resend rejected the email.', detail }, 502)
     }
     console.log(`[send-digest] sent to ${to} — ${todayTasks.length} task(s) today, ${overdue.length} overdue, ${pendingCount} awaiting approval`)
-    return json({ ok: true, to, today: todayTasks.length, overdue: overdue.length, pending: pendingCount })
+    return json({ ok: true, to, today: todayTasks.length, overdue: overdue.length, pending: pendingCount, data_source: usedDirect ? 'direct_postgres_fallback' : 'postgrest' })
   } catch (e) {
     console.error(`[send-digest] fatal: ${String((e as Error)?.message ?? e)}`)
     return json({ error: String((e as Error)?.message ?? e) }, 500)
