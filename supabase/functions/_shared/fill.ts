@@ -535,6 +535,34 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // next post generated tonight is the one most at risk of repeating it.
         if (review.body) repeatPreventionPosts.unshift(review.body)
         await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
+        // Root-cause fix (29 Aug 2026) — the line above updated the DATABASE
+        // row, but never the in-memory `client` object this same loop keeps
+        // passing into pickDiversePillar on every later iteration. That
+        // object's own .last_pillar_used stayed frozen at whatever it was
+        // before this run started, for the entire run.
+        //
+        // Consequence, confirmed against a real incident (29 Aug catch-up
+        // run after the 25-26 Aug outage, 24 repeat-topic flags across 7
+        // brands in one run): pickDiversePillar's primary scan correctly
+        // grows its avoid-set from usedThisRun each iteration, but the
+        // moment that avoid-set covers every pillar a brand has — trivial to
+        // hit within 1-2 same-run picks for a brand with only 4-5 pillars,
+        // several of which are already in the last-30-days published avoid-
+        // set before the run even starts — it falls through to
+        // `nextPillar(client)`, which computes its answer purely from
+        // client.last_pillar_used and ignores the avoid-set entirely. With
+        // that value frozen, nextPillar returned the exact SAME pillar every
+        // time the fallback fired for the rest of the run — not a rotation,
+        // a fixed point. Riverside Sheetmetal Fabrications (4 pillars, 3
+        // already recently published) generated 4 slots that night and 3 of
+        // them landed on "Problem-solving"; Quill — LinkedIn (1 pillar,
+        // where pickDiversePillar short-circuits to pillars[0] regardless of
+        // last_pillar_used) generated 4 and all 4 repeated. Assigning it
+        // in-memory here, immediately after the DB write, means every
+        // subsequent iteration's startIdx and every subsequent fallback call
+        // both see the real, current value — the fallback becomes an actual
+        // rotation again instead of getting stuck.
+        client.last_pillar_used = pillar
         generatedForPlatform++
         generated++
       } catch (e) {
