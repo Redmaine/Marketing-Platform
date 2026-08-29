@@ -14,6 +14,18 @@
 // Deploy: supabase functions deploy notify-daily-ops
 // Schedule: 35 10 * * * (5 min after daily-ops-check's own 10:30 UTC run)
 //
+// TRIAGE, NOT JUST FORMATTING (29 Aug 2026) — daily-ops-check now does its
+// own pre-filtering before this function ever sees the report: edge
+// function errors covered by a known-explained ops_known_events window
+// (a recorded restart/incident, or logged test activity) are pulled out of
+// `unexplained_total`/`by_function` into a separate `explained` list, and
+// invoice-chase "no evidence" only fires once that cron has actually had
+// its chance to run for the checked date. This function's job stays the
+// same — render whatever daily-ops-check decided — but the critical issue
+// below now reads `unexplained_total`, not `total`, and explained errors
+// get their own clearly-separate blue block, never merged into the red
+// "needs action" block or the grey FYI block.
+//
 // SELF-ERROR-LOGGING — added 20 Aug 2026. Real 14-day evidence (Supabase's
 // function_edge_logs, cross-checked against cron.job_run_details) found this
 // function had already failed silently on 2 of its first 7 real production
@@ -136,9 +148,9 @@ serve(async (req) => {
       text: `${report.contacts_missing_email.flagged.length} contact(s) created ${report.contacts_missing_email.date_checked} with no email on file: ${names}`,
     })
   }
-  if (report.edge_function_errors_window?.total > 0) {
+  if (report.edge_function_errors_window?.unexplained_total > 0) {
     const byFn = Object.entries(report.edge_function_errors_window.by_function ?? {}).map(([fn, n]) => `${fn} (${n})`).join(', ')
-    issues.push({ severity: 'critical', text: `${report.edge_function_errors_window.total} edge function error(s) in the window: ${byFn}` })
+    issues.push({ severity: 'critical', text: `${report.edge_function_errors_window.unexplained_total} edge function error(s) in the window: ${byFn}` })
   }
   if (report.voice_quote_spend?.flagged_over_threshold) {
     const v = report.voice_quote_spend
@@ -193,6 +205,22 @@ serve(async (req) => {
         <ul style="margin:0;padding-left:20px;color:#4B5563">${minor.map((i) => `<li style="margin-bottom:8px">${i.text}</li>`).join('')}</ul>
       </div>`
     : ''
+  // Kept in its own visually distinct block, separate from both the red
+  // "needs action" block and the grey FYI block — these are edge function
+  // errors that WOULD have been flagged, except an ops_known_events row
+  // (a recorded restart/incident, or logged test activity — see
+  // daily-ops-check's check-5 comment) already covers exactly when they
+  // happened. Shown for transparency/audit, not as something to act on.
+  const explainedErrors = (report.edge_function_errors_window?.explained ?? []) as
+    { function_name?: string; error_message?: string; created_at?: string; reason?: string }[]
+  const explainedBlock = explainedErrors.length
+    ? `<div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:16px;margin-top:16px">
+        <p style="margin:0 0 8px;font-weight:bold;color:#1D4ED8">🔵 Explained — no action needed (${explainedErrors.length})</p>
+        <ul style="margin:0;padding-left:20px;color:#1E3A8A">${explainedErrors.map((e) =>
+          `<li style="margin-bottom:8px">${e.function_name ?? '(unknown)'}: ${e.error_message ?? ''} — ${e.reason ?? ''}</li>`,
+        ).join('')}</ul>
+      </div>`
+    : ''
   const html = anyFlag
     ? `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1C1C2E">
         ${testBanner}
@@ -200,6 +228,7 @@ serve(async (req) => {
         <p>${critical.length ? `${critical.length} critical` : ''}${critical.length && minor.length ? ', ' : ''}${minor.length ? `${minor.length} minor` : ''} finding${issues.length === 1 ? '' : 's'}:</p>
         ${criticalBlock}
         ${minorBlock}
+        ${explainedBlock}
         <p style="font-size:12px;color:#9CA3AF;margin-top:24px">This is a report only — nothing was changed or resent automatically.</p>
       </div>`
     : `<div style="font-family:Arial,sans-serif;max-width:600px;color:#1C1C2E">
@@ -208,6 +237,7 @@ serve(async (req) => {
         <p>All 6 checks came back clean — outreach volume, cron-healthcheck, invoice-chase evidence, contact emails, edge function errors, and voice-to-quote spend${
           report.voice_quote_spend ? ` (£${((report.voice_quote_spend.total_pence ?? 0) / 100).toFixed(2)} across ${report.voice_quote_spend.calls ?? 0} call(s))` : ''
         }.</p>
+        ${explainedBlock}
       </div>`
 
   const resendKey = Deno.env.get('RESEND_API_KEY')

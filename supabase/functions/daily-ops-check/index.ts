@@ -46,11 +46,20 @@
 //      sent_at AND resend_id — original invoice/quote sends via
 //      send-invoice/quote-send don't capture resend_id at all, a known,
 //      separate gap, not something this check tries to paper over).
+//      Zero rows is only flagged once process-invoice-chases (yca-platform,
+//      scheduled 09:00 UTC daily) has actually had its chance to run for
+//      targetDate — see the "chase cron" guard below. Under the real daily
+//      schedule targetDate is always yesterday, so this is always true; it
+//      exists for a manual re-check of TODAY, before 09:00 UTC has passed.
 //   4. Every contact created on the target date, across all non-demo
 //      accounts, with no email and no accounts_email on file.
 //   5. edge_function_errors on the target date (the same calendar day as
 //      every other check, not a rolling 24h window), grouped by
-//      function_name.
+//      function_name — EXCLUDING any row whose timestamp falls inside a
+//      matching ops_known_events window (a recorded platform
+//      restart/incident, or deliberate test activity — see migration
+//      20260829120000 and _shared/opsKnownEvents.ts). Those are reported
+//      separately as "explained", not mixed into what needs action.
 //   6. Total voice-to-quote spend on the target date, from yca-platform's
 //      voice_quote_costs ledger (same shared database), flagged only when it
 //      crosses a daily threshold. Reported either way so a normal day's cost
@@ -160,12 +169,28 @@ serve(async (req) => {
     resend_id: r.resend_id,
     has_real_evidence: !!(r.sent_at && r.resend_id),
   }))
-  const noEvidence = chaseSample.length === 0
+  // Has process-invoice-chases (yca-platform, `0 9 * * *` UTC — see that
+  // function's own deploy-schedule comment) actually had its chance to run
+  // for targetDate yet? Always true when targetDate is a past calendar day
+  // (the real daily schedule: this function checks yesterday, at 10:30 UTC,
+  // over an hour after that cron's 09:00 run). Only matters for a manual
+  // re-check with `date` set to today — before 09:10 UTC (09:00 + a small
+  // grace period for the job to finish) that cron simply hasn't run yet
+  // today, so zero rows means "not due", not "missing".
+  const todayUtc = new Date().toISOString().slice(0, 10)
+  const chaseCronHasHadChance = targetDate < todayUtc
+    ? true
+    : targetDate > todayUtc
+      ? false
+      : new Date() >= new Date(`${targetDate}T09:10:00.000Z`)
+
+  const noEvidence = chaseSample.length === 0 && chaseCronHasHadChance
   if (noEvidence) anyFlag = true
   report.invoice_chase_evidence = {
     date_checked: targetDate,
     scope: 'invoice_chaser_log only — original invoice/quote sends via send-invoice/quote-send do not capture resend_id at all (known, separate gap)',
     sample: chaseSample,
+    chase_cron_has_had_chance_to_run: chaseCronHasHadChance,
     flagged_no_evidence_found: noEvidence,
   }
 
@@ -209,20 +234,69 @@ serve(async (req) => {
     .lte('created_at', windowEnd)
     .order('created_at', { ascending: false })
 
+  // Known-explained windows (ops_known_events — migration 20260829120000):
+  // a recorded platform restart/incident, or deliberate test activity
+  // logged via _shared/opsKnownEvents.ts's recordOpsKnownEvent(). Fetched
+  // pre-filtered to windows that could plausibly cover this target date;
+  // the per-error match below still checks each error's own timestamp
+  // (and function_name scope) individually rather than trusting the
+  // pre-filter alone.
+  const { data: knownEventRows } = await admin
+    .from('ops_known_events')
+    .select('starts_at, ends_at, function_name, reason')
+    .lte('starts_at', windowEnd)
+    .gte('ends_at', windowStart)
+
+  function explainError(createdAt: string, functionName: string | null) {
+    const t = new Date(createdAt).getTime()
+    for (const ev of knownEventRows ?? []) {
+      if (ev.function_name && ev.function_name !== functionName) continue
+      const start = new Date(ev.starts_at as string).getTime()
+      const end = new Date(ev.ends_at as string).getTime()
+      if (t >= start && t <= end) return ev
+    }
+    return null
+  }
+
+  const unexplainedErrors: Record<string, unknown>[] = []
+  const explainedErrors: Record<string, unknown>[] = []
+  for (const e of (errorRows ?? []) as Record<string, unknown>[]) {
+    const match = explainError(e.created_at as string, (e.function_name as string) ?? null)
+    if (match) {
+      explainedErrors.push({
+        function_name: e.function_name,
+        error_message: e.error_message,
+        created_at: e.created_at,
+        reason: match.reason,
+        explained_window: [match.starts_at, match.ends_at],
+      })
+    } else {
+      unexplainedErrors.push(e)
+    }
+  }
+
   const byFunction: Record<string, number> = {}
-  for (const e of errorRows ?? []) {
+  for (const e of unexplainedErrors) {
     const fn = (e.function_name as string) ?? '(unknown)'
     byFunction[fn] = (byFunction[fn] ?? 0) + 1
   }
-  if ((errorRows ?? []).length > 0) anyFlag = true
+  // Only genuinely unexplained errors trip the flag — an error fully
+  // covered by a known-event window is real evidence a human already ruled
+  // out, not a fresh finding.
+  if (unexplainedErrors.length > 0) anyFlag = true
   report.edge_function_errors_window = {
     date_checked: targetDate,
     window: [windowStart, windowEnd],
     total: (errorRows ?? []).length,
+    unexplained_total: unexplainedErrors.length,
     by_function: byFunction,
     // Full detail capped to keep the response reasonable — count above is
     // the real total regardless of how many are shown here.
-    recent: (errorRows ?? []).slice(0, 20),
+    recent: unexplainedErrors.slice(0, 20),
+    // Kept separate, never merged into `recent`/`by_function` above — see
+    // the check-5 comment at the top of this file.
+    explained_total: explainedErrors.length,
+    explained: explainedErrors.slice(0, 20),
   }
 
   // ── 6. Voice-to-quote spend on the target date ──────────────────
