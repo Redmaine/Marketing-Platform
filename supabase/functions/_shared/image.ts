@@ -231,7 +231,7 @@ export function conceptSystemFor(client: Record<string, any> | undefined, visual
 // Flux is a diffusion model with no negative channel, and only ever sees
 // Claude's OUTPUT — which, by construction, contains none of these nouns. The
 // negation happens in the one place negation actually works.
-const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare:\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- banners, flags, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare. This ban covers the mounting as well as the object: the pole, mast, staff, bracket, frame, stand or fitting a forbidden object would hang on is itself forbidden, because the generator fills an empty mounting with the very thing you left off it. A "bare flagpole" reliably comes back with a flag on it.\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- banners, flags, pennants, bunting, flagpoles, flagstaffs, masts, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
 // CRHQ prompt scaffolding for Flux (2026-08-20).
 //
@@ -1455,7 +1455,10 @@ export async function generatePostImage(
     return
   }
 
-  const { prompt, concept } = await buildImagePrompt(postBody, client.visual_style, client, sourceTitle)
+  // `let`, not `const` — the style loop below may rebuild both on its final
+  // attempt when the concept itself is what keeps breaking the brand's rules.
+  // See the concept-regeneration block in the style-compliance gate.
+  let { prompt, concept } = await buildImagePrompt(postBody, client.visual_style, client, sourceTitle)
 
   // Fails closed: an opportunity to enforce the brand's locked visual style
   // silently dropping is worse than one missing image. Disables this
@@ -1565,6 +1568,39 @@ export async function generatePostImage(
     // three real style verdicts.
     let checkerErrors = 0
     for (let attempt = 1; attempt <= STYLE_REVIEW_MAX_ATTEMPTS; attempt++) {
+      // Last-resort escape from a concept that cannot pass (29 Aug 2026,
+      // CRHQ instagram post 8b74b828). The concept was built ONCE, before
+      // this loop, and every attempt re-rendered it — so when the concept
+      // itself contains a prop that induces the violation, no number of
+      // retries can help. That post's concept was "steel flagpole bare
+      // against low cloud"; CRHQ's visual_style forbids flags outright, and
+      // all three attempts came back with a flag flying from that pole.
+      // Escalating the prompt (below) only ever said "no flags" louder while
+      // still asking for the flagpole that produces one.
+      //
+      // Rebuilding the concept re-rolls summariseToVisualConcept, so the
+      // final attempt gets a genuinely different scene rather than a fourth
+      // roll of the same dice. Deliberately only on the LAST attempt: the
+      // common case is a one-off bad render that the existing escalation
+      // fixes on attempt 2, and that path is unchanged — this costs one
+      // extra Anthropic call only on posts already headed for no image at
+      // all. Falls back to the existing prompt if the rebuild fails or comes
+      // back without the brand's style prefix intact.
+      if (attempt === STYLE_REVIEW_MAX_ATTEMPTS && lastViolation) {
+        try {
+          const rebuilt = await buildImagePrompt(postBody, client.visual_style, client, sourceTitle)
+          if (passesStylePrefixCheck(rebuilt.prompt, client.visual_style)) {
+            prompt = rebuilt.prompt
+            concept = rebuilt.concept
+            console.log(`[image] ${client.name}: rebuilt concept for final style attempt on ${contentQueueId} — "${concept.slice(0, 120)}"`)
+          } else {
+            console.error(`[image] ${client.name}: rebuilt concept dropped the visual_style prefix for ${contentQueueId} — keeping the original prompt`)
+          }
+        } catch (e) {
+          console.error(`[image] ${client.name}: concept rebuild failed for ${contentQueueId} — ${String((e as Error)?.message ?? e)}`)
+        }
+      }
+
       const attemptPrompt = lastViolation
         // Escalate on the rule that actually broke, same reasoning as
         // REVIEW_ESCALATION — regenerating with an identical prompt is another
