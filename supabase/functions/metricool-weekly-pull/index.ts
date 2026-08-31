@@ -28,6 +28,18 @@
 //     account-level timeline metrics, so Instagram's follower_change
 //     fields are left at 0 (current followers count is still accurate,
 //     from /explore/followers).
+//   - CURRENT FOLLOWERS, Facebook specifically (root-cause fix, 31 Aug
+//     2026): /explore/followers's `facebookFollowers` field returns 0 for
+//     every brand — confirmed live against CRHQ (real: 58, via its own
+//     Metricool PDF) and Riverside (real, stable at 28 all month via the
+//     timeline below) — a genuine gap in that Metricool endpoint for
+//     Facebook, not a wrong field name; `instagramFollowers` from the same
+//     endpoint is correct (confirmed exact match, 4363, against CRHQ's
+//     same PDF). Facebook's `followers` now comes from the most recent
+//     value of the SAME pageFollows timeline already being fetched here for
+//     follower_change — proven accurate, and no extra API call needed.
+//     /explore/followers is kept as the fallback if that timeline fetch
+//     fails or returns no data, same as before.
 //   - A platform with no connection for a brand (Metricool 403 "no X
 //     connection for blog") is skipped for that brand, not treated as a
 //     failure — same per-client error isolation as monthly-performance-pull.
@@ -187,6 +199,12 @@ async function pullBrandPlatform(
         follower_change_30d = last - first
         const idx7 = values30.findIndex((v) => v.dateTime >= sevenDaysAgo)
         follower_change_7d = idx7 >= 0 ? last - values30[idx7].value : 0
+        // Root-cause fix (31 Aug 2026) — see the header comment's "CURRENT
+        // FOLLOWERS, Facebook specifically" note. /explore/followers's
+        // facebookFollowers is broken (always 0); this timeline's own most
+        // recent value is the real, current count — confirmed against
+        // CRHQ's real Metricool PDF (58, exact match).
+        followers = last
       }
     } catch (e) {
       console.error(`[metricool-weekly-pull] ${brand}/${platform}: follower timeline failed:`, String((e as Error)?.message ?? e))
