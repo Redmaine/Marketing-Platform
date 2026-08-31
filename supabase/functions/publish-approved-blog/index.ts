@@ -627,9 +627,15 @@ serve(async (req) => {
       const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: finalStatus, published_at: now, live_url: liveUrl }).eq('id', blog_id)
       if (updErr) return json({ error: `Committed to GitHub, but could not update status: ${updErr.message}` }, 500)
 
-      // Only on a real 'published', not 'publish_unverified' — see
-      // _shared/blogDependentRelease.ts. Best-effort: a release failure must
-      // not block the publish response that already succeeded above.
+      // Skipped here on 'publish_unverified' — not because it can never
+      // release (outcomeFor in _shared/blogDependentRelease.ts now treats
+      // 'publish_unverified' as release-worthy too, 30 Aug 2026), but because
+      // an unverified GitHub-committed post can genuinely still turn into a
+      // real 'published' on retry, unlike Branch 3's manual case just below.
+      // sweep-blog-dependent-posts (every 30 min) is the real backstop for
+      // this branch, not a gap — this call here is purely the fast path for
+      // the common case. Best-effort either way: a release failure must not
+      // block the publish response that already succeeded above.
       let releasedCount = 0
       if (finalStatus === 'published') {
         try {
@@ -709,11 +715,27 @@ serve(async (req) => {
       return json({ ok: true, method: 'steady', liveUrl, published_at: now, blog_dependent_released: releasedCount })
     }
 
-    // ── Branch 3: everyone else (Riverside, CRHQ, …) ──────────────────────────
-    // No deploy target exists yet — mark published (live_url left NULL, since
-    // nothing was actually pushed anywhere) and hand back a standalone HTML
-    // file for Adrian to paste/upload manually.
-    const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'published', published_at: now }).eq('id', blog_id)
+    // ── Branch 3: everyone else (CRHQ, Quill — LinkedIn, …) ───────────────────
+    // Riverside used to fall through to here too — moved to Branch 1 on
+    // 18 Aug 2026 (see GITHUB_BRANDS above) once it had a real deploy target;
+    // this comment is kept current rather than left pointing at a brand that
+    // no longer reaches this branch.
+    //
+    // No deploy target exists at all for the brands still here — nothing is
+    // pushed anywhere, and 'published' would be an outright false claim, not
+    // an unverified one. Root-cause fix (30 Aug 2026): this used to write
+    // status: 'published' regardless — real evidence found 4 rows live in
+    // production with status='published' and live_url NULL for exactly this
+    // reason (3x Quill — LinkedIn, 1x CRHQ), the most recent from 19 Aug,
+    // well after the 12 Aug fetch-verification fix landed for Branch 1 (which
+    // never touches this branch at all). Uses 'publish_unverified' instead —
+    // the same honest status Branch 1 already falls back to when it can
+    // generate content but not confirm it live, with its own existing UI
+    // support (Blog.jsx's amber "not confirmed live" pill). See
+    // blogDependentRelease.ts's outcomeFor, updated alongside this so a
+    // dependent post doesn't wait forever on a status this branch can never
+    // promote to 'published' on its own.
+    const { error: updErr } = await admin.from('mkt_blog_posts').update({ status: 'publish_unverified', published_at: now }).eq('id', blog_id)
     if (updErr) return json({ error: updErr.message }, 500)
 
     // Best-effort — see the github branch above for why this can't block

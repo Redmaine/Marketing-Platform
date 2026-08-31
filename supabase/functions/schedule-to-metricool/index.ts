@@ -19,6 +19,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkCronAuth } from '../_shared/cronAuth.ts'
 import { platformSchedule } from '../_shared/platformSchedule.ts'
+import { isAlternatingImageStream } from '../_shared/image.ts'
 import { dayOfWeekUK, ukTimeSlotToUtc, ukWallClockIso } from '../_shared/ukTime.ts'
 
 const cors = {
@@ -437,17 +438,29 @@ serve(async (req) => {
     // never attached to the Metricool call when the target is Facebook.
     // Instagram (and any other connected platform) is unaffected.
     //
-    // Three exceptions: CRHQ, Quill (2026-08-10, Facebook/LinkedIn 50/50
-    // image test — with vs without AI artwork), and now Hormonely (22 Aug,
-    // same pilot pattern). All three brands' Facebook streams carry an image
-    // on every other post (CRHQ in crhq-nightly-content; Quill and Hormonely
-    // via _shared/image.ts's generalised alternation, see
-    // isAlternatingImageStream + mkt_clients.facebook_image_alternation_enabled),
-    // and this function builds the only Metricool payload in the repo — so
-    // without this carve-out those images would be generated, stored and
-    // paid for but never actually reach Facebook. Scoped by slug so the
-    // text-only rule still stands for every other brand.
-    const facebookTextOnly = item.platform === 'facebook' && client?.slug !== 'crhq' && client?.slug !== 'quill' && client?.slug !== 'hormonely'
+    // Two exceptions. CRHQ carries an image on every Facebook post (handled
+    // entirely inside crhq-nightly-content, a separate mechanism from the
+    // alternation below) — kept as its own explicit slug check, same pattern
+    // as _shared/image.ts's own wantsHeadlineOverlay. Quill and Hormonely
+    // (2026-08-10 / 22 Aug, Facebook/LinkedIn 50/50 image pilots — with vs
+    // without AI artwork) carry one on every OTHER post via
+    // _shared/image.ts's generalised alternation.
+    //
+    // Root-cause fix (30 Aug 2026): the alternation half used to be its own
+    // hardcoded `client?.slug !== 'quill' && client?.slug !== 'hormonely'`
+    // list here — a second, separately-maintained copy of exactly what
+    // isAlternatingImageStream + mkt_clients.facebook_image_alternation_enabled
+    // already answer generically. Currently in sync (verified live — no
+    // client has that column set without also being on this list), but nothing
+    // enforced that: a THIRD brand opted into the alternation purely via that
+    // DB column, with no matching code change here, would have had its real
+    // AI images generated, stored and paid for, then silently stripped before
+    // ever reaching Facebook — never surfaced anywhere, since attachingImage
+    // being false here isn't an error, just a quiet no-op. Calling the same
+    // exported function fill.ts/_shared/image.ts already use for this exact
+    // question closes that gap at the source instead of relying on this list
+    // being remembered next time.
+    const facebookTextOnly = item.platform === 'facebook' && client?.slug !== 'crhq' && !isAlternatingImageStream(client, 'facebook')
     const attachingImage = !!item.image_url && !facebookTextOnly
     if (attachingImage) requestBody.media = [item.image_url]
 

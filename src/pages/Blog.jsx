@@ -73,7 +73,16 @@ export function Blog() {
       a.href = blobUrl; a.download = pubData.filename || 'post.html'
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(blobUrl)
-      setNotice(`Marked published — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing yet, so the HTML downloaded for you to upload manually.`)
+      // Not "Marked published" (30 Aug 2026) — ${blog.client...} isn't wired
+      // for automatic publishing, so nothing has actually gone live yet;
+      // publish-approved-blog now leaves the row 'publish_unverified' for
+      // exactly this reason (see its Branch 3 comment). Saying "published"
+      // here was a real, live false claim — confirmed against 4 production
+      // rows sitting as status='published' with nothing live anywhere.
+      // "Recheck / retry" re-downloads the same file rather than confirming
+      // anything live — there is no site to check for this brand, so this
+      // row has no automatic path to 'published' at all.
+      setNotice(`HTML downloaded — ${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing, so upload it manually to make it live. Left as "not confirmed live" — nothing here can verify that for you.`)
     } else if (pubData.verified === false) {
       // Committed to GitHub successfully, but the live-URL check (added
       // 12 Aug 2026 — see publish-approved-blog's pollForTitle) couldn't
@@ -214,7 +223,16 @@ export function Blog() {
                   )}
                   {blog.status === 'publish_unverified' && (
                     <span style={{ fontSize: 12, color: '#92400E' }}>
-                      Committed to GitHub, but not yet confirmed live{blog.live_url ? ` at ${blog.live_url}` : ''} — check the site's Netlify deploy, then retry.
+                      {/* live_url is only ever set on the GitHub-committed path
+                          (publish-approved-blog Branch 1) — reliable signal for
+                          which message applies without a second hardcoded brand
+                          list here (30 Aug 2026). Branch 3 (no deploy target,
+                          e.g. CRHQ, Quill — LinkedIn) never sets it, and retry
+                          there just re-downloads the same file, not a real
+                          recheck — see runPublish's 'manual' branch. */}
+                      {blog.live_url
+                        ? `Committed to GitHub, but not yet confirmed live at ${blog.live_url} — check the site's Netlify deploy, then retry.`
+                        : `${blog.client?.short_name || blog.client?.name} isn't wired for automatic publishing — nothing here can confirm it's live. Retry only re-downloads the file.`}
                     </span>
                   )}
                 </div>

@@ -54,7 +54,16 @@ type Outcome = 'pass' | 'attention' | 'wait'
 
 function outcomeFor(blog: BlogRow | null): Outcome {
   if (!blog) return 'pass'                      // nothing to wait on at all
-  if (blog.status === 'published') return 'pass' // the thing it waited for happened
+  // 'publish_unverified' releases too, not just 'published' (30 Aug 2026) —
+  // both mean publish-approved-blog has already done everything it can for
+  // this blog; the only difference is whether a live-URL fetch could CONFIRM
+  // it. For Branch 3 (no deploy target — a manual handoff to Adrian) there
+  // is nothing to ever confirm, so treating 'publish_unverified' as still
+  // 'wait' would strand every dependent post on that brand forever, with no
+  // automatic path to ever release. A dependent post has no stake in whether
+  // the fetch-check specifically succeeded — only in whether publishing was
+  // actually attempted.
+  if (blog.status === 'published' || blog.status === 'publish_unverified') return 'pass'
   if (blog.status === 'rejected') return 'attention' // it will never happen
   return 'wait'                                  // genuinely still in the queue
 }
