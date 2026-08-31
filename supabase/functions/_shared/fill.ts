@@ -509,7 +509,29 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
           day = addDays(day, 1)
           continue
         }
-        if (!review.ok) errors.push(`${client.name}: needs attention — ${review.reason}`)
+        // Root-cause fix (31 Aug 2026) — this used to push to `errors`,
+        // which generate-client-content writes straight into
+        // edge_function_errors with no distinction from a genuine crash.
+        // needs_attention is the review pipeline WORKING: the post is
+        // already sitting in mkt_content_queue with review_status and
+        // review_reason set, exactly where Adrian's approval queue expects
+        // to find it, ready for a human decision. It is not a software
+        // failure and has never once meant one — every "generate-client-
+        // content error cluster" investigated so far (29 Aug: the real
+        // stale-pillar-state bug, now fixed; 30 Aug: five genuine repeat-
+        // topic catches against FRESH pillars never recently used, one
+        // blog-reference catch, one fabrication catch — all five brands'
+        // pillar rotation confirmed correct, e.g. Riverside's picked
+        // "Reliability" while its real last-4-published pillars were
+        // Relationship/Problem-solving/Finished work/Problem-solving, none
+        // a repeat) turned out to be this same channel correctly flagging
+        // real content issues, not a bug. Moved to `notes` — same
+        // reasoning the auto-approve line below already uses: a routine,
+        // expected outcome must not read as a failure in mkt_cron_log, and
+        // must not keep generating a same-shaped "is this the same
+        // incident or a new one" investigation every time content review
+        // does its job correctly.
+        if (!review.ok) notes.push(`${client.name}: needs attention — ${review.reason}`)
         if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
         // Image generation is best-effort and never blocks or fails the post —

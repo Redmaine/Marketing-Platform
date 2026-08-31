@@ -448,7 +448,12 @@ serve(async (req) => {
             errors.push(`${platform}: insert failed — ${insertError.message}`)
             continue
           }
-          if (!review.ok) errors.push(`${platform}: needs attention — ${review.reason}`)
+          // Same root-cause fix as _shared/fill.ts (31 Aug 2026) — this is
+          // the content review pipeline correctly catching a real issue,
+          // with the post already sitting in mkt_content_queue for a human
+          // to see, not a software failure. Was landing in edge_function_
+          // errors indistinguishable from a genuine crash.
+          if (!review.ok) notes.push(`${platform}: needs attention — ${review.reason}`)
           if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
           // Best-effort — never blocks or fails the post. Instagram every

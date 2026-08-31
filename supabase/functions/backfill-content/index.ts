@@ -46,6 +46,7 @@ serve(async (req) => {
 
   const started = Date.now()
   const errors: string[] = []
+  const notes: string[] = []
   let clientsProcessed = 0
   let postsGenerated = 0
   let blogsGenerated = 0
@@ -74,9 +75,14 @@ serve(async (req) => {
       }
 
       // Full social post gap across the requested window.
-      const { generated, errors: fillErrors } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET, windowDays)
+      const { generated, errors: fillErrors, notes: fillNotes } = await fillClientGap(admin, client, PER_CLIENT_POST_BUDGET, windowDays)
       postsGenerated += generated
       errors.push(...fillErrors)
+      // needs_attention flags land here now, not in errors (31 Aug 2026 fix
+      // — see fill.ts) — captured so they stay visible in this function's
+      // own response/log instead of silently disappearing now that they no
+      // longer ride along inside `errors`.
+      notes.push(...fillNotes)
     }
   } catch (e) {
     errors.push(`fatal: ${String((e as Error)?.message ?? e)}`)
@@ -87,8 +93,9 @@ serve(async (req) => {
     clients_processed: clientsProcessed,
     posts_generated: postsGenerated,
     errors: errors.length ? errors : null,
+    notes: notes.length ? notes : null,
     duration_ms: Date.now() - started,
   })
 
-  return json({ ok: true, clientsProcessed, postsGenerated, blogsGenerated, errors })
+  return json({ ok: true, clientsProcessed, postsGenerated, blogsGenerated, errors, notes })
 })
