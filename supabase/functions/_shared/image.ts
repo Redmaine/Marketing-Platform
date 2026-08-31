@@ -305,17 +305,63 @@ const CRHQ_SURFACE_CLOSER = 'Every surface in frame is bare, continuous material
 //
 // This maps the violation to what the image should BE instead, and never
 // repeats the offending noun.
-function styleCorrectionFor(violation: string | null): string {
+//
+// `allowsPeople` gate added 30 Aug 2026. Every branch below was written
+// against CRHQ's documentary-photography brief — a blanket no-people,
+// black-and-white, no-illustration style — and applied identically to every
+// client regardless of what THEIR OWN visual_style actually asks for. That
+// was invisible while every brand with image generation happened to want a
+// photographic, people-free look. It stopped being invisible the moment
+// Quill's visual_style was rewritten to a Silver Age comic-book pop-art
+// style built around "illustrated human figures... the point of this
+// style". A violation naming "person" or "figure" (plausible under Quill's
+// real remaining rule — "no real, identifiable, or photorealistic likeness
+// of any actual person" — a photorealism rule, not a people-presence rule)
+// would have hit the people branch below and told the model to strip the
+// figure out entirely: the exact opposite of what was asked for. The
+// generic fallback had the same problem — "make this unmistakably a real
+// black-and-white documentary photograph" — which would fight Quill's
+// primary-colour, halftone-dot, illustrated brief on any violation that
+// didn't match a more specific branch above it (e.g. Quill's own "no stock-
+// photography look" / "no fabricated scenes" rules, neither of which
+// matches any category below).
+//
+// `allowsPeople` is `!styleForbidsPeople(client.visual_style)` — the same
+// signal conceptSystemFor already uses to decide whether to inject
+// NO_PEOPLE_CONCEPT_RULE at the concept-generation stage (see above),
+// reused here rather than a new per-brand check. Confirmed live against
+// both real brands this matters for: true for CRHQ's actual visual_style
+// ("Absolutely no human faces of any kind" matches "no human"), false for
+// Quill's actual current visual_style (no such prohibition — people are
+// explicitly wanted). CRHQ's own correction text is untouched byte-for-byte
+// for the case that matters to it (allowsPeople === false) — only the
+// branches an illustrated-people brand can actually reach are new.
+function styleCorrectionFor(violation: string | null, allowsPeople: boolean): string {
   const v = String(violation ?? '').toLowerCase()
 
   if (/3d|cgi|render|digital art|concept art|illustration|cartoon|drawing|painting|sketch|smooth|flawless|airbrush|plastic|waxy/.test(v)) {
+    if (allowsPeople) {
+      // A brand whose own style calls for illustration should never be told
+      // to become a photograph — this branch exists for CRHQ, where
+      // "illustration" is itself the violation. For everyone else, defer to
+      // whatever the brand's own visual_style actually specifies (already
+      // stated earlier in this same prompt) rather than asserting a medium.
+      return 'Stay strictly within this brand\'s own stated visual style and technique — do not drift toward a different rendering medium, finish or treatment than the one specified.'
+    }
     return 'The previous frame was too clean and too perfect to read as a photograph. Make it unmistakably a scanned film negative: coarse silver-halide grain over the entire image including flat areas, visible dust and surface wear, uneven available light, slight handheld softness, and blown highlights that are not recovered.'
   }
   if (/control room|operations centre|operations center|monitor|screen|console|surveillance|command centre|command center/.test(v)) {
     return 'Set this somewhere else entirely — outdoors or in a public civic space. Choose a coastal or maritime location, a street, a field or open ground, a transport or infrastructure setting, or the exterior of a public building. No interior filled with equipment or displays.'
   }
   if (/face|portrait|eyes|person|figure|people|crowd/.test(v)) {
-    return 'Remove people from the frame entirely. Build the photograph around objects, architecture, landscape or weather instead. If any human presence is unavoidable it must be a distant silhouette seen from behind, no larger than a small part of the frame.'
+    if (!allowsPeople) {
+      return 'Remove people from the frame entirely. Build the photograph around objects, architecture, landscape or weather instead. If any human presence is unavoidable it must be a distant silhouette seen from behind, no larger than a small part of the frame.'
+    }
+    // This brand's own style wants a depicted figure — the violation is
+    // about HOW it was rendered (e.g. too real, too identifiable), not
+    // whether it appears at all. Removing it would fix the compliance
+    // check by defeating the brief.
+    return 'Keep the figure in the frame. Make it unmistakably stylised, not photorealistic — a generic illustrated character with no real or identifiable likeness, drawn strictly in this brand\'s own stated artistic technique and treatment.'
   }
   if (/text|letter|number|marking|sign|logo|insignia|registration|hull|digit|stencil/.test(v)) {
     // Same reasoning as REVIEW_ESCALATION.text — this is positive
@@ -326,7 +372,14 @@ function styleCorrectionFor(violation: string | null): string {
   if (/colour|color|saturat/.test(v)) {
     return 'Pure black and white only, with a full tonal range from deep true blacks to blown highlights. No colour cast of any kind.'
   }
-  return 'Make this unmistakably a real black-and-white documentary photograph on pushed Tri-X film: heavy visible grain, worn physical surfaces, uneven available light, handheld imperfection.'
+  if (!allowsPeople) {
+    return 'Make this unmistakably a real black-and-white documentary photograph on pushed Tri-X film: heavy visible grain, worn physical surfaces, uneven available light, handheld imperfection.'
+  }
+  // Brand-neutral fallback for anything that doesn't match a more specific
+  // category above — reasserts the brand's OWN spec (already stated
+  // earlier in the prompt) instead of prescribing a photographic medium
+  // that may directly contradict it.
+  return 'Re-read this brand\'s own visual style specification, stated above, and follow it exactly — do not drift toward a generic, photorealistic, or stock-photography look.'
 }
 
 // `sourceTitle` is the real story the post was written from — CRHQ's
@@ -1553,6 +1606,13 @@ export async function generatePostImage(
     // client.visual_style is guaranteed non-empty here — the early
     // fail-closed gate above already returned if it wasn't.
     const styleRules = String(client.visual_style ?? '').trim()
+    // Same signal conceptSystemFor already uses (see styleForbidsPeople's own
+    // comment) — computed once here, from this brand's real current
+    // visual_style, and passed into styleCorrectionFor below so a retry
+    // correction never tells an illustrated-people brand to remove its
+    // people, or a non-photographic brand to become a black-and-white
+    // documentary photograph. See styleCorrectionFor's header comment.
+    const allowsPeople = !styleForbidsPeople(styleRules)
     let rawBytes: Uint8Array | null = null
     let lastViolation: string | null = null
 
@@ -1606,7 +1666,7 @@ export async function generatePostImage(
         // REVIEW_ESCALATION — regenerating with an identical prompt is another
         // roll of the same dice. Phrased as a positive correction rather than
         // by quoting the violation back: see styleCorrectionFor.
-        ? `${prompt}\n\nCRITICAL — the previous attempt was rejected. ${styleCorrectionFor(lastViolation)} This is a hard requirement, not a preference.`
+        ? `${prompt}\n\nCRITICAL — the previous attempt was rejected. ${styleCorrectionFor(lastViolation, allowsPeople)} This is a hard requirement, not a preference.`
         : prompt
 
       const candidate = await generateRaw(attemptPrompt)
