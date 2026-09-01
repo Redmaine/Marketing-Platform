@@ -44,7 +44,20 @@ const METRICS_METHOD_FIXED_AT = Date.parse('2026-09-01T06:45:00Z')
 
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const REPORT_RECIPIENT = 'hello@yourcompanyai.co.uk'
-const ANALYTICS_PLATFORMS = ['facebook', 'instagram']
+// DEFECT 4 (fixed 1 Sep 2026): 'linkedin' was missing here while
+// metricool-weekly-pull's identically-named constant has always included it.
+// The two pipelines disagreed, exactly as they did over engagement rate.
+//
+// Consequence: both LinkedIn-only brands (Adrian Fielding — LinkedIn and
+// Quill — LinkedIn, connected_platforms = ['linkedin']) filtered down to an
+// EMPTY platform list, hit the silent `return { posts: [], errors: [] }`
+// below, and were reported as "0 posts published" every month — a total
+// blackout, not a partial error. Confirmed against real August data: the
+// weekly sync pulled 10 real LinkedIn posts for Adrian (5 of them
+// scheduled through this platform's own queue) and 18 for Quill — LinkedIn,
+// with real populated engagement rates, while the monthly report claimed
+// zero for both.
+const ANALYTICS_PLATFORMS = ['facebook', 'instagram', 'linkedin']
 
 // Tightened 1 Sep 2026. The previous version invited exactly the failure
 // Adrian flagged in the August reports: every brand came back with the same
@@ -188,6 +201,27 @@ function mapPlatformPost(network: string, p: Record<string, unknown>): MappedSta
       metricool_engagement_rate,
     }
   }
+  if (network === 'linkedin') {
+    // Mirrors metricool-weekly-pull's mapLinkedInPost, including its
+    // reasoning that LinkedIn exposes no distinct "reach" in Metricool's
+    // fields, so impressions is the closest available figure. Falling
+    // through to the Instagram shape below would have set reach to 0 for
+    // every LinkedIn post (no `p.reach` field) — wrong, and it would have
+    // quietly re-created a zero of exactly the kind being fixed here.
+    const impressions = Number(p.impressions ?? p.impressionsTotal ?? 0)
+    return {
+      metricool_post_id: String(p.postId ?? ''),
+      published_at: (p.publishedAt as { dateTime?: string } | undefined)?.dateTime
+        ?? (p.created as { dateTime?: string } | undefined)?.dateTime ?? null,
+      reach: impressions,
+      impressions,
+      likes: Number(p.likes ?? p.like ?? 0),
+      comments: Number(p.comments ?? 0),
+      shares: Number(p.shares ?? 0),
+      metricool_engagement_rate,
+    }
+  }
+
   return {
     metricool_post_id: String(p.postId ?? ''),
     published_at: (p.publishedAt as { dateTime?: string } | undefined)?.dateTime ?? null,
@@ -226,7 +260,19 @@ async function pullClientPosts(
 
   const connected: string[] = Array.isArray(client.connected_platforms) ? client.connected_platforms : []
   const platforms = ANALYTICS_PLATFORMS.filter((p) => connected.includes(p))
-  if (platforms.length === 0) return { posts: [], errors: [] }
+  // Fails LOUDLY now (fixed 1 Sep 2026). This previously returned zero posts
+  // and — crucially — an EMPTY errors array, so a brand whose platforms this
+  // function simply doesn't know how to pull was indistinguishable from a
+  // brand that genuinely published nothing. That silence is what let the
+  // missing 'linkedin' entry above go unnoticed for months while two brands
+  // were reported as completely inactive. A brand that IS connected to
+  // something we can't pull is a real configuration gap and must say so.
+  if (platforms.length === 0) {
+    const reason = connected.length
+      ? `${client.name}: connected to [${connected.join(', ')}] but this job can only pull [${ANALYTICS_PLATFORMS.join(', ')}] — no analytics pulled, so this brand's report is NOT a real zero`
+      : `${client.name}: no connected_platforms set — no analytics pulled, so this brand's report is NOT a real zero`
+    return { posts: [], errors: [reason] }
+  }
 
   const raw: Array<{ platform: string; stat: MappedStat }> = []
   const followerChangeByPlatform: Record<string, number | null> = {}
@@ -310,6 +356,10 @@ async function buildReport(
   // months of history that August is "your first month of tracked data" is
   // itself a false statement, which is the exact class of bug being fixed.
   noPrevReason: 'none' | 'incomparable' = 'none',
+  // True when the pull itself could not run (unsupported/absent platforms,
+  // no brand id, API failure) — as opposed to running and legitimately
+  // finding no posts. Gates the report wording below.
+  couldNotPull = false,
 ): Promise<{ reportText: string; top: PulledPost[]; bottom: PulledPost[]; avgEngagement: number | null; followerChangeTotal: number | null; platformBreakdown: Array<{ platform: string; posts: number; avg_engagement_rate: number | null }> }> {
   const rated = posts.filter((p) => p.engagement_rate != null)
   const sorted = [...rated].sort((a, b) => (b.engagement_rate ?? 0) - (a.engagement_rate ?? 0))
@@ -385,7 +435,13 @@ async function buildReport(
 
   const reportText = posts.length
     ? await callAnthropic(REPORT_SYSTEM_PROMPT, userMessage, 900)
-    : `No posts were published for ${client.name} in ${monthLabel}. Nothing to report against this month — check the content queue if this wasn't expected.`
+    // "We pulled and found nothing" vs "we could not pull at all" are
+    // different claims. Stating the first when the second is true is exactly
+    // the false-zero this whole fix is about — it is what told Adrian his
+    // LinkedIn brand published 0 posts in a month it actually published 5.
+    : couldNotPull
+      ? `Analytics could not be pulled for ${client.name} in ${monthLabel}, so there is nothing to report. This is NOT a statement that nothing was published — post activity for this brand is unknown this month. See the run errors for why.`
+      : `No posts were published for ${client.name} in ${monthLabel}. Nothing to report against this month — check the content queue if this wasn't expected.`
 
   return { reportText, top, bottom, avgEngagement, followerChangeTotal, platformBreakdown }
 }
@@ -584,7 +640,13 @@ serve(async (req) => {
         }
 
         const { reportText, top, bottom, avgEngagement, followerChangeTotal, platformBreakdown } =
-          await buildReport(client, posts, monthLabel, prevAvg, prevReport && !prevIsComparable ? 'incomparable' : 'none')
+          await buildReport(
+            client, posts, monthLabel, prevAvg,
+            prevReport && !prevIsComparable ? 'incomparable' : 'none',
+            // Zero posts AND a pull error means we never got to look — not
+            // that the brand was inactive.
+            posts.length === 0 && pullErrors.length > 0,
+          )
 
         const { error: reportError } = await admin.from('mkt_monthly_reports').upsert({
           client_id: client.id,
