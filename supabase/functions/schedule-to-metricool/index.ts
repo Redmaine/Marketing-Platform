@@ -99,6 +99,39 @@ async function logEdgeError(admin: ReturnType<typeof createClient>, message: str
 // Now consults the platform's own schedule first and only falls back to the
 // client-wide default when a brand genuinely has no rows for that platform —
 // which preserves the old behaviour exactly for those brands.
+// Is this exact slot already taken? Mirrors the collision guard below and the
+// mkt_content_queue_one_auto_post_per_slot partial unique index EXACTLY — same
+// tuple, same status/generated_by filters — because a slot this says is free
+// but the guard then rejects is precisely the infinite loop fixed on 1 Sep
+// 2026 (see nextSlot's header).
+async function slotIsTaken(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  clientId: string,
+  platform: string,
+  slot: Date,
+  excludeId: string | null,
+): Promise<boolean> {
+  let q = admin
+    .from('mkt_content_queue')
+    .select('id')
+    .eq('client_id', clientId)
+    .eq('platform', platform)
+    .eq('scheduled_for', slot.toISOString())
+    .eq('content_type', 'post')
+    .neq('status', 'rejected')
+    .in('generated_by', ['ai', 'cron'])
+  if (excludeId) q = q.neq('id', excludeId)
+  const { data, error } = await q.maybeSingle()
+  // Fail CLOSED on a lookup error: treating an unknown slot as free is how a
+  // duplicate reaches Metricool. Treating it as taken only delays the post.
+  if (error) {
+    console.error(`[schedule-to-metricool] slot occupancy lookup failed for ${slot.toISOString()}: ${error.message} — treating slot as taken`)
+    return true
+  }
+  return !!data
+}
+
 async function nextSlot(
   // Loosely typed to match platformSchedule's own Admin alias. Typing this as
   // ReturnType<typeof createClient> reproduces the supabase-js generic
@@ -108,7 +141,11 @@ async function nextSlot(
   admin: any,
   client: Record<string, any>,
   platform: string,
-): Promise<Date> {
+  // The post being scheduled — excluded from its own occupancy check, and
+  // needed so a re-attempt of an already-slotted post doesn't collide with
+  // itself. Nullable so existing callers/tests without one still work.
+  excludeId: string | null = null,
+): Promise<Date | null> {
   const now = new Date()
   const schedule = await platformSchedule(admin, client, platform)
 
@@ -133,11 +170,21 @@ async function nextSlot(
       // after picking the right slot, writing it with setHours() would still
       // land an hour off during BST.
       const slot = ukTimeSlotToUtc(d, time)
-      if (slot > now) return slot
+      // Skip slots that are already occupied (1 Sep 2026). Previously this
+      // returned the first FUTURE slot regardless of whether anything was
+      // already in it, which is what created the permanent retry loop: a
+      // post whose own time had passed rolled forward onto an already-
+      // scheduled post's slot, the collision guard below correctly refused
+      // to duplicate it on Metricool, and every subsequent retry recomputed
+      // the identical occupied slot forever.
+      if (slot > now && !(await slotIsTaken(admin, client.id, platform, slot, excludeId))) return slot
     }
-    // Every configured day inside the next fortnight is already behind us
-    // (only reachable if the schedule is very sparse). Fall through rather
-    // than inventing a slot this platform never posts in.
+    // Every configured day inside the next fortnight is already behind us OR
+    // fully booked. Fall through to the brand-wide default rather than
+    // inventing a slot this platform never posts in — for a brand whose
+    // per-platform stream is saturated (the real 1 Sep 2026 case: every
+    // 06:00 UK slot taken for a fortnight) that fallback stream is usually
+    // where the free slots actually are.
   }
 
   // No per-platform schedule for this brand+platform — original behaviour.
@@ -148,16 +195,32 @@ async function nextSlot(
     .map((d) => DOW_LOWER[String(d).trim().toLowerCase()])
     .filter((n) => n != null)
 
+  // Horizon widened from 14 to 90 days alongside the occupancy check: with
+  // occupied slots now skipped, a fortnight is not enough for a brand posting
+  // 3x a week with a full calendar, and falling off the end of the walk used
+  // to return an arbitrary (possibly occupied) "tomorrow" slot — another way
+  // back into the same loop.
+  const HORIZON_DAYS = 90
+
   if (targets.length === 0) {
-    const d = new Date(now); d.setDate(d.getDate() + 1); return ukTimeSlotToUtc(d, fallbackTime)
+    for (let i = 1; i <= HORIZON_DAYS; i++) {
+      const d = new Date(now); d.setDate(now.getDate() + i)
+      const slot = ukTimeSlotToUtc(d, fallbackTime)
+      if (slot > now && !(await slotIsTaken(admin, client.id, platform, slot, excludeId))) return slot
+    }
+    return null
   }
-  for (let i = 0; i < 14; i++) {
+  for (let i = 0; i <= HORIZON_DAYS; i++) {
     const d = new Date(now); d.setDate(now.getDate() + i)
     if (!targets.includes(dayOfWeekUK(d))) continue
     const slot = ukTimeSlotToUtc(d, fallbackTime)
-    if (slot > now) return slot
+    if (slot > now && !(await slotIsTaken(admin, client.id, platform, slot, excludeId))) return slot
   }
-  const d = new Date(now); d.setDate(d.getDate() + 1); return ukTimeSlotToUtc(d, fallbackTime)
+  // Genuinely nothing free anywhere in the horizon. Returning null rather
+  // than an occupied slot lets the caller fail with an honest, actionable
+  // message instead of handing the collision guard a slot it must reject —
+  // which is the difference between "needs a human" and an endless retry.
+  return null
 }
 
 // ── Metricool call with retry ────────────────────────────────────────────────
@@ -362,7 +425,18 @@ serve(async (req) => {
       ? chosenDate
       // Platform-aware: this post's own platform decides the slot, not the
       // brand-wide default. See nextSlot's header for the CRHQ 07:00 case.
-      : await nextSlot(admin, client, item.platform)
+      // Now returns the next FREE slot (or null if the calendar is full).
+      : await nextSlot(admin, client, item.platform, item.id)
+
+    // Calendar genuinely full — a real, terminal condition that no amount of
+    // retrying fixes, so say so plainly instead of failing the same way every
+    // 30 minutes forever.
+    if (!slot) {
+      const msg = 'No free slot available for this brand/platform in the next 90 days — every configured slot is already taken. Free a slot or set an explicit time on this post.'
+      await markFailed(admin, item.id, msg)
+      await logEdgeError(admin, msg)
+      return json({ error: msg }, 409)
+    }
 
     // Issue 6: reject if the resolved slot is in the past.
     if (slot <= new Date()) {

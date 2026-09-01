@@ -90,7 +90,14 @@ serve(async (req) => {
 
   let resolved = 0
   const stillStuck: string[] = []
+  // Failures that retrying cannot fix, separated from transient ones (1 Sep
+  // 2026). Before this, a post that could NEVER succeed was reported
+  // identically to one that had merely hit a cold-boot 502 — so a permanent
+  // conflict produced the same "0 resolved" line every 30 minutes for 15
+  // hours and read as routine noise rather than something needing a decision.
+  const needsAttention: string[] = []
   for (const row of rows) {
+    const label = `${row.id} (${row.client?.name ?? row.client_id}, ${row.platform})`
     try {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/schedule-to-metricool`, {
         method: 'POST',
@@ -101,25 +108,45 @@ serve(async (req) => {
       // "gave up" line to edge_function_errors already — this sweep does not
       // repeat that detail, only tallies the outcome so it can report a
       // one-line summary rather than staying silent about the backlog.
-      if (res.ok) resolved += 1
-      else stillStuck.push(`${row.id} (${row.client?.name ?? row.client_id}, ${row.platform}) — HTTP ${res.status}`)
+      if (res.ok) { resolved += 1; continue }
+      // 409 (slot conflict / calendar full) and 422 (validation: no image,
+      // inactive client, past explicit time) are deterministic given the same
+      // row — the identical call next tick returns the identical status. Only
+      // a human changing something clears these, so they are named as such
+      // instead of being retried into the void.
+      if (res.status === 409 || res.status === 422) {
+        let detail = ''
+        try { detail = String(((await res.json()) as { error?: string })?.error ?? '').slice(0, 200) } catch { /* body already consumed or not json */ }
+        needsAttention.push(`${label} — HTTP ${res.status}${detail ? `: ${detail}` : ''}`)
+      } else {
+        stillStuck.push(`${label} — HTTP ${res.status}`)
+      }
     } catch (e) {
-      stillStuck.push(`${row.id} (${row.client?.name ?? row.client_id}, ${row.platform}) — ${String((e as Error)?.message ?? e)}`)
+      stillStuck.push(`${label} — ${String((e as Error)?.message ?? e)}`)
     }
   }
 
-  const summary = `${rows.length} stuck post(s) found, ${resolved} resolved, ${stillStuck.length} still stuck after re-attempt` +
+  const unresolved = stillStuck.length + needsAttention.length
+  const summary = `${rows.length} stuck post(s) found, ${resolved} resolved, ${unresolved} still stuck after re-attempt` +
+    (needsAttention.length ? ` (${needsAttention.length} need a human — retrying will not fix these)` : '') +
     (rows.length === MAX_PER_SWEEP ? ` (hit the ${MAX_PER_SWEEP}-per-sweep cap — there may be more; next tick will pick them up)` : '')
   console.log(`[sweep-stuck-metricool-posts] ${summary}`)
 
   // Only logged as an incident when something is STILL stuck after this
   // sweep's own re-attempt — a post that resolved on this pass is exactly the
   // sweep doing its job, not something Adrian needs a notification about.
-  if (stillStuck.length) {
-    await logEdgeError(admin, `${summary}:\n${stillStuck.join('\n')}`.slice(0, 4000))
+  if (unresolved) {
+    const lines = [
+      ...(needsAttention.length ? ['NEEDS A DECISION (retrying will not clear these):', ...needsAttention] : []),
+      ...(stillStuck.length ? ['Transient — will retry next tick:', ...stillStuck] : []),
+    ]
+    await logEdgeError(admin, `${summary}:\n${lines.join('\n')}`.slice(0, 4000))
   }
 
-  return new Response(JSON.stringify({ ok: true, found: rows.length, resolved, stillStuck: stillStuck.length }), {
+  return new Response(JSON.stringify({
+    ok: true, found: rows.length, resolved,
+    stillStuck: stillStuck.length, needsAttention: needsAttention.length,
+  }), {
     headers: { 'Content-Type': 'application/json' },
   })
 })
