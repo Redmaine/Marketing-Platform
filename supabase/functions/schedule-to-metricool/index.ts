@@ -461,8 +461,52 @@ serve(async (req) => {
     // question closes that gap at the source instead of relying on this list
     // being remembered next time.
     const facebookTextOnly = item.platform === 'facebook' && client?.slug !== 'crhq' && !isAlternatingImageStream(client, 'facebook')
-    const attachingImage = !!item.image_url && !facebookTextOnly
+    const attachingImage = !!item.image_url && !facebookTextOnly && item.content_type !== 'reel'
     if (attachingImage) requestBody.media = [item.image_url]
+
+    // ── Reels (1 Sep 2026) ───────────────────────────────────────────────────
+    // Same endpoint, same ScheduledPost shape, same `media` field as an image —
+    // confirmed against Metricool's real OpenAPI spec, so this needed no new
+    // integration, only this branch.
+    //
+    // instagramData.type = 'REEL' is VERIFIED, not assumed. The spec types it
+    // as a bare `string` with no enum, and every existing CRHQ Instagram post
+    // leaves it unset, so neither told us the accepted value. Confirmed by
+    // sending a deliberately invalid value to the live API, whose validator
+    // answered: "Valid types are: 'POST, REEL, TRIAL_REEL, STORY'". That probe
+    // was rejected 400 and created nothing.
+    //
+    // Fails CLOSED: a reel row with no video_url is refused rather than
+    // scheduled as a text-only post. A Reel without its video is not a
+    // degraded post, it is a broken one, and silently publishing the copy
+    // alone would be worse than not publishing.
+    const isReel = item.content_type === 'reel'
+    if (isReel) {
+      if (item.platform !== 'instagram') {
+        const msg = `Reel ${item.id} is on platform "${item.platform}" — Reels are Instagram-only.`
+        await markFailed(admin, item.id, msg)
+        return json({ error: msg }, 422)
+      }
+      if (!item.video_url) {
+        const msg = item.caption_status === 'failed'
+          ? `Reel ${item.id} has no captioned video — captioning failed: ${item.caption_error ?? 'no reason recorded'}. Re-run captioning before scheduling.`
+          : `Reel ${item.id} has no captioned video yet (caption_status: ${item.caption_status ?? 'unset'}). Not scheduling a Reel without its video.`
+        await markFailed(admin, item.id, msg)
+        return json({ error: msg }, 422)
+      }
+      requestBody.media = [item.video_url]
+      // Ask Metricool to pull and keep its own copy. Our Storage URL is
+      // durable, but this removes any dependence on it staying reachable
+      // between scheduling and publication.
+      requestBody.saveExternalMediaFiles = true
+      requestBody.instagramData = {
+        ...(requestBody.instagramData as Record<string, unknown> | undefined),
+        type: 'REEL',
+        // Also surface it on the main feed rather than the Reels tab alone —
+        // for a brand this size, reach matters more than feed tidiness.
+        showReelOnFeed: true,
+      }
+    }
 
     // ── AI disclosure ────────────────────────────────────────────────────────
     // Meta requires organic posts carrying photorealistic AI-generated imagery
@@ -485,6 +529,21 @@ serve(async (req) => {
     // Idempotent: the update re-sends the whole body for an existing post, so
     // without the includes() guard a rescheduled post would accumulate the
     // line twice.
+    // REELS AND THIS DISCLOSURE — OPEN DECISION, NOT SETTLED (1 Sep 2026).
+    // Reels do NOT currently carry it. That is deliberate and load-bearing,
+    // not a side effect of `attachingImage` being false for them: a Reel here
+    // is Craig's own real footage with captions burned in, so there is no
+    // AI-generated imagery to disclose, and Meta's requirement is specifically
+    // about photorealistic AI-generated media. Asserting "Illustration:
+    // AI-generated" over real footage would itself be a false statement.
+    //
+    // What is genuinely unsettled is the transcription: the captions are
+    // AI-produced text over real video. That is not what this line was written
+    // for and not, on the current reading, what Meta's rule targets — but it
+    // is Adrian's call, not one to make silently in either direction. If the
+    // answer is that Reels should carry a disclosure, it should almost
+    // certainly be its own wording about captions, not this image line.
+    // Flagged for a decision; deliberately left OFF until there is one.
     if (attachingImage && client?.slug === 'crhq' && !String(item.body ?? '').includes(AI_IMAGE_DISCLOSURE)) {
       requestBody.text = `${item.body}\n\n${AI_IMAGE_DISCLOSURE}`
     }
