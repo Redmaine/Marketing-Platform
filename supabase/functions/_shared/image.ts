@@ -121,12 +121,23 @@ const DEFAULT_CONCEPT_SYSTEM = 'You turn a social media post into a short, concr
 // Blanket "no people" rules in a client's own visual_style. Deliberately does
 // NOT match Once Upon A You's "no specific children" — that brand is
 // illustrated children's books, where people are the point and only
-// identifiable real children are barred. Verified against all 8 non-CRHQ
-// visual_style values live: matches exactly the six that carry a blanket rule
-// (hormonely, ps, quill, quill-linkedin, riverside, yca) and neither ouay,
-// neuro-decoded nor steady.
+// identifiable real children are barred.
+//
+// Negative lookaheads added 1 Sep 2026: YCA's real visual_style reads "No
+// people is banned — people doing the work are the entire point", a
+// double-negative meaning people are REQUIRED, not forbidden. The bare regex
+// matched the literal substring "no people" with no notion of the sentence
+// negating itself, so YCA was silently misclassified as a no-people brand —
+// its own concept-generation stage was being told to strip people from every
+// scene for a client whose entire premise is real tradespeople at work.
+// Confirmed no other brand's phrasing was affected: hormonely, ps,
+// quill-linkedin and riverside all still match on their own plain "no
+// people"/"no ... figures" (none use this "is banned" construction), and
+// ouay/neuro-decoded/steady/quill still correctly don't match at all — see
+// the mechanical regex test run against all nine brands' real live text
+// before this change shipped.
 const STYLE_FORBIDS_PEOPLE =
-  /\bno\s+(?:illustrated\s+|depicted\s+)?(?:people|persons?|humans?)\b|\bno\s+(?:illustrated\s+|depicted\s+|ai-generated\s+)?(?:human\s+)?figures?\b|\bfaces\s+or\s+figures\b/i
+  /\bno\s+(?:illustrated\s+|depicted\s+)?(?:people|persons?|humans?)\b(?!\s+is\s+(?:banned|forbidden|prohibited|disallowed))|\bno\s+(?:illustrated\s+|depicted\s+|ai-generated\s+)?(?:human\s+)?figures?\b(?!\s+is\s+(?:banned|forbidden|prohibited|disallowed))|\bfaces\s+or\s+figures\b/i
 
 export function styleForbidsPeople(visualStyle: string | null): boolean {
   return STYLE_FORBIDS_PEOPLE.test(String(visualStyle || ''))
@@ -840,10 +851,15 @@ async function disableImageGenForPlatform(admin: Admin, client: Record<string, a
   }
 }
 
-// ── Flux (Replicate) — CRHQ's provider ───────────────────────────────────────
+// ── Flux (Replicate) — CRHQ's and YCA's provider ─────────────────────────────
 // CRHQ moved off Stability to Flux 1.1 Pro (16 Aug 2026) after client feedback
-// that the ink-wash illustration output read as obviously AI-generated. Every
-// other client is untouched and still goes through Stability below.
+// that the ink-wash illustration output read as obviously AI-generated.
+// YCA added 1 Sep 2026 for the same reason: its visual_style demands
+// documentary-realistic photography of real tradespeople, and Stability's
+// SDXL output does not read as genuine photorealism the way Flux does — this
+// is exactly the failure mode CRHQ was moved off Stability for, just for a
+// photographic-realism brand instead of an illustration one. Every other
+// client is untouched and still goes through Stability below.
 //
 // The catch this introduces, and the reason the review backstop further down
 // exists: flux-1.1-pro has NO negative-prompt parameter. On Stability, CRHQ
@@ -854,11 +870,23 @@ async function disableImageGenForPlatform(admin: Admin, client: Record<string, a
 // positive prompt, which has already recorded one real failure (a rendered
 // face slipped through). Prose rules are still sent (belt), but the backstop
 // is what enforces them (braces).
+//
+// CRITICAL for YCA specifically: the face half of that backstop exists to
+// REJECT faces (CRHQ's brief bans people entirely). YCA's brief requires the
+// opposite — real tradespeople, visibly doing real work, are the entire
+// point. The backstop below is now gated on each brand's own
+// styleForbidsPeople() signal (see generateRaw) so it keeps rejecting faces
+// for CRHQ while never rejecting YCA's images for containing exactly what
+// YCA asked for. Moving YCA onto this function WITHOUT that gate would have
+// silently stripped the image from every single YCA post, forever — the
+// backstop would reject a face on attempt 1, 2 and 3, "no attempt passed
+// review", and the post would go out text-only every time, with nothing in
+// any log reading as more than routine review noise.
 const FLUX_MODEL_URL = 'https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions'
 const FLUX_POLL_TIMEOUT_MS = 180_000
 
 function usesFluxProvider(client: Record<string, any>): boolean {
-  return client?.slug === 'crhq'
+  return client?.slug === 'crhq' || client?.slug === 'yca'
 }
 
 async function callFlux(prompt: string, token: string): Promise<Uint8Array> {
@@ -970,30 +998,41 @@ interface ImageMeasurement {
 }
 
 // Pure threshold application. Same measurement always yields the same verdict.
+//
+// allowsPeople (1 Sep 2026): the face check exists to enforce a brand's OWN
+// no-people rule (CRHQ) — it must never fire for a brand whose visual_style
+// requires visible people (YCA). Defaults to false (reject faces) so every
+// existing caller — the harness included — keeps its exact prior behaviour
+// unless it explicitly opts in. The text/legibility check is unaffected by
+// this flag: a rendered hull number or watermark-like artifact is not
+// something any brand's brief asks for.
 export function judgeImageMeasurement(
   measurement: ImageMeasurement,
   thresholds = IMAGE_REVIEW_THRESHOLDS,
+  allowsPeople = false,
 ): { verdict: 'pass' | 'reject'; reasons: string[] } {
   const reasons: string[] = []
 
-  for (const f of measurement.faces ?? []) {
-    const conf = Number(f.confidence ?? 0)
-    if (conf < thresholds.face.minConfidence) continue
-    const area = Number(f.area_fraction ?? 0)
-    const names = (Array.isArray(f.resolvable_landmarks) ? f.resolvable_landmarks : []).map((s) => String(s).toLowerCase())
+  if (!allowsPeople) {
+    for (const f of measurement.faces ?? []) {
+      const conf = Number(f.confidence ?? 0)
+      if (conf < thresholds.face.minConfidence) continue
+      const area = Number(f.area_fraction ?? 0)
+      const names = (Array.isArray(f.resolvable_landmarks) ? f.resolvable_landmarks : []).map((s) => String(s).toLowerCase())
 
-    const prominent = area >= thresholds.face.prominenceAreaFraction
-    const resolvable = names.length >= thresholds.face.minResolvableLandmarks
-      || (thresholds.face.eyesAloneCount && names.includes('eyes'))
+      const prominent = area >= thresholds.face.prominenceAreaFraction
+      const resolvable = names.length >= thresholds.face.minResolvableLandmarks
+        || (thresholds.face.eyesAloneCount && names.includes('eyes'))
 
-    // AND, deliberately — a large dark mass with no resolvable features is
-    // acceptable, and so is a crisp face too small to identify. Rejecting on
-    // detection alone is the blunt behaviour this replaces.
-    if (prominent && resolvable) {
-      reasons.push(
-        `FACE: area ${(area * 100).toFixed(1)}% of frame (>=${(thresholds.face.prominenceAreaFraction * 100).toFixed(1)}%) ` +
-        `AND ${names.length} resolvable landmark(s) [${names.join('/')}] — conf ${conf.toFixed(2)}, ${f.lighting}, ${f.orientation}`,
-      )
+      // AND, deliberately — a large dark mass with no resolvable features is
+      // acceptable, and so is a crisp face too small to identify. Rejecting on
+      // detection alone is the blunt behaviour this replaces.
+      if (prominent && resolvable) {
+        reasons.push(
+          `FACE: area ${(area * 100).toFixed(1)}% of frame (>=${(thresholds.face.prominenceAreaFraction * 100).toFixed(1)}%) ` +
+          `AND ${names.length} resolvable landmark(s) [${names.join('/')}] — conf ${conf.toFixed(2)}, ${f.lighting}, ${f.orientation}`,
+        )
+      }
     }
   }
 
@@ -1013,9 +1052,10 @@ export function judgeImageMeasurement(
 // the shipped code path rather than a parallel copy of it.
 export async function reviewGeneratedImage(
   bytes: Uint8Array,
+  allowsPeople = false,
 ): Promise<{ verdict: 'pass' | 'reject'; reasons: string[]; measurement: ImageMeasurement }> {
   const measurement = await measureImage(bytes)
-  return { ...judgeImageMeasurement(measurement), measurement }
+  return { ...judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, allowsPeople), measurement }
 }
 
 // Exported for the same reason — the harness generates with identical
@@ -1500,13 +1540,19 @@ export async function generatePostImage(
     }
   }
 
-  // Provider split: CRHQ on Flux (Replicate), everyone else on Stability.
+  // Provider split: CRHQ and YCA on Flux (Replicate), everyone else on Stability.
   const useFlux = usesFluxProvider(client)
   const apiKey = useFlux ? Deno.env.get('REPLICATE_API_TOKEN') : Deno.env.get('STABILITY_AI_API_KEY')
   if (!apiKey) {
     console.error(`[image] ${client.name}: ${useFlux ? 'REPLICATE_API_TOKEN' : 'STABILITY_AI_API_KEY'} not set — skipping image for ${contentQueueId}`)
     return
   }
+  // Gates the Flux face backstop below (1 Sep 2026) — see usesFluxProvider's
+  // header. Computed here, once, from the same signal buildImagePrompt and
+  // the generic style-compliance gate already use, so "does this brand allow
+  // people" can never disagree with itself across the three places it's
+  // checked.
+  const brandAllowsPeople = !styleForbidsPeople(client.visual_style)
 
   // `let`, not `const` — the style loop below may rebuild both on its final
   // attempt when the concept itself is what keeps breaking the brand's rules.
@@ -1558,7 +1604,7 @@ export async function generatePostImage(
           continue
         }
 
-        const { verdict, reasons } = judgeImageMeasurement(measurement)
+        const { verdict, reasons } = judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, brandAllowsPeople)
         await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement, concept)
 
         if (verdict === 'pass') {
