@@ -36,11 +36,34 @@ import { checkCronAuth } from '../_shared/cronAuth.ts'
 // deno-lint-ignore no-explicit-any
 type Admin = any
 
+// When the engagement-rate methodology was corrected (see mapPlatformPost's
+// ROOT CAUSE note). Reports generated before this instant hold figures from
+// the old local recompute and are NOT comparable with anything after it.
+// 2026-09-01T06:45:00Z — immediately before the first corrected run.
+const METRICS_METHOD_FIXED_AT = Date.parse('2026-09-01T06:45:00Z')
+
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
 const REPORT_RECIPIENT = 'hello@yourcompanyai.co.uk'
 const ANALYTICS_PLATFORMS = ['facebook', 'instagram']
 
-const REPORT_SYSTEM_PROMPT = `You are Quill's performance analyst. You write clear, direct monthly performance reports for social media clients. No fluff, no corporate language. Tell the client what happened, what worked, what did not, and what changes are being made. Maximum 400 words per brand.`
+// Tightened 1 Sep 2026. The previous version invited exactly the failure
+// Adrian flagged in the August reports: every brand came back with the same
+// invented scaffolding ("three likely culprits", "what worked / what didn't")
+// and confident causal explanations the model had no evidence for — one
+// report literally wrote "Without visibility into post content, I can't
+// pinpoint why" and then supplied five numbered causes anyway. The data this
+// model receives is thin (metrics, and post bodies only where a Metricool id
+// matched a queue row), so anything resembling diagnosis was being invented
+// to fill the shape of a report.
+const REPORT_SYSTEM_PROMPT = `You are Quill's performance analyst. You write short, direct monthly performance reports for social media clients. No fluff, no corporate language. Maximum 400 words.
+
+ABSOLUTE RULES — these override any instinct to produce a complete-looking report:
+- Report ONLY figures given to you in the data below. Never invent, estimate, extrapolate or round a metric you were not given.
+- If a metric is marked NOT AVAILABLE, say plainly that it could not be measured this month. Never substitute zero, never describe it as flat/none/declining, and never build an argument on it.
+- Do NOT speculate about CAUSES unless the data given actually evidences them. You are not shown audience demographics, algorithm behaviour, creative quality, competitor activity or posting-time experiments — so never assert or list these as reasons. No "likely culprits" lists.
+- If the data is too thin to explain what happened, say exactly that in one sentence. A short honest report is correct and expected; padding it with plausible-sounding analysis is a serious failure.
+- Do not recommend specific changes that the data does not support. "Not enough signal to change strategy yet" is a valid and often correct conclusion.
+- Vary structure to fit what the data actually shows. Do not impose a fixed template on every brand.`
 
 const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -67,11 +90,11 @@ function monthBoundsUTC(monthsAgo: number, from: Date): { start: Date; end: Date
   return { start, end, monthYear, label }
 }
 
-function engagementRate(likes: number | null, comments: number | null, shares: number | null, reach: number | null): number | null {
-  if (!reach || reach <= 0) return null
-  const total = (likes ?? 0) + (comments ?? 0) + (shares ?? 0)
-  return (total / reach) * 100
-}
+// NOTE: a local engagementRate() helper — (likes+comments+shares)/reach —
+// used to live here and was the source of the false figures in the 1 Sep 2026
+// report. Deleted rather than left unused, so nothing can accidentally reach
+// for it again; Metricool's own `engagement` percentage is the only rate this
+// function now reports. See mapPlatformPost's ROOT CAUSE note.
 
 function hourUK(iso: string): number | null {
   const d = new Date(iso)
@@ -113,10 +136,46 @@ function bestBucket(posts: PulledPost[], keyFn: (p: PulledPost) => string | null
 // field names/shapes as mapFacebookPost/mapInstagramPost in
 // metricool-weekly-pull/index.ts (the empirically-verified mapping; kept in
 // sync deliberately rather than importing across function boundaries).
-function mapPlatformPost(
-  network: string,
-  p: Record<string, unknown>,
-): { metricool_post_id: string; published_at: string | null; reach: number | null; impressions: number | null; likes: number | null; comments: number | null; shares: number | null } {
+interface MappedStat {
+  metricool_post_id: string
+  published_at: string | null
+  reach: number | null
+  impressions: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  // Metricool's OWN engagement rate for this post, as a percentage. See the
+  // ROOT CAUSE note below — this is the authoritative figure and the one the
+  // client's Metricool PDF reports. null when the API omitted it.
+  metricool_engagement_rate: number | null
+}
+
+// ROOT CAUSE of the false engagement figures in the 1 Sep 2026 report
+// (fixed 1 Sep 2026). This mapping previously read only likes/comments/
+// shares and the caller then RECOMPUTED a rate as
+// (likes+comments+shares)/reach — silently discarding `p.engagement`, which
+// Metricool returns as its own already-computed engagement PERCENTAGE and
+// which is what the client's Metricool PDF actually shows.
+//
+// metricool-weekly-pull/index.ts already had this right and documented it
+// ("Metricool's `engagement` field is a percentage (e.g. 22.22), not a raw
+// interaction count — confirmed live"); this function simply never adopted
+// it, so the two pipelines disagreed about the same posts.
+//
+// The recompute undercounts because Metricool's engagement includes
+// interaction types that likes+comments+shares does not (clicks, saves,
+// etc). Proven against real synced August data for Riverside: the 3 Aug post
+// has 0 likes, 0 comments, 0 shares and reach 20 — the recompute calls that
+// 0.00%, Metricool calls it 10%. Across August the two methods give
+// Riverside 3.78% (what was emailed) vs ~11.1% (Metricool's own), and Quill
+// 0.08% vs ~4.8%.
+function mapPlatformPost(network: string, p: Record<string, unknown>): MappedStat {
+  // Metricool omits `engagement` on some rows; null (not 0) so a missing
+  // value is never averaged in as a real zero — see ratedPosts below.
+  const rawEngagement = p.engagement
+  const metricool_engagement_rate =
+    rawEngagement == null || Number.isNaN(Number(rawEngagement)) ? null : Number(rawEngagement)
+
   if (network === 'facebook') {
     return {
       metricool_post_id: String(p.postId ?? ''),
@@ -126,6 +185,7 @@ function mapPlatformPost(
       likes: Number(p.like ?? 0),
       comments: Number(p.comments ?? 0),
       shares: Number(p.shares ?? 0),
+      metricool_engagement_rate,
     }
   }
   return {
@@ -136,6 +196,7 @@ function mapPlatformPost(
     likes: Number(p.likes ?? 0),
     comments: Number(p.comments ?? 0),
     shares: Number(p.shares ?? 0),
+    metricool_engagement_rate,
   }
 }
 
@@ -167,7 +228,7 @@ async function pullClientPosts(
   const platforms = ANALYTICS_PLATFORMS.filter((p) => connected.includes(p))
   if (platforms.length === 0) return { posts: [], errors: [] }
 
-  const raw: Array<{ platform: string; stat: { metricool_post_id: string; published_at: string | null; reach: number | null; impressions: number | null; likes: number | null; comments: number | null; shares: number | null } }> = []
+  const raw: Array<{ platform: string; stat: MappedStat }> = []
   const followerChangeByPlatform: Record<string, number | null> = {}
 
   for (const platform of platforms) {
@@ -221,7 +282,10 @@ async function pullClientPosts(
       likes: stat.likes,
       comments: stat.comments,
       shares: stat.shares,
-      engagement_rate: engagementRate(stat.likes, stat.comments, stat.shares, stat.reach),
+      // Metricool's own figure, NOT a local recompute — see mapPlatformPost's
+      // ROOT CAUSE note. Stays null when Metricool didn't supply one, so a
+      // missing rate is excluded from the average rather than counted as 0%.
+      engagement_rate: stat.metricool_engagement_rate,
       follower_change: followerChangeByPlatform[platform] ?? null,
     }
   })
@@ -240,21 +304,45 @@ async function buildReport(
   posts: PulledPost[],
   monthLabel: string,
   prevAvgEngagement: number | null,
-): Promise<{ reportText: string; top: PulledPost[]; bottom: PulledPost[]; avgEngagement: number; followerChangeTotal: number; platformBreakdown: Array<{ platform: string; posts: number; avg_engagement_rate: number | null }> }> {
+  // Why there is no comparison, when there isn't one. 'none' = genuinely no
+  // earlier report; 'incomparable' = one exists but predates the
+  // engagement-rate fix. These must read differently: telling a brand with
+  // months of history that August is "your first month of tracked data" is
+  // itself a false statement, which is the exact class of bug being fixed.
+  noPrevReason: 'none' | 'incomparable' = 'none',
+): Promise<{ reportText: string; top: PulledPost[]; bottom: PulledPost[]; avgEngagement: number | null; followerChangeTotal: number | null; platformBreakdown: Array<{ platform: string; posts: number; avg_engagement_rate: number | null }> }> {
   const rated = posts.filter((p) => p.engagement_rate != null)
   const sorted = [...rated].sort((a, b) => (b.engagement_rate ?? 0) - (a.engagement_rate ?? 0))
   const top = sorted.slice(0, 3)
   const bottom = sorted.slice(-3).reverse()
-  const avgEngagement = rated.length ? rated.reduce((s, p) => s + (p.engagement_rate ?? 0), 0) / rated.length : 0
+  // null, not 0, when nothing was rateable — same reasoning as
+  // followerChangeTotal below. "We have no engagement data" and "engagement
+  // was zero" are different claims and must not render identically.
+  const avgEngagement: number | null = rated.length
+    ? rated.reduce((s, p) => s + (p.engagement_rate ?? 0), 0) / rated.length
+    : null
 
   // follower_change is stored per-platform on each post row (see the file
   // header); the report's single "follower change" figure is the sum across
   // this brand's platforms for the month.
+  //
+  // Fixed 1 Sep 2026 — this previously did `sum + (v ?? 0)`, silently turning
+  // "Metricool gave us no follower timeline for this platform" into a hard
+  // 0. The LLM then stated that non-fact as one ("you gained zero followers"),
+  // with nothing anywhere distinguishing it from a genuine, measured zero.
+  // Instagram ALWAYS lands in that no-data branch (fetchFollowerChange returns
+  // null for every non-facebook network), so any Instagram-only brand was
+  // guaranteed a fabricated "zero followers" line every month.
+  //
+  // Now: null means "not measurable", a number means a real measured delta.
+  // Only platforms that actually returned a value contribute to the sum.
   const platformSet = Array.from(new Set(posts.map((p) => p.platform)))
-  const followerChangeTotal = platformSet.reduce((sum, plat) => {
-    const v = posts.find((p) => p.platform === plat)?.follower_change
-    return sum + (v ?? 0)
-  }, 0)
+  const followerChangeValues = platformSet
+    .map((plat) => posts.find((p) => p.platform === plat)?.follower_change)
+    .filter((v): v is number => typeof v === 'number')
+  const followerChangeTotal: number | null = followerChangeValues.length
+    ? followerChangeValues.reduce((sum, v) => sum + v, 0)
+    : null
 
   const platformBreakdown = platformSet.map((platform) => {
     const platPosts = posts.filter((p) => p.platform === platform)
@@ -280,10 +368,16 @@ async function buildReport(
     'Bottom 3 performing posts (by engagement rate):',
     bottom.length ? bottom.map(fmt).join('\n') : '(no rated posts)',
     '',
-    prevAvgEngagement != null
-      ? `Average engagement rate: ${avgEngagement.toFixed(2)}% (previous month: ${prevAvgEngagement.toFixed(2)}%)`
-      : `Average engagement rate: ${avgEngagement.toFixed(2)}% (no previous month to compare — this is the first month of data)`,
-    `Follower change this month: ${followerChangeTotal >= 0 ? '+' : ''}${followerChangeTotal}`,
+    avgEngagement == null
+      ? 'Average engagement rate: NOT AVAILABLE — Metricool returned no engagement rate for any post this month. Do not state or imply an engagement figure, and do not describe engagement as zero, low or declining.'
+      : prevAvgEngagement != null
+        ? `Average engagement rate: ${avgEngagement.toFixed(2)}% (previous month: ${prevAvgEngagement.toFixed(2)}%)`
+        : noPrevReason === 'incomparable'
+          ? `Average engagement rate: ${avgEngagement.toFixed(2)}%. NO MONTH-ON-MONTH COMPARISON IS AVAILABLE: earlier months were measured with a different, now-corrected method and are not comparable. Do NOT compare to any previous month, do NOT describe this as a rise or fall, and do NOT say this is the brand's first month of data — earlier months exist, they simply cannot be compared.`
+          : `Average engagement rate: ${avgEngagement.toFixed(2)}% (no previous month exists to compare against — this is genuinely the brand's first month of tracked data)`,
+    followerChangeTotal == null
+      ? 'Follower change this month: NOT AVAILABLE — no follower timeline exists for this brand\'s platform(s) (Metricool exposes one for Facebook only). Do not state or imply a follower figure, and do not say followers were flat, static or that none were gained.'
+      : `Follower change this month: ${followerChangeTotal >= 0 ? '+' : ''}${followerChangeTotal}`,
     '',
     'Platform breakdown:',
     platformBreakdown.map((b) => `- ${b.platform}: ${b.posts} posts, ${b.avg_engagement_rate != null ? b.avg_engagement_rate.toFixed(1) + '% avg engagement' : 'no rated posts'}`).join('\n'),
@@ -350,8 +444,8 @@ interface BrandEmailSection {
   name: string
   tier: string | null
   totalPosts: number
-  avgEngagement: number
-  followerChangeTotal: number
+  avgEngagement: number | null
+  followerChangeTotal: number | null
   reportText: string
   topExcerpt: string | null
 }
@@ -364,7 +458,13 @@ function buildEmailHtml(sections: BrandEmailSection[], monthLabel: string): stri
   for (const s of sections) {
     html += `<div style="border:1px solid #E5E9EC;border-radius:10px;padding:16px 18px;margin-bottom:16px">`
     html += `<div style="font-size:16px;font-weight:700">${esc(s.name)}${s.tier ? ` <span style="color:#8FA3B1;font-weight:400;font-size:13px">· ${esc(s.tier)}</span>` : ''}</div>`
-    html += `<div style="color:#8FA3B1;font-size:13px;margin:6px 0 12px">${s.totalPosts} post${s.totalPosts === 1 ? '' : 's'} published · ${s.avgEngagement.toFixed(1)}% avg engagement · ${s.followerChangeTotal >= 0 ? '+' : ''}${s.followerChangeTotal} followers</div>`
+    // "not measured" is rendered as exactly that — never as 0.0% / +0, which
+    // is what made the August email read as confident false data.
+    const engLabel = s.avgEngagement == null ? 'engagement not measured' : `${s.avgEngagement.toFixed(1)}% avg engagement`
+    const folLabel = s.followerChangeTotal == null
+      ? 'follower change not measured'
+      : `${s.followerChangeTotal >= 0 ? '+' : ''}${s.followerChangeTotal} followers`
+    html += `<div style="color:#8FA3B1;font-size:13px;margin:6px 0 12px">${s.totalPosts} post${s.totalPosts === 1 ? '' : 's'} published · ${engLabel} · ${folLabel}</div>`
     html += `<div style="font-size:14px;color:#2E4057;white-space:pre-wrap;line-height:1.5">${esc(s.reportText)}</div>`
     if (s.topExcerpt) {
       html += `<div style="margin-top:12px;padding:10px 12px;background:#F7F9FA;border-left:4px solid #E8410A;border-radius:6px;font-size:13px;color:#2E4057">`
@@ -461,13 +561,30 @@ serve(async (req) => {
 
         const { data: prevReport } = await admin
           .from('mkt_monthly_reports')
-          .select('avg_engagement_rate')
+          .select('avg_engagement_rate, generated_at')
           .eq('client_id', client.id)
           .eq('month_year', prevMonthYear)
           .maybeSingle()
 
+        // Only compare against a previous month that was measured the SAME
+        // way. Every report generated before METRICS_METHOD_FIXED_AT used the
+        // old local recompute (see mapPlatformPost's ROOT CAUSE note), which
+        // reads several times lower than Metricool's own rate — so a naive
+        // month-on-month diff across that boundary invents a dramatic trend
+        // that is purely an artefact of the fix. Real example caught during
+        // verification: Riverside's first corrected report announced
+        // "engagement doubled, 5.83% -> 11.87%" when 5.83% was simply July
+        // measured the broken way. Suppressed rather than shown with a
+        // caveat — a comparison this misleading is worse than none.
+        const prevGeneratedAt = prevReport?.generated_at ? new Date(prevReport.generated_at).getTime() : null
+        const prevIsComparable = prevGeneratedAt != null && prevGeneratedAt >= METRICS_METHOD_FIXED_AT
+        const prevAvg = prevIsComparable ? (prevReport?.avg_engagement_rate ?? null) : null
+        if (prevReport && !prevIsComparable) {
+          notes.push(`${client.name}: previous month (${prevMonthYear}) predates the engagement-rate fix — month-on-month comparison suppressed rather than shown against an incompatible figure`)
+        }
+
         const { reportText, top, bottom, avgEngagement, followerChangeTotal, platformBreakdown } =
-          await buildReport(client, posts, monthLabel, prevReport?.avg_engagement_rate ?? null)
+          await buildReport(client, posts, monthLabel, prevAvg, prevReport && !prevIsComparable ? 'incomparable' : 'none')
 
         const { error: reportError } = await admin.from('mkt_monthly_reports').upsert({
           client_id: client.id,
@@ -485,7 +602,10 @@ serve(async (req) => {
         // from. Skip the optimisation write so latestOptimisationNotes keeps
         // returning last month's (still-relevant) notes rather than this
         // being overwritten with nothing.
-        if (posts.length) {
+        // avgEngagement != null as well as posts.length: buildOptimisation
+        // compares each pillar's rate against the overall average to decide
+        // top vs underperforming, which is meaningless with no average.
+        if (posts.length && avgEngagement != null) {
           const { topPillars, underPillars, bestTime, bestDay, contentNotes } = await buildOptimisation(client, posts, avgEngagement)
           const { error: optError } = await admin.from('mkt_client_optimisation').upsert({
             client_id: client.id,
@@ -497,8 +617,10 @@ serve(async (req) => {
             content_notes: contentNotes || null,
           }, { onConflict: 'client_id,month_year' })
           if (optError) errors.push(`${client.name}: mkt_client_optimisation upsert failed — ${optError.message}`)
-        } else {
+        } else if (!posts.length) {
           notes.push(`${client.name}: no posts pulled for ${monthLabel} — optimisation notes unchanged`)
+        } else {
+          notes.push(`${client.name}: ${posts.length} post(s) pulled for ${monthLabel} but Metricool returned no engagement rate for any of them — optimisation notes unchanged`)
         }
 
         emailSections.push({
@@ -511,7 +633,7 @@ serve(async (req) => {
           topExcerpt: top[0] ? excerpt(top[0].body) : null,
         })
 
-        console.log(`[monthly-performance-pull] ${client.name}: ${posts.length} post(s), ${avgEngagement.toFixed(1)}% avg engagement`)
+        console.log(`[monthly-performance-pull] ${client.name}: ${posts.length} post(s), ${avgEngagement == null ? 'engagement not measured' : `${avgEngagement.toFixed(1)}% avg engagement`}`)
         void platformBreakdown // computed for the report prompt; not persisted separately
       } catch (e) {
         const msg = `${client.name}: ${String((e as Error)?.message ?? e)}`
