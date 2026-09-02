@@ -24,9 +24,9 @@ import { checkCronAuth } from '../_shared/cronAuth.ts'
 // were: they are the QUERY bounds (.gte/.lt on scheduled_for) and the
 // week-bucketing dayOfWeekUK already handles the UK weekday correctly.
 import { formatUkDate } from '../_shared/ukTime.ts'
+import { SUPPRESSED_SLUGS, recipientFor } from '../_shared/weeklyPromptRecipients.ts'
 
 const FROM = 'Your Company AI <hello@yourcompanyai.co.uk>'
-const RECIPIENT = 'hello@yourcompanyai.co.uk'
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 function dayOfWeekUK(d: Date): number {
@@ -77,10 +77,16 @@ serve(async (req) => {
     const { monday, nextMonday } = thisWeekBounds(now)
     const dateLabel = formatUkDate(monday, { day: 'numeric', month: 'short', year: 'numeric' })
 
-    const { data: clients, error: clientsError } = await admin
-      .from('mkt_clients').select('id, name').eq('active', true).order('name')
+    const { data: allClients, error: clientsError } = await admin
+      .from('mkt_clients').select('id, name, slug').eq('active', true).order('name')
     if (clientsError) throw new Error(`could not load active clients: ${clientsError.message}`)
-    console.log(`[weekly-content-prompt] starting run for week of ${dateLabel} — ${clients?.length ?? 0} active client(s)`)
+    // Filtered here, before the loop, rather than skipped inside it — a
+    // suppressed brand should never even query its planned posts, and
+    // keeping it out of clientsProcessed/emailsSent means those two numbers
+    // stay an honest count of what this run actually attempted.
+    const clients = (allClients ?? []).filter((c) => !SUPPRESSED_SLUGS.has(c.slug))
+    const suppressedCount = (allClients?.length ?? 0) - clients.length
+    console.log(`[weekly-content-prompt] starting run for week of ${dateLabel} — ${clients.length} active client(s) to email, ${suppressedCount} suppressed`)
 
     for (const client of clients ?? []) {
       clientsProcessed++
@@ -122,10 +128,11 @@ serve(async (req) => {
           'Anything to add? A job completed, a product update, a piece of news? Reply to this email and it will be worked into this week\'s posts.',
         ].join('\n')
 
+        const recipient = recipientFor(client.slug)
         const r = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: FROM, to: RECIPIENT, subject, text }),
+          body: JSON.stringify({ from: FROM, to: recipient, subject, text }),
         })
         if (!r.ok) {
           const detail = await r.text()
@@ -133,7 +140,7 @@ serve(async (req) => {
           continue
         }
         emailsSent++
-        console.log(`[weekly-content-prompt] ${client.name}: sent`)
+        console.log(`[weekly-content-prompt] ${client.name}: sent to ${recipient}`)
       } catch (e) {
         const msg = `${client.name}: ${String((e as Error)?.message ?? e)}`
         errors.push(msg)
