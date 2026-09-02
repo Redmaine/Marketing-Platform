@@ -3,6 +3,10 @@ import { useSearchParams } from 'react-router-dom'
 import supabase from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { awaitingBucket, partitionAwaiting } from '../lib/awaitingApproval'
+import {
+  blogOutcome, isBlogLinked, mentionsBlogWithoutLink, pickRelatedBlog, byScheduledFor,
+  BLOG_WAIT_MESSAGE, BLOG_REJECTED_MESSAGE, BLOG_UNLINKED_MESSAGE,
+} from '../lib/blogDependency'
 // UK-local display formatting (src/lib/ukTime.js). Only the RENDERING of
 // stored UTC timestamps goes through these — every query filter, sort and
 // date-bucketing key below is left on the raw value, deliberately.
@@ -15,12 +19,17 @@ const PLATFORMS = ['facebook', 'instagram', 'google_business', 'blog']
 // total — the point of the grouping is that a post can be visually separated
 // (because it needs different handling) without being quietly dropped from the
 // count, which is what previously made three screens disagree.
-const AWAITING_SECTION_META = {
-  ready: { label: 'Ready to review', hint: 'Passed automated review and still in date.' },
-  needs_attention: { label: 'Failed automated review', hint: 'Flagged by content review — read before approving or rejecting.' },
-  blog_dependent: { label: 'Waiting on a blog post', hint: 'Blocked until the blog they reference is published.' },
-  stale: { label: 'Past their scheduled slot', hint: 'The scheduled date has already passed — reschedule or reject.' },
+// Per-card state badge. Replaces the old AWAITING_SECTION_META section
+// headings, which only worked while the list was grouped by bucket — the
+// queue is now ordered strictly by scheduled_for, so bucket travels with the
+// card instead of with its position. 'ready' has no badge: it is the
+// unremarkable default, and badging it would just add noise to every row.
+const AWAITING_BADGE_META = {
+  needs_attention: { label: 'Failed review', bg: '#FEF2F2', color: '#991B1B', border: '#FECACA' },
+  blog_dependent: { label: 'Waiting on a blog', bg: '#EEF2FF', color: '#3730A3', border: '#C7D2FE' },
+  stale: { label: 'Past its slot', bg: '#FEF3C7', color: '#92400E', border: '#F59E0B' },
 }
+
 
 // Platform labels/colours for the queue's platform badge — every value ever
 // written to mkt_content_queue.platform must have an entry here (falls back
@@ -39,40 +48,6 @@ function PlatformPill({ platform }) {
       {meta.label}
     </span>
   )
-}
-
-// A social post that references a blog (either explicitly linked via blog_id
-// by approve-blog, or detected by these phrases in the copy) is
-// "blog-dependent": it can't be approved until the blog it points to is live,
-// or it would go out advertising a post that 404s.
-const BLOG_KEYWORDS = ['blog', 'latest post', 'we wrote', 'read more']
-const BLOG_WAIT_MESSAGE = 'Waiting for blog to publish before this post can be approved.'
-const BLOG_REJECTED_MESSAGE = 'The blog this post references was rejected, so it will never publish. Rewrite this post without the reference, or reject it.'
-
-// A blog only ever leaves the approval queue two ways — it publishes, or it
-// is rejected. Until 22 Aug 2026 both this file and the server-side sweep
-// only handled the first, so a post whose blog was REJECTED waited forever
-// for something that could never happen.
-//
-// MUST stay in agreement with outcomeFor() in
-// supabase/functions/_shared/blogDependentRelease.ts. A given post can be
-// evaluated by either path depending on when it was created and which runs
-// first, so if the two rules ever disagree a post's state would flip
-// depending on who looked at it last.
-//   'pass'      — nothing left to wait on (no blog, or it published)
-//   'attention' — the blog was rejected; a human has to decide
-//   'wait'      — genuinely still in the approval queue
-function blogOutcome(blog) {
-  if (!blog) return 'pass'
-  if (blog.status === 'published') return 'pass'
-  if (blog.status === 'rejected') return 'attention'
-  return 'wait'
-}
-
-function referencesBlog(item) {
-  if (item.review_status === 'blog_dependent') return true
-  const body = (item.body || '').toLowerCase()
-  return BLOG_KEYWORDS.some((k) => body.includes(k))
 }
 
 // ISO timestamp -> value for <input type="datetime-local"> in local time.
@@ -150,7 +125,7 @@ export function ContentQueue() {
     //               that 404s — the precise thing blog_dependent exists to
     //               prevent — so a human decides instead.
     // Mirrors releaseForBlogs() in _shared/blogDependentRelease.ts; see
-    // blogOutcome above on why the two must not drift apart.
+    // blogOutcome in lib/blogDependency.js on why the two must not drift apart.
     const releaseIds = []
     const attentionIds = []
     for (const i of itemRows) {
@@ -206,12 +181,25 @@ export function ContentQueue() {
   const awaiting = partitionAwaiting(items, now)
   // The full canonical set, ordered so the actionable ones lead: clean posts
   // first, then ones that failed review, then blog-blocked, then stale.
-  const pending = [
-    ...awaiting.ready,
-    ...awaiting.needsAttention,
-    ...awaiting.blogDependent,
-    ...awaiting.stale,
-  ]
+  // STRICTLY soonest-due-first, across every brand, with no grouping.
+  //
+  // This used to concatenate the four partitionAwaiting buckets — ready,
+  // then needsAttention, then blogDependent, then stale — which meant the
+  // list was ordered by BUCKET first and by date only within each bucket.
+  // (Not by client_id or created_at: the load() query has always ordered by
+  // scheduled_for, and partitionAwaiting preserves that order inside each
+  // bucket. The grouping was the whole of the problem.)
+  //
+  // The effect was that a post due TOMORROW sat below every clean post due
+  // weeks later, purely because it had failed review or was blog-blocked —
+  // i.e. the posts most likely to need a decision before their slot arrives
+  // were the hardest ones to reach. That is worst on mobile, where the queue
+  // is reviewed a card at a time and "further down" effectively means unseen.
+  //
+  // Bucket is now shown per card (see AWAITING_BADGE_META in the row below)
+  // instead of as a section heading, so nothing about a post's state is lost
+  // — it just no longer dictates position.
+  const pending = [...awaiting.all].sort(byScheduledFor)
   // Was scoped to only overdue rows (scheduled_for < now). Scheduling to
   // Metricool happens once, synchronously, at the moment a post is approved
   // — there is no later cron sweep that retries it — so an approved post
@@ -248,8 +236,7 @@ export function ContentQueue() {
   // one a keyword-detected teaser is presumably waiting on). Uses loaded state
   // for rendering; approve() re-checks against the DB before acting.
   function relatedBlog(item) {
-    if (item.blog_id) return blogs.find((b) => b.id === item.blog_id) || null
-    return blogs.filter((b) => b.client_id === item.client_id && b.status !== 'published')[0] || null
+    return pickRelatedBlog(item, blogs)
   }
   // Render-time state: is this post blog-dependent, is it currently blocked,
   // and is it blocked on something that can never resolve?
@@ -259,12 +246,15 @@ export function ContentQueue() {
   // as "waiting", because waiting implies it will sort itself out and this
   // never will. The UI branches on it to say so plainly.
   function blogBlockState(item) {
-    if (!referencesBlog(item)) return { dependent: false, blocked: false, dead: false }
+    if (!isBlogLinked(item)) {
+      return { dependent: false, blocked: false, dead: false, unlinkedMention: mentionsBlogWithoutLink(item) }
+    }
     const outcome = blogOutcome(relatedBlog(item))
     return {
       dependent: true,
       blocked: outcome === 'wait' || outcome === 'attention',
       dead: outcome === 'attention',
+      unlinkedMention: false,
     }
   }
   // Authoritative gate used at approval time. Returns the wait message if the
@@ -272,13 +262,22 @@ export function ContentQueue() {
   // keyword-detected post's review_status as blog_dependent so the queue
   // reflects the true state on the next load.
   async function blogGate(item) {
-    if (!referencesBlog(item)) return null
+    // Same scope as blogBlockState — a post nothing linked to a blog is not
+    // gated. This function used to be the ACTIVE way false blocks became
+    // durable: on a keyword-only match it wrote review_status='blog_dependent'
+    // (or 'needs_attention' with the rejected-blog reason) against a guessed
+    // blog, turning a render-time mistake into a stored one. No row had been
+    // damaged that way yet when this was fixed — 0 rows carried the
+    // rejected-blog reason on 2 Sep 2026 — but only because nobody had
+    // pressed Approve on one of the 19 affected queue posts.
+    if (!isBlogLinked(item)) return null
     let blog = null
     if (item.blog_id) {
       const { data } = await supabase.from('mkt_blog_posts').select('id, status').eq('id', item.blog_id).maybeSingle()
       blog = data || null
     }
-    if (!blog) {
+    // Only reached for a 'blog_dependent' row with no blog_id — see relatedBlog.
+    if (!blog && item.review_status === 'blog_dependent') {
       const { data } = await supabase.from('mkt_blog_posts').select('id, status')
         .eq('client_id', item.client_id).neq('status', 'published')
         .order('created_at', { ascending: false }).limit(1)
@@ -661,26 +660,16 @@ export function ContentQueue() {
             </div>
 
             <div style={{ marginTop: 12 }}>
-              {pending.map((item, idx) => {
+              {pending.map((item) => {
                 const blk = blogBlockState(item)
-                // `pending` is pre-sorted by bucket (see partitionAwaiting
-                // above), so a change of bucket between consecutive items is
-                // exactly a section boundary — no separate grouping pass and
-                // no second source of truth about which section an item is in.
-                const bucket = awaitingBucket(item, now)
-                const showHeader = idx === 0 || bucket !== awaitingBucket(pending[idx - 1], now)
-                const meta = AWAITING_SECTION_META[bucket]
-                const bucketCount = pending.filter((p) => awaitingBucket(p, now) === bucket).length
+                // Bucket is now a per-card badge, not a section heading. The
+                // list is ordered strictly by scheduled_for, so consecutive
+                // cards are no longer grouped by bucket and a change between
+                // them is not a section boundary — deriving headings from
+                // adjacency here would print a heading on almost every row.
+                const badge = AWAITING_BADGE_META[awaitingBucket(item, now)]
                 return (
                 <Fragment key={item.id}>
-                {showHeader && meta && (
-                  <div style={{ marginTop: idx === 0 ? 0 : 22, marginBottom: 8 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>
-                      {meta.label} <span style={{ fontWeight: 500, color: 'var(--muted)' }}>({bucketCount})</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>{meta.hint}</div>
-                  </div>
-                )}
                 <div className="card" style={{ marginBottom: 12, display: 'flex', gap: 10 }}>
                   <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} style={{ marginTop: 4 }} />
                   {/* minWidth: 0 overrides the flex item's default auto min-width
@@ -745,6 +734,15 @@ export function ContentQueue() {
                             style={{ background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}>⚠ Unreviewed</span>
                         )}
                         <span className="pill" style={{ background: '#FEF3C7', color: '#92400E' }}>pending</span>
+                        {/* Carries what the old section headings used to say.
+                            Without it, ordering strictly by date would have
+                            silently dropped the only indication that a post
+                            is blog-blocked, failed review, or past its slot. */}
+                        {badge && (
+                          <span className="pill" style={{ background: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}>
+                            {badge.label}
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -757,6 +755,14 @@ export function ContentQueue() {
                     {item.review_status === 'needs_attention' && item.review_reason && (
                       <p style={{ fontSize: 12, color: '#991B1B', background: '#FEF2F2', border: '1px solid #FEE2E2', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
                         Review failed twice — {item.review_reason}. Edit and approve manually, or reject.
+                      </p>
+                    )}
+
+                    {/* Mentions a blog but nothing links it to one. Advisory,
+                        not a block — see mentionsBlogWithoutLink. */}
+                    {blk.unlinkedMention && (
+                      <p style={{ fontSize: 12, color: 'var(--muted)', background: 'var(--chalk)', border: '1px solid var(--line)', borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                        {BLOG_UNLINKED_MESSAGE}
                       </p>
                     )}
 

@@ -21,6 +21,21 @@
 //     branches, a future code path, direct SQL), or for anything the
 //     real-time hook missed for any reason.
 //
+// The frontend's half of this rule now lives in src/lib/blogDependency.js
+// (extracted 2 Sep 2026 so it could be unit-tested against real rows). If
+// outcomeFor() below changes, blogOutcome() there must change with it — they
+// had already drifted once: 'publish_unverified' was added here on 30 Aug
+// 2026 and not there, so the sweep released a post the queue page still drew
+// as "waiting for blog".
+//
+// Note the scope difference, which is deliberate and not drift: this file
+// only ever considers rows already stamped review_status='blog_dependent'.
+// The frontend briefly went wider, treating a BLOG_KEYWORDS match in the body
+// as blog-dependence too, and gating those posts against a guessed blog —
+// 19 posts in the approval queue were blocked that way on 2 Sep 2026. It no
+// longer does; both sides now agree that only blog_id or a 'blog_dependent'
+// stamp makes a post blog-dependent.
+//
 // Release condition mirrors ContentQueue.jsx's pre-existing client-side
 // logic exactly, not a reinvention of it: a draft, blog_dependent post is
 // released (review_status -> 'passed', it already passed content review —
