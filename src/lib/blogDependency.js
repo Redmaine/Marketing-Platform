@@ -73,7 +73,31 @@ export function blogOutcome(blog) {
 // It also matches the server, which only ever considers rows already
 // stamped 'blog_dependent'; the keyword branch was client-side-only
 // behaviour the server never agreed with.
+// Brands that never have blogs at all, from mkt_clients.blog_enabled
+// (migration 101). Their posts skip the blog-dependency machinery entirely
+// rather than running through it and correctly finding nothing each time —
+// the outcome is the same today, but only by luck: the fallback in
+// pickRelatedBlog() searches "this client's most recent unpublished blog",
+// so the moment such a brand acquires a stray blog row the gate would start
+// firing again on posts that have nothing to do with it. That is precisely
+// how CRHQ's 3 Sept Instagram post came to announce "the blog this post
+// references was rejected" while referencing no blog.
+//
+// It is also why this covers mentionsBlogWithoutLink and not just the block:
+// CRHQ's copy legitimately points at combatreadyhq.co.uk and says "read more"
+// — expected and correct for a brand whose whole funnel is its own site — so
+// an advisory telling a reviewer to check a blog link would be permanent
+// noise on a brand that has no blog to link to.
+//
+// Reads the joined client row and defaults to ENABLED when the field is
+// absent, so a caller that hasn't selected blog_enabled keeps its existing
+// behaviour instead of silently disabling the gate for everyone.
+export function blogsDisabledForClient(item) {
+  return item?.client?.blog_enabled === false
+}
+
 export function isBlogLinked(item) {
+  if (blogsDisabledForClient(item)) return false
   return !!item?.blog_id || item?.review_status === 'blog_dependent'
 }
 
@@ -82,6 +106,7 @@ export function isBlogLinked(item) {
 // thing is to tell the reviewer to check the link, not to guess a blog and
 // refuse approval.
 export function mentionsBlogWithoutLink(item) {
+  if (blogsDisabledForClient(item)) return false
   if (isBlogLinked(item)) return false
   const body = (item?.body || '').toLowerCase()
   return BLOG_KEYWORDS.some((k) => body.includes(k))
@@ -90,6 +115,7 @@ export function mentionsBlogWithoutLink(item) {
 // The blog a post is waiting on, given the client's blogs newest-first.
 // Returns null when the post isn't blog-linked at all.
 export function pickRelatedBlog(item, blogs = []) {
+  if (blogsDisabledForClient(item)) return null
   if (item?.blog_id) return blogs.find((b) => b.id === item.blog_id) || null
   // Fallback ONLY for rows the pipeline itself stamped 'blog_dependent'.
   // Those really were generated from a blog, so "most recent unpublished" is

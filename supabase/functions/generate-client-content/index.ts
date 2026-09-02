@@ -237,19 +237,19 @@ serve(async (req) => {
         // Weekly blog — current week only. Cron runs daily, so this is a
         // no-op every day except the first day it's missing for that client.
         //
-        // Adrian Fielding — LinkedIn has no blog/website surface at all
-        // (it's a single personal LinkedIn profile, one post/week) — every
-        // other brand reaching this point owns a real site a blog post can
-        // be published to.
-        if (client.slug !== 'adrian-linkedin') {
-          try {
-            const title = await ensureWeeklyBlog(admin, client, sundayOfWeek(now))
-            if (title) blogsGenerated++
-          } catch (e) {
-            const msg = `${client.name} (blog): ${String((e as Error)?.message ?? e)}`
-            errors.push(msg)
-            console.error(`[generate-client-content] ${msg}`)
-          }
+        // Which brands are excluded is no longer decided here. It used to be
+        // a literal `client.slug !== 'adrian-linkedin'` around this call,
+        // which backfill-content — the other caller of ensureWeeklyBlog —
+        // never had, so the exclusion held only on this path. It now lives on
+        // mkt_clients.blog_enabled and is enforced inside ensureWeeklyBlog
+        // itself (migration 101), which returns null for a disabled brand.
+        try {
+          const title = await ensureWeeklyBlog(admin, client, sundayOfWeek(now))
+          if (title) blogsGenerated++
+        } catch (e) {
+          const msg = `${client.name} (blog): ${String((e as Error)?.message ?? e)}`
+          errors.push(msg)
+          console.error(`[generate-client-content] ${msg}`)
         }
 
         // Adrian Fielding — LinkedIn only: real weekly activity, so

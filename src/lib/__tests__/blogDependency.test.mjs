@@ -7,7 +7,7 @@
 // this file pins the RULE those numbers come from.
 import {
   blogOutcome, isBlogLinked, mentionsBlogWithoutLink, pickRelatedBlog,
-  blogBlockStateFor, byScheduledFor,
+  blogBlockStateFor, byScheduledFor, blogsDisabledForClient,
 } from '../blogDependency.js'
 
 let pass = 0, fail = 0
@@ -82,6 +82,42 @@ eq('soonest first, nulls last, brands interleaved',
 eq('ties are deterministic by id',
    [{ id: 'z', scheduled_for: '2026-09-05T00:00:00Z' }, { id: 'a', scheduled_for: '2026-09-05T00:00:00Z' }]
      .sort(byScheduledFor).map((r) => r.id), ['a', 'z'])
+
+// ── blog_enabled=false brands skip the gate entirely (migration 101) ────
+// CRHQ: Quill runs its Facebook and Instagram only. Its three blog rows were
+// deleted; mkt_clients.blog_enabled is now false.
+const CRHQ_OFF = { blog_enabled: false }
+const CRHQ_POST = { ...REPORTED, client: CRHQ_OFF }
+
+eq('CRHQ client is detected as blogs-disabled', blogsDisabledForClient(CRHQ_POST), true)
+eq('CRHQ post never enters the gate', isBlogLinked(CRHQ_POST), false)
+eq('CRHQ post gets NO advisory either — "read more"/site links are expected',
+   mentionsBlogWithoutLink(CRHQ_POST), false)
+eq('CRHQ post is fully inert to the blog machinery',
+   blogBlockStateFor(CRHQ_POST, CRHQ_BLOGS),
+   { dependent: false, blocked: false, dead: false, unlinkedMention: false })
+
+// The real point of the exclusion: it must hold even if a stray blog row
+// reappears for the brand, which is the state that produced the original
+// false "blog was rejected" message.
+eq('CRHQ resolves to no blog even with a rejected blog present',
+   pickRelatedBlog(CRHQ_POST, CRHQ_BLOGS), null)
+eq('CRHQ stays inert even if a blog_id somehow got set',
+   blogBlockStateFor({ ...CRHQ_POST, blog_id: 'b5aedd17-33b9-4de8-a228-daba4a775714' }, CRHQ_BLOGS),
+   { dependent: false, blocked: false, dead: false, unlinkedMention: false })
+eq('CRHQ stays inert even if stamped blog_dependent',
+   blogBlockStateFor({ ...CRHQ_POST, review_status: 'blog_dependent' }, CRHQ_BLOGS),
+   { dependent: false, blocked: false, dead: false, unlinkedMention: false })
+
+// Brands that DO blog must be completely unaffected by the new flag.
+eq('blog_enabled=true is not treated as disabled',
+   blogsDisabledForClient({ client: { blog_enabled: true } }), false)
+eq('a missing blog_enabled defaults to ENABLED (narrow selects keep working)',
+   blogsDisabledForClient({ client: { short_name: 'Quill' } }), false)
+eq('no client join at all defaults to ENABLED', blogsDisabledForClient({ id: 'x' }), false)
+eq('an enabled brand still blocks on its unpublished linked blog',
+   blogBlockStateFor({ ...LINKED_WAITING, client: { blog_enabled: true } }, DRAFT_BLOG),
+   { dependent: true, blocked: true, dead: false, unlinkedMention: false })
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

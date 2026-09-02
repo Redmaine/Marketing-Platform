@@ -99,7 +99,7 @@ export function ContentQueue() {
       // genuinely-missing image apart from a brand/platform combination that
       // was never configured to generate one in the first place — see
       // PostImage's own comment for why this matters.
-      supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name,image_gen_platforms,image_gen_disabled_platforms)').order('scheduled_for', { ascending: true, nullsFirst: false }),
+      supabase.from('mkt_content_queue').select('*, client:mkt_clients(short_name,name,blog_enabled,image_gen_platforms,image_gen_disabled_platforms)').order('scheduled_for', { ascending: true, nullsFirst: false }),
       // connected_platforms drives the "Write a post" platform dropdown — it
       // is filtered to the platforms the selected brand actually has.
       supabase.from('mkt_clients').select('id, name, short_name, content_pillars, connected_platforms').eq('active', true).order('name'),

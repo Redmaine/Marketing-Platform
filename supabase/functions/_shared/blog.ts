@@ -51,6 +51,25 @@ function ensureDisclaimer(client: Record<string, any>, html: string): string {
 // unless one already exists for that client + publish_date. Returns the
 // generated title, or null if a blog already existed for that week.
 export async function ensureWeeklyBlog(admin: Admin, client: Record<string, any>, weekSunday: Date): Promise<string | null> {
+  // Brands that must never get a blog, checked HERE rather than at the call
+  // sites. This used to be a literal in one caller only —
+  // generate-client-content skipped this function for
+  // client.slug !== 'adrian-linkedin' — while backfill-content looped every
+  // active client and called it with no such check, so the exclusion was one
+  // caller away from being bypassed. Putting it at the single choke point
+  // both share means a future third caller inherits it instead of having to
+  // remember it.
+  //
+  // Currently false for: crhq (Quill manages its Facebook and Instagram only
+  // — blog was never in scope, and three rows generated on its 1 July 2026
+  // setup day were removed in migration 101) and adrian-linkedin (a personal
+  // LinkedIn profile with no website to publish to).
+  //
+  // Defaults to enabled when the column is missing from the row, so a caller
+  // that selects a narrower column list can never silently disable blogs for
+  // everyone. Both current callers use select('*').
+  if (client?.blog_enabled === false) return null
+
   const publishDate = dateOnly(weekSunday)
 
   const { count } = await admin.from('mkt_blog_posts')
