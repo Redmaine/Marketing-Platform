@@ -7,6 +7,7 @@
 //      statistics) — done by Anthropic with a structured tool response.
 // The first failure wins and returns the spec's exact reason string.
 import { callAnthropicStructured, generatePost } from './generate.ts'
+import { recentBrandPosts } from './recentSubjects.ts'
 import { BLOG_REFERENCE_KEYWORDS, wordCountRange } from './prompts.ts'
 
 // deno-lint-ignore no-explicit-any
@@ -298,7 +299,17 @@ const REVIEW_SCHEMA = {
   properties: {
     fabricated_client_or_result: { type: 'boolean', description: 'True if the post references any client, case study, result, metric, or business outcome that is not verifiable or names a business other than the approved real clients.' },
     fabrication_detail: { type: 'string', description: 'If fabricated, what exactly. Else empty.' },
-    repeat_topic: { type: 'boolean', description: 'True if this post covers essentially the same topic/angle as one of the recent published posts provided.' },
+    // The post's own subject, in a few words. Added 5 Sep 2026: the generator
+    // had no compact statement of what this brand has recently been ABOUT, so
+    // it kept re-covering the same ground and the reviewer kept catching it.
+    // The reviewer is already reading the post in full and already returning
+    // structured output, so naming the subject here costs no extra call. It is
+    // stored on the queue row and fed to the next night's generation as
+    // subject matter to steer away from (see _shared/recentSubjects.ts).
+    // Required, so it is present even on a post that FAILS review — a rejected
+    // post still tells us what the pipeline is fixating on.
+    topic: { type: 'string', description: 'The specific subject of THIS post in 3-8 words, as a noun phrase a human would recognise (e.g. "NATO nuclear posture and UK deterrence", "AI vs traditional agency turnaround speed"). Describe the actual subject matter, not the format or the brand.' },
+    repeat_topic: { type: 'boolean', description: 'True if this post covers essentially the same topic/angle as one of the recent posts provided (published OR currently queued).' },
     repeat_detail: { type: 'string', description: 'If repeat, which prior topic it duplicates. Else empty.' },
     wrong_brand_voice: { type: 'boolean', description: 'True if this post could just as easily belong to a different brand — i.e. it does not sound distinctly like THIS brand.' },
     voice_detail: { type: 'string', description: 'If wrong voice, why. Else empty.' },
@@ -324,12 +335,16 @@ const REVIEW_SCHEMA = {
     unverified_personal_narrative: { type: 'boolean', description: 'True ONLY for Adrian Fielding — LinkedIn: the post presents a specific event, decision, or business outcome (e.g. "I turned down a deal", "we refunded a customer", "I hired someone") as something that genuinely happened this week, but nothing in this prompt grounds it as real. False for every other brand. False for general reflection or opinion that makes no claim of a specific unverifiable event.' },
     narrative_detail: { type: 'string', description: 'If unverified_personal_narrative, which specific claimed event. Else empty.' },
   },
-  required: ['fabricated_client_or_result', 'repeat_topic', 'wrong_brand_voice', 'unsourced_statistic', 'unverified_personal_narrative'],
+  required: ['topic', 'fabricated_client_or_result', 'repeat_topic', 'wrong_brand_voice', 'unsourced_statistic', 'unverified_personal_narrative'],
 }
 
 export interface ReviewResult {
   pass: boolean
   reason: string | null
+  // The reviewer's own one-line statement of what this post is about. Null
+  // when the review could not run (a deterministic Layer-1 rejection never
+  // reaches the model, so there is nothing to report — see reviewPost).
+  topic: string | null
 }
 
 // Full review of one social post for one client. `admin` is used to load the
@@ -338,44 +353,50 @@ export interface ReviewResult {
 export async function reviewPost(admin: Admin, client: Record<string, any>, body: string, platform: string): Promise<ReviewResult> {
   // Layer 1 — deterministic, first.
   const ruleBroken = contentRuleViolation(body)
-  if (ruleBroken) return { pass: false, reason: `content rule violation: ${ruleBroken}` }
+  if (ruleBroken) return { pass: false, reason: `content rule violation: ${ruleBroken}`, topic: null }
 
   const wordCount = wordCountViolation(body, platform)
-  if (wordCount) return { pass: false, reason: wordCount }
+  if (wordCount) return { pass: false, reason: wordCount, topic: null }
 
   const missingDisclaimer = disclaimerViolation(client, body)
-  if (missingDisclaimer) return { pass: false, reason: `missing disclaimer: ${missingDisclaimer}` }
+  if (missingDisclaimer) return { pass: false, reason: `missing disclaimer: ${missingDisclaimer}`, topic: null }
 
   const bannedPhrase = bannedPhraseViolation(client, body)
-  if (bannedPhrase) return { pass: false, reason: bannedPhrase }
+  if (bannedPhrase) return { pass: false, reason: bannedPhrase, topic: null }
 
   const ouayIllustratorClaim = ouayIllustratorClaimViolation(client, body)
-  if (ouayIllustratorClaim) return { pass: false, reason: ouayIllustratorClaim }
+  if (ouayIllustratorClaim) return { pass: false, reason: ouayIllustratorClaim, topic: null }
 
   const personalFabrication = personalFabricationViolation(client, body)
-  if (personalFabrication) return { pass: false, reason: personalFabrication }
+  if (personalFabrication) return { pass: false, reason: personalFabrication, topic: null }
 
   const blogReference = blogReferenceViolation(client, body)
-  if (blogReference) return { pass: false, reason: blogReference }
+  if (blogReference) return { pass: false, reason: blogReference, topic: null }
 
   // Layer 2 — judgement. Pull recent published copy for the repeat-topic check.
   // Fix 1 — only genuinely-past posts count as "already published". date_sent
   // was backfilled with future scheduled dates for some brands, so without the
   // upper bound a post scheduled for next week would block new content on the
   // same topic today. A future-scheduled post must not gate present generation.
-  const now = new Date().toISOString()
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString()
-  const { data: recent } = await admin.from('published_posts')
-    .select('content_pillar, post_copy, date_sent')
-    .eq('client_id', client.id)
-    .gte('date_sent', thirtyDaysAgo)
-    .lte('date_sent', now)
-    .order('date_sent', { ascending: false })
-    .limit(30)
+  // QUEUE + PUBLISHED, not published_posts alone (5 Sep 2026 fix). This used
+  // to read published_posts only, with the note below about excluding
+  // future-dated rows. That upper bound is still right and is preserved inside
+  // recentBrandPosts, but the table itself was the wrong sole source: a row
+  // only lands there once Metricool has actually sent the post, so everything
+  // generated in the last few days — the material most likely to be repeated —
+  // was invisible to this check. Combat Ready HQ's 2 Sep post did not reach
+  // published_posts until 4 Sep, so the 3 Sep review compared against a
+  // version of the brand's output that did not include the previous night's.
+  //
+  // Fix 1 (kept): only genuinely-past posts count as "already published".
+  // date_sent was backfilled with future scheduled dates for some brands, so
+  // without an upper bound a post scheduled for next week would block new
+  // content on the same topic today.
+  const recent = await recentBrandPosts(admin, client.id, { days: 30, limit: 30 })
 
-  const recentSummary = (recent ?? []).length
-    ? (recent as Record<string, any>[]).map((r, i) => `${i + 1}. [${r.content_pillar || 'n/a'}] ${String(r.post_copy).slice(0, 200)}`).join('\n')
-    : '(none published in the last 30 days)'
+  const recentSummary = recent.length
+    ? recent.map((r, i) => `${i + 1}. [${r.source === 'queue' ? 'queued' : 'published'}] ${r.body.slice(0, 200)}`).join('\n')
+    : '(nothing published or queued in the last 30 days)'
 
   const system = `You are a strict editorial reviewer for a UK marketing agency. You review one social post at a time for a specific brand and decide, factually and conservatively, whether it must be rejected. When unsure, flag it. Return only the structured tool response.`
 
@@ -394,7 +415,7 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
     permittedReferences(client).map((c) => `- ${c}`).join('\n'),
     `Any other named client or specific business result is a fabrication.`,
     '',
-    `This brand's posts published in the last 30 days (for repeat-topic checking):`,
+    `This brand's posts from the last 30 days — both already published AND currently queued to go out (for repeat-topic checking). A queued post counts: it is going to the same audience, so repeating it is the same failure as repeating a published one:`,
     recentSummary,
     '',
     // Adrian Fielding — LinkedIn only. Its master_prompt requires the post to
@@ -416,7 +437,7 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
     body,
     '"""',
     '',
-    `Assess: fabricated client/result, repeat topic vs the list above, whether it sounds distinctly like ${client.name} (not any other brand), whether any specific claimed event is ungrounded (only relevant per the instruction above, else always false), and — only if the brand is Steady — whether any statistic is used without citing a source. Return the review_post tool.`,
+    `Assess: fabricated client/result, repeat topic vs the published-or-queued list above, whether it sounds distinctly like ${client.name} (not any other brand), whether any specific claimed event is ungrounded (only relevant per the instruction above, else always false), and — only if the brand is Steady — whether any statistic is used without citing a source. Return the review_post tool.`,
   ].filter(Boolean).join('\n')
 
   let r: Record<string, any>
@@ -425,16 +446,23 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
   } catch (e) {
     // If the reviewer itself errors, fail closed with a clear reason rather
     // than silently letting an unreviewed post through.
-    return { pass: false, reason: `review could not run: ${String((e as Error)?.message ?? e).slice(0, 120)}` }
+    return { pass: false, reason: `review could not run: ${String((e as Error)?.message ?? e).slice(0, 120)}`, topic: null }
   }
 
-  if (r.fabricated_client_or_result) return { pass: false, reason: `fabricated client or result${r.fabrication_detail ? ` — ${r.fabrication_detail}` : ''}` }
-  if (r.repeat_topic) return { pass: false, reason: `repeat topic${r.repeat_detail ? ` — ${r.repeat_detail}` : ''}` }
-  if (r.unsourced_statistic) return { pass: false, reason: `missing disclaimer: Steady statistic without a cited source${r.statistic_detail ? ` — ${r.statistic_detail}` : ''}` }
-  if (r.unverified_personal_narrative) return { pass: false, reason: `fabricated personal narrative${r.narrative_detail ? ` — ${r.narrative_detail}` : ''}` }
-  if (r.wrong_brand_voice) return { pass: false, reason: `wrong brand voice${r.voice_detail ? ` — ${r.voice_detail}` : ''}` }
+  // Normalised once here so every return below reports the same value. An
+  // over-long or empty label is dropped rather than stored: a junk topic fed
+  // into the next night's steer is worse than no topic, because it would look
+  // like real guidance.
+  const rawTopic = typeof r.topic === 'string' ? r.topic.trim().replace(/\s+/g, ' ') : ''
+  const topic = rawTopic && rawTopic.length <= 120 ? rawTopic : null
 
-  return { pass: true, reason: null }
+  if (r.fabricated_client_or_result) return { pass: false, reason: `fabricated client or result${r.fabrication_detail ? ` — ${r.fabrication_detail}` : ''}`, topic }
+  if (r.repeat_topic) return { pass: false, reason: `repeat topic${r.repeat_detail ? ` — ${r.repeat_detail}` : ''}`, topic }
+  if (r.unsourced_statistic) return { pass: false, reason: `missing disclaimer: Steady statistic without a cited source${r.statistic_detail ? ` — ${r.statistic_detail}` : ''}`, topic }
+  if (r.unverified_personal_narrative) return { pass: false, reason: `fabricated personal narrative${r.narrative_detail ? ` — ${r.narrative_detail}` : ''}`, topic }
+  if (r.wrong_brand_voice) return { pass: false, reason: `wrong brand voice${r.voice_detail ? ` — ${r.voice_detail}` : ''}`, topic }
+
+  return { pass: true, reason: null, topic }
 }
 
 export interface ReviewedGeneration {
@@ -443,6 +471,11 @@ export interface ReviewedGeneration {
   reviewedAt: string        // ISO timestamp of the final review
   reason: string | null     // failure reason when ok=false
   attempts: number
+  // The reviewer's own statement of what the post is about, stored by callers
+  // on mkt_content_queue.topic and read back by the NEXT generation as subject
+  // matter to steer away from. Present on failures too — a post rejected for
+  // repeating a topic is the clearest possible signal of what to avoid next.
+  topic: string | null
 }
 
 // Generate → review → (on fail) regenerate once → review again. Max two
@@ -459,6 +492,7 @@ export async function generateReviewedPost(
   const MAX_ATTEMPTS = 2
   let lastReason = 'no post produced'
   let lastBody = ''
+  let lastTopic: string | null = null
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let body = ''
     try {
@@ -469,9 +503,13 @@ export async function generateReviewedPost(
     }
     if (!body) { lastReason = 'empty AI response'; continue }
     lastBody = body
-    const { pass, reason } = await reviewPost(admin, client, body, platform)
-    if (pass) return { ok: true, body, reviewedAt: new Date().toISOString(), reason: null, attempts: attempt }
+    const { pass, reason, topic } = await reviewPost(admin, client, body, platform)
+    if (pass) return { ok: true, body, reviewedAt: new Date().toISOString(), reason: null, attempts: attempt, topic }
     lastReason = reason || 'failed review'
+    // Keep the last non-null topic: a Layer-1 rejection on the second attempt
+    // returns none, and losing the first attempt's label would throw away the
+    // only record of what this slot kept trying to write about.
+    if (topic) lastTopic = topic
   }
-  return { ok: false, body: lastBody, reviewedAt: new Date().toISOString(), reason: lastReason, attempts: MAX_ATTEMPTS }
+  return { ok: false, body: lastBody, reviewedAt: new Date().toISOString(), reason: lastReason, attempts: MAX_ATTEMPTS, topic: lastTopic }
 }

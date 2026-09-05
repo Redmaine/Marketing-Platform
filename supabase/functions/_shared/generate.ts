@@ -231,14 +231,32 @@ export async function recentPublishedSummaries(admin: AdminClient, clientId: str
 // Full bodies, not truncated summaries: the caller shows these to the model as
 // the things it must not re-tread, and an opening line clipped at 140
 // characters is exactly the part most likely to be unknowingly reused.
+// DEPRECATED (5 Sep 2026) — use recentBrandPosts in _shared/recentSubjects.ts.
+//
+// This function returned an empty array for every brand, on every call, for
+// its entire life. It filtered status='approved'; approving a post sets that
+// status and then immediately calls schedule-to-metricool, which moves it to
+// 'scheduled', so 'approved' exists for seconds. Across all 595 rows of
+// mkt_content_queue, every brand, all time, there were ZERO rows at
+// 'approved'. Its caller pushed the result into repeatPreventionBlock, which
+// returns '' for an empty list, which `if (repeatBlock)` then skipped — so the
+// prompt section labelled "REPEAT PREVENTION — NON-NEGOTIABLE" never once
+// reached a model. No error was ever raised, because an empty list and a
+// disabled feature look identical to that check.
+//
+// The status filter is corrected below so the function is no longer a silent
+// no-op for anything still calling it, but new code should use
+// recentBrandPosts: it also unions in published_posts, and it is defined by
+// what to EXCLUDE ('rejected') rather than an allow-list of statuses, which is
+// the shape of assumption that caused this.
 export async function recentApprovedBodies(admin: AdminClient, clientId: string, n = 60): Promise<string[]> {
   const { data } = await admin
     .from('mkt_content_queue')
-    .select('body, approved_at')
+    .select('body, created_at')
     .eq('client_id', clientId)
-    .eq('status', 'approved')
+    .neq('status', 'rejected')
     .not('body', 'is', null)
-    .order('approved_at', { ascending: false })
+    .order('created_at', { ascending: false })
     .limit(n)
   return (data ?? [])
     .map((r: Record<string, any>) => String(r.body || '').trim())

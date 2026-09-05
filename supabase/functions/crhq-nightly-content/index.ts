@@ -39,6 +39,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { scrapeCrhqContent, type ScrapedVideo, type ScrapedArticle } from '../_shared/crhqScrape.ts'
 import { platformSchedule, hasAutoPostOnDate } from '../_shared/fill.ts'
 import { dayOfWeekUK, addDays, recentPublishedSummaries, stripMarkdown } from '../_shared/generate.ts'
+import { recentBrandPosts, recentTopics as recentTopicLabels } from '../_shared/recentSubjects.ts'
 import { ukTimeSlotToUtc } from '../_shared/ukTime.ts'
 import { generateReviewedPost } from '../_shared/review.ts'
 import { generatePostImage } from '../_shared/image.ts'
@@ -331,7 +332,23 @@ serve(async (req) => {
       console.log(`[crhq-nightly-content] found ${videos.length} video(s), ${articles.length} article(s) — generating from scrape`)
 
       const content_source = 'youtube_scrape'
-      const recentTopics = await recentPublishedSummaries(admin, client.id, 6)
+      // 30, matching the reviewer's window (was 6, while reviewPost judged
+      // against 30 — so this pipeline was rejected for repeating posts it had
+      // never been shown; CRHQ's 24 Aug nuclear-strike post sat at position 7).
+      const recentTopics = await recentPublishedSummaries(admin, client.id, 30)
+
+      // REPEAT PREVENTION FOR CRHQ AT ALL (5 Sep 2026). This pipeline never
+      // attached _repeat_prevention_posts — only fill.ts did — so the block
+      // prompts.ts calls NON-NEGOTIABLE was not merely empty here (as it was
+      // everywhere, see recentSubjects.ts) but never even offered. CRHQ is the
+      // brand that most needs it: its posts are driven by a nightly scrape, so
+      // when the news cycle stays on one story the source material itself
+      // pushes every post toward the same subject. Pillar rotation cannot help
+      // here at all — the pillar below is a fixed label, not a rotation.
+      const crhqRecentPosts = await recentBrandPosts(admin, client.id, { days: 60, limit: 30 })
+      const repeatPreventionPosts = crhqRecentPosts.map((r) => r.body)
+      const avoidTopics = await recentTopicLabels(admin, client.id, { days: 30, limit: 12 })
+      console.log(`[crhq-nightly-content] repeat prevention: ${repeatPreventionPosts.length} recent post(s), ${avoidTopics.length} topic label(s) to avoid`)
       // Content optimisation loop — same lookup fill.ts uses for every other
       // client, applied here too since it's a client-level setting on
       // mkt_clients that shouldn't only apply to brands going through
@@ -401,6 +418,8 @@ serve(async (req) => {
         const clientForGeneration = {
           ...client,
           _recent_topics: recentTopics,
+          _repeat_prevention_posts: repeatPreventionPosts,
+          _topics_to_avoid: avoidTopics,
           _crhq_scrape: { videos, articles },
           // The explicit steer (see prompts.ts) — what THIS post must be
           // built around, on top of the full videos+articles list above
@@ -426,15 +445,22 @@ serve(async (req) => {
                 client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
                 status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
                 review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
-                content_source, rejection_feedback_used: rejectionFeedback,
+                content_source, rejection_feedback_used: rejectionFeedback, topic: review.topic,
               }
             : {
                 client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
                 status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
                 review_status: 'needs_attention', reviewed_at: review.reviewedAt,
                 review_reason: review.reason, generation_attempts: review.attempts,
-                content_source, rejection_feedback_used: rejectionFeedback,
+                content_source, rejection_feedback_used: rejectionFeedback, topic: review.topic,
               }
+
+          // Facebook and Instagram are generated in the same loop on the same
+          // night from the same scrape. Without this the second platform
+          // cannot see what the first just wrote, which is the tightest
+          // possible repeat window this pipeline has.
+          if (review.body) repeatPreventionPosts.unshift(review.body)
+          if (review.topic) avoidTopics.unshift(review.topic)
 
           const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
           if (insertError) {

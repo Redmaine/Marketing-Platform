@@ -180,10 +180,38 @@ async function pullBrandPlatform(
       ? Number((mapped.reduce((s, p) => s + p.engagement_rate, 0) / mapped.length).toFixed(2))
       : 0
 
-  let followers = 0
+  // NULL, NOT ZERO, WHEN THE COUNT WAS NOT MEASURED (root-cause fix, 5 Sep
+  // 2026). This was `Number(followerCounts[...] ?? 0)`, which turned an
+  // ABSENT field into a confident 0 and wrote it to the database as if it
+  // were a reading.
+  //
+  // /explore/followers does not return a linkedinFollowers field at all.
+  // Verified live against Quill's blog (6469945) on 5 Sep 2026 — the whole
+  // response body is:  { "facebookFollowers": 0, "instagramFollowers": 0 }.
+  // There is no LinkedIn key, so the lookup was undefined, `?? 0` made it
+  // zero, and both LinkedIn brands have recorded "0 followers" on every pull
+  // ever taken. That is not a zero-follower account; it is a measurement that
+  // never happened, stored in the same column and the same shape as a real
+  // one. Nothing downstream could tell the two apart.
+  //
+  // Nor is a LinkedIn fallback available: on the same live check,
+  // metric=pageFollows and metric=followersCount both returned HTTP 500 from
+  // Metricool, and metric=followers returned 200 with an empty values array.
+  // So LinkedIn follower counts are genuinely unavailable through this API
+  // today, and null is the truthful record of that. If Metricool adds the
+  // field, this code picks it up with no change.
+  //
+  // The same `?? 0` masked the Facebook gap for months: facebookFollowers is
+  // also always 0 (see the header note and the timeline override below), so
+  // every brand read 0 and nobody could tell it was broken.
+  let followers: number | null = null
   try {
     const followerCounts = await fetchFollowers(blogId)
-    followers = Number(followerCounts[`${platform}Followers`] ?? 0)
+    const raw = followerCounts[`${platform}Followers`]
+    followers = typeof raw === 'number' ? raw : null
+    if (followers === null) {
+      console.warn(`[metricool-weekly-pull] ${brand}/${platform}: /explore/followers returned no ${platform}Followers field — recording null, NOT 0`)
+    }
   } catch (e) {
     console.error(`[metricool-weekly-pull] ${brand}/${platform}: followers lookup failed:`, String((e as Error)?.message ?? e))
   }

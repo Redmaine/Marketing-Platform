@@ -8,6 +8,7 @@
 
 // Fix 1 — fabrication prevention. Prepended verbatim to the start of every
 // brand's generation prompt.
+import { topicsToAvoidBlock } from './recentSubjects.ts'
 export const ANTI_FABRICATION = `You are writing a real social media post for a real brand. Do not invent clients, case studies, testimonials, results, metrics, or business outcomes. Do not reference any business, person, or result that has not been explicitly provided to you in this prompt. If you cannot write a post on this topic without inventing content, choose a different angle from the content pillars provided.`
 
 // Fix 1 — Quill-specific addition (only real clients).
@@ -235,6 +236,17 @@ export function buildSystemPrompt(client: Record<string, any>): string {
   const repeatPosts: string[] = Array.isArray(client._repeat_prevention_posts) ? client._repeat_prevention_posts : []
   const repeatBlock = repeatPreventionBlock(repeatPosts)
   if (repeatBlock) parts.push(repeatBlock)
+
+  // The compact subject-level steer, immediately after the full bodies it
+  // summarises. Two signals rather than one on purpose: the bodies show the
+  // model what was actually written, and this names the SUBJECTS in a form it
+  // cannot skim past. The 5 Sep 2026 incident was a brand producing posts that
+  // were structurally varied and topically identical — three different
+  // openings, all about Russia — which is exactly what a list of full bodies
+  // alone lets a model rationalise as "different".
+  const avoidTopics: string[] = Array.isArray(client._topics_to_avoid) ? client._topics_to_avoid : []
+  const topicBlock = topicsToAvoidBlock(avoidTopics)
+  if (topicBlock) parts.push(topicBlock)
 
   parts.push(UNIVERSAL_CONTENT_RULES)
   parts.push(base)

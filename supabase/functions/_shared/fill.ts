@@ -1,6 +1,7 @@
 // Shared "fill this client's content calendar" logic — used by both
 // midnight-cron (daily top-up, each client given its own budget) and
 // backfill-content (one-off manual fill of the full 4-week window).
+import { recentBrandPosts, recentTopics as recentTopicLabels, topicsToAvoidBlock } from './recentSubjects.ts'
 import { pickDiversePillar, recentPublishedSummaries, recentApprovedBodies, dayOfWeekUK, addDays, dateOnly, isPlatformConnected, stripMarkdown } from './generate.ts'
 import { ukTimeSlotToUtc } from './ukTime.ts'
 import { generateReviewedPost } from './review.ts'
@@ -288,7 +289,34 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
   // produced, because they are still 'draft' and would otherwise be invisible
   // to the next post in the same run — the exact window in which a brand is
   // most likely to repeat itself.
-  const repeatPreventionPosts: string[] = await recentApprovedBodies(admin, client.id, 60)
+  //
+  // SOURCE CHANGED 5 Sep 2026. This used to call recentApprovedBodies, which
+  // filtered mkt_content_queue on status='approved'. Approving a post sets
+  // that status and then immediately calls schedule-to-metricool, which moves
+  // it to 'scheduled' — so 'approved' lasts seconds. Across all 595 rows of
+  // the table, every brand, all time, there were ZERO rows at 'approved'. This
+  // list was therefore ALWAYS empty, repeatPreventionBlock('') always returned
+  // '', and `if (repeatBlock)` in prompts.ts silently skipped it: the block
+  // marked "REPEAT PREVENTION — NON-NEGOTIABLE" had never once reached a
+  // prompt for any brand. recentBrandPosts reads the queue by "not rejected"
+  // instead, and unions in published_posts, so it cannot be silently emptied
+  // by a status nobody thought about.
+  const recentPosts = await recentBrandPosts(admin, client.id, { days: 60, limit: 30 })
+  const repeatPreventionPosts: string[] = recentPosts.map((r) => r.body)
+  if (repeatPreventionPosts.length === 0) {
+    // Logged, not silent — see the comment above for why an empty list here is
+    // never again allowed to look like a working feature.
+    console.log(`[fill] ${client.name}: no recent posts found for repeat prevention — block will be omitted`)
+  } else {
+    console.log(`[fill] ${client.name}: repeat prevention using ${repeatPreventionPosts.length} recent post(s)`)
+  }
+
+  // The compact steer: the subjects the reviewer named on this brand's recent
+  // posts. Pillar rotation moves between CATEGORIES; when the news cycle keeps
+  // handing a brand the same story, several posts can sit in different pillars
+  // and still all be about Russia. This is what addresses that.
+  const avoidTopics: string[] = await recentTopicLabels(admin, client.id, { days: 30, limit: 12 })
+  console.log(`[fill] ${client.name}: ${avoidTopics.length} recent topic label(s) to steer away from`)
   // Blog-dependent sequencing — resolved ONCE per client, before any
   // generation, and passed into every post generated for this client on this
   // run. A non-null value means "a real blog went live in the last 7 days,
@@ -394,6 +422,11 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
     // pipeline (crhq-nightly-content) call the same underlying helper with
     // their own n=6 and are deliberately left unchanged — this task is
     // scoped to the cron's fill path only.
+    // 30, matching the reviewer's own window. It was 6 until 5 Sep 2026, while
+    // reviewPost judged against 30 — so the generator was rejected for
+    // repeating posts it had never been shown. CRHQ's 24 Aug "Nuclear strike
+    // risk to UK" post sat at position 7: outside the generator's list, inside
+    // the reviewer's.
     const recentTopics: string[] = await recentPublishedSummaries(admin, client.id, 30)
     let generatedForPlatform = 0
     let day = addDays(now, 1)
@@ -451,6 +484,7 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
           _optimisation_notes: optimisationNotes,
           _rejection_feedback: rejectionFeedback,
           _repeat_prevention_posts: repeatPreventionPosts,
+          _topics_to_avoid: avoidTopics,
           _blog_context: { recentBlog },
         }, platform, pillar)
         // Hard backstop — strip any markdown the model still produced despite
@@ -482,14 +516,14 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
               client_id: client.id, platform, content_type: 'post', pillar, body: review.body,
               status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
               review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
-              rejection_feedback_used: rejectionFeedback,
+              rejection_feedback_used: rejectionFeedback, topic: review.topic,
             }
           : {
               client_id: client.id, platform, content_type: 'post', pillar, body: review.body || '',
               status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
               review_status: 'needs_attention', reviewed_at: review.reviewedAt,
               review_reason: review.reason, generation_attempts: review.attempts,
-              rejection_feedback_used: rejectionFeedback,
+              rejection_feedback_used: rejectionFeedback, topic: review.topic,
             }
 
         const { data: inserted, error } = await admin.from('mkt_content_queue').insert(row).select('id').single()
@@ -556,6 +590,10 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // still 'draft', so recentApprovedBodies would not see it, and the very
         // next post generated tonight is the one most at risk of repeating it.
         if (review.body) repeatPreventionPosts.unshift(review.body)
+        // Same reasoning as the body above, for the compact steer: a post
+        // generated moments ago in THIS run is not in the database yet, and is
+        // the single most likely thing for the next slot to repeat.
+        if (review.topic) avoidTopics.unshift(review.topic)
         await admin.from('mkt_clients').update({ last_pillar_used: pillar }).eq('id', client.id)
         // Root-cause fix (29 Aug 2026) — the line above updated the DATABASE
         // row, but never the in-memory `client` object this same loop keeps
