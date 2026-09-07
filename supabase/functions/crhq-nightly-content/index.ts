@@ -236,6 +236,88 @@ function primarySourceForPlatform(platform: string, videos: ScrapedVideo[], arti
   return v ? { type: 'video', title: v.title, url: v.url } : null
 }
 
+// Weekly themed Facebook posts (Craig's confirmed schedule, agreed via
+// WhatsApp 6 Sep 2026) — Tuesday shop/coffee, Thursday intelligence
+// subscription. Layered ON TOP of the daily scrape-driven post, never
+// replacing it: scheduled at a distinct time (12:00 UK) from the regular
+// post's slot (18:00), so both can coexist under the one-auto-post-per-slot
+// unique index (migration 65), which is keyed on the exact timestamp, not
+// the day. See prompts.ts's client._crhq_themed_topic block for the actual
+// copy instructions, including why the shop/coffee post deliberately does
+// NOT claim the shop is currently open.
+const THEMED_WEEKLY: Record<number, { theme: 'shop_coffee' | 'intelligence_subscription'; pillar: string; timeUk: string }> = {
+  2: { theme: 'shop_coffee', pillar: 'CRHQ shop & coffee community', timeUk: '12:00' }, // Tuesday
+  4: { theme: 'intelligence_subscription', pillar: 'CRHQ intelligence subscription', timeUk: '12:00' }, // Thursday
+}
+
+interface ThemedResult {
+  generated: boolean
+  note?: string
+  error?: string
+}
+
+// Deliberately independent of Step 1's scrape outcome (foundContent) — these
+// posts have nothing to do with what CRHQ posted on YouTube this week, so a
+// quiet news night must not also mean a quiet Tuesday/Thursday. Checks only
+// tomorrow (matching this cron's existing one-night-ahead philosophy,
+// nextAvailableSlot's day-walk is for the scrape-reactive post specifically,
+// which does need to search forward for a free day — the themed post's day
+// is fixed by the theme itself, so there is nothing to walk toward).
+async function generateThemedWeeklyPost(admin: Admin, client: Record<string, any>): Promise<ThemedResult> {
+  const tomorrow = addDays(new Date(), 1)
+  const config = THEMED_WEEKLY[dayOfWeekUK(tomorrow)]
+  if (!config) return { generated: false }
+
+  const slot = ukTimeSlotToUtc(tomorrow, config.timeUk)
+
+  // Idempotency — a themed post already queued for this calendar day (this
+  // function ran twice, or a human already placed one manually) means skip,
+  // not duplicate.
+  const dayStart = new Date(slot)
+  dayStart.setUTCHours(0, 0, 0, 0)
+  const dayEnd = new Date(dayStart)
+  dayEnd.setUTCDate(dayEnd.getUTCDate() + 1)
+  const { count } = await admin
+    .from('mkt_content_queue')
+    .select('id', { count: 'exact', head: true })
+    .eq('client_id', client.id).eq('platform', 'facebook').eq('content_type', 'post')
+    .eq('content_source', 'themed_weekly')
+    .neq('status', 'rejected')
+    .gte('scheduled_for', dayStart.toISOString()).lt('scheduled_for', dayEnd.toISOString())
+  if ((count ?? 0) > 0) return { generated: false, note: `themed weekly (${config.theme}) already queued for this day — skipped` }
+
+  const clientForGeneration = { ...client, _crhq_themed_topic: { theme: config.theme } }
+  const review = await generateReviewedPost(admin, clientForGeneration, 'facebook', config.pillar)
+  if (review.body) review.body = stripMarkdown(review.body)
+
+  const autoApprove = review.ok && client.auto_approve === true
+  const row = review.ok
+    ? {
+        client_id: client.id, platform: 'facebook', content_type: 'post', pillar: config.pillar, body: review.body,
+        status: autoApprove ? 'approved' : 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+        review_status: 'passed', reviewed_at: review.reviewedAt, generation_attempts: review.attempts,
+        content_source: 'themed_weekly', topic: review.topic,
+      }
+    : {
+        client_id: client.id, platform: 'facebook', content_type: 'post', pillar: config.pillar, body: review.body || '',
+        status: 'draft', generated_by: 'cron', scheduled_for: slot.toISOString(),
+        review_status: 'needs_attention', reviewed_at: review.reviewedAt, review_reason: review.reason,
+        generation_attempts: review.attempts, content_source: 'themed_weekly', topic: review.topic,
+      }
+
+  const { error: insertError } = await admin.from('mkt_content_queue').insert(row)
+  if (insertError) {
+    // 23505 = one-auto-post-per-slot (migration 65) — another path claimed
+    // this exact timestamp first. Expected under concurrency, not a failure.
+    if ((insertError as { code?: string }).code === '23505') {
+      return { generated: false, note: `themed weekly (${config.theme}): slot ${slot.toISOString()} already taken — skipped` }
+    }
+    return { generated: false, error: `themed weekly (${config.theme}): insert failed — ${insertError.message}` }
+  }
+  if (!review.ok) return { generated: true, note: `themed weekly (${config.theme}): needs attention — ${review.reason}` }
+  return { generated: true }
+}
+
 async function countQueued(admin: Admin, clientId: string, platform: string): Promise<number> {
   const { count } = await admin
     .from('mkt_content_queue')
@@ -317,6 +399,20 @@ serve(async (req) => {
     errors.push(...scrapeErrors)
     const { error: cacheError } = await admin.from('crhq_scrape_cache').insert({ scraped_at, videos, articles })
     if (cacheError) errors.push(`cache insert: ${cacheError.message}`)
+
+    // Weekly themed post (Tuesday/Thursday) — deliberately BEFORE the
+    // foundContent branch below and never gated by it: this is layered on
+    // top of the scrape-driven post, not derived from it, so a quiet news
+    // night must not also skip Tuesday's shop/coffee post or Thursday's
+    // intelligence-subscription post. See generateThemedWeeklyPost's header.
+    try {
+      const themed = await generateThemedWeeklyPost(admin, client)
+      if (themed.generated) postsGenerated++
+      if (themed.note) notes.push(themed.note)
+      if (themed.error) errors.push(themed.error)
+    } catch (e) {
+      errors.push(`themed weekly post: ${String((e as Error)?.message ?? e)}`)
+    }
 
     const foundContent = videos.length > 0 || articles.length > 0
     // Skip-fix (product decision): CRHQ's entire value is reacting to what
@@ -482,13 +578,24 @@ serve(async (req) => {
           if (!review.ok) notes.push(`${platform}: needs attention — ${review.reason}`)
           if (autoApprove) notes.push(`Auto-approved post for ${client.name}`)
 
-          // Best-effort — never blocks or fails the post. Instagram every
-          // time; Facebook on alternate posts (wantsImage, decided above).
-          // Both platforms run the same Stability pipeline off the same
-          // client.visual_style; the image_gen_platforms allow-list still gates
-          // the rest (see _shared/image.ts, and migration 61 which adds
-          // 'facebook' to CRHQ's allow-list to let this through at all).
-          if (review.body && wantsImage) {
+          // Real bug, caught by an actual test run of this deploy, not
+          // assumed fixed (7 Sep 2026): CRHQ image generation was disabled
+          // entirely on both platforms via mkt_clients.image_gen_disabled_
+          // platforms (Craig will supply real photos via Drive going
+          // forward). generatePostImage already honours that deny-list and
+          // correctly no-ops internally — but this function's OWN
+          // imageLanded() check had no way to tell "deliberately disabled"
+          // apart from "asked for an image and the pipeline failed", so
+          // every single Instagram post (wantsImage is always true there)
+          // logged a false "image pipeline failed" error, confirmed live on
+          // the first real run after deploying the disable. Checking the
+          // same deny-list here, before attempting anything, both saves a
+          // wasted call into generatePostImage and reports the true reason.
+          const imagesDisabledForPlatform = (Array.isArray(client.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : [])
+            .includes(platform)
+          if (imagesDisabledForPlatform) {
+            notes.push(`${platform}: image generation disabled for this client — skipped (real photos supplied via Drive)`)
+          } else if (review.body && wantsImage) {
             // primarySource.title is the actual scraped video/article this post
             // was built around — prompts.ts already steers the COPY with it.
             // Passing it on is Defect 2's fix: without it the image concept

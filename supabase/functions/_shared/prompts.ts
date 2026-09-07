@@ -369,6 +369,36 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
     lines.push(`\nThis specific post must be built primarily around this ${primarySource.type}: "${primarySource.title}" — ${primarySource.url}. Reference it factually, as above.`)
   }
 
+  // CRHQ weekly themed post (Tuesday shop/coffee, Thursday intelligence
+  // subscription — Craig's confirmed schedule, agreed via WhatsApp 6 Sep
+  // 2026), set by crhq-nightly-content's themed-post step, distinct from the
+  // nightly scrape-driven post. Deliberately does NOT say the shop is open,
+  // available, or selling anything, and does not touch the existing "shop is
+  // closed / never mention a discount code" rule in CRHQ_FACEBOOK below —
+  // that rule reflects a real fact this prompt has no way to verify is still
+  // true, so the safe default is to write community/brand copy that stays
+  // true regardless of current shop status, not to quietly assume it has
+  // reopened. If the shop has genuinely reopened, this instruction (and the
+  // CRHQ_FACEBOOK rule it's paired with) need updating together, deliberately.
+  // Tightened after a real test run (7 Sep 2026) produced a post reading
+  // "the five blends in our shop" and "when you buy from Combat Ready HQ"
+  // despite the instruction below already saying not to — the model
+  // defaulted to transactional shop copy anyway because "coffee/shop-themed"
+  // reads as an invitation to sell something. This version is explicit about
+  // WHY (the shop's real current status is unknown to this prompt) and bans
+  // the exact class of phrase that went wrong, rather than a general
+  // "don't be transactional" steer that turned out not to land.
+  const themedTopic = client._crhq_themed_topic as { theme: 'shop_coffee' | 'intelligence_subscription' } | undefined
+  if (themedTopic?.theme === 'shop_coffee') {
+    lines.push(`\nThis is the weekly shop/coffee-themed post — NON-NEGOTIABLE:
+Write about Combat Ready HQ's shop and coffee culture as part of the brand's identity — the "coffee and conversation" feel of the channel, what it represents, who it's for.
+This prompt does NOT know whether the shop is currently open or what it currently sells. Treat that as unknown, not as open. Do not invent products, blends, flavours, quantities ("five blends", "our range", etc.), prices, discounts, or availability — none of that has been confirmed real.
+Banned: any sentence that tells the reader to buy, shop, order, or purchase anything, or that states or implies something is available right now. If you would write "buy from us", "in our shop", "available now", "our range of...", or similar — rewrite it as brand/community reflection instead, with no call to purchase.
+Drive readers to combatreadyhq.co.uk for more, not to buy anything.`)
+  } else if (themedTopic?.theme === 'intelligence_subscription') {
+    lines.push(`\nThis is the weekly intelligence-subscription-themed post. Write about Combat Ready HQ's intelligence briefings — the kind of analysis and insight subscribers get, why it matters, what it's for. Do not invent a specific price, feature list, or signup mechanic you have not been given. Drive readers to combatreadyhq.co.uk to find out more.`)
+  }
+
   // CRHQ's per-platform rules. Placed after the recent-posts and scrape blocks
   // above because the Facebook rule about YOUTUBE10 frequency refers back to
   // them. Facebook and Instagram are genuinely different formats for this
