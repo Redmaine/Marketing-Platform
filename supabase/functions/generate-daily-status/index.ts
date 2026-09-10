@@ -503,6 +503,11 @@ serve(async (req) => {
       })),
       brand_counts,
       crhq_last_scrape,
+      // Set below, only when the 28 Aug validation guard discards a summary
+      // that contradicted the real counts — see that block's own comment.
+      // Present here (null by default) so the field's shape is discoverable
+      // from a single read of this object, same as every other field below.
+      summary_discarded_reason: null,
       // Additive fields — Quill pipeline visibility.
       blogs_pending_approval,
       blogs_published_last_7d,
@@ -595,12 +600,21 @@ serve(async (req) => {
         // confidently false one is not.
         const bad = fresh ? summaryContradictions(fresh, summaryCtx) : []
         if (bad.length) {
+          // Root-cause fix (10 Sep 2026), same reasoning as fill.ts's
+          // needs_attention fix (31 Aug 2026) and crhq-nightly-content's
+          // needs-attention notes: this branch is the 28 Aug guard WORKING —
+          // it caught a summary that contradicted the real counts and
+          // correctly refused to show it. That is not a software failure, it
+          // has never once meant one, and writing it into edge_function_errors
+          // made it indistinguishable from a genuine crash in the one table
+          // daily-ops-check reads to report crash counts to Adrian — a
+          // correct catch was making itself look like the exact bug class it
+          // exists to prevent. Recorded on the status object instead
+          // (visible in daily-status.json for anyone who wants it, same as
+          // everything else this function reports) rather than dropped
+          // entirely.
           console.error(`[generate-daily-status] summary contradicted its own data, discarded: ${bad.join('; ')}`)
-          try {
-            await admin.from('edge_function_errors').insert({ function_name: 'generate-daily-status', error_message: `summary contradicted its own data, discarded: ${bad.join('; ')}` })
-          } catch (logErr) {
-            console.error(`[generate-daily-status] failed to write edge_function_errors: ${String((logErr as Error)?.message ?? logErr)}`)
-          }
+          status.summary_discarded_reason = `contradicted its own data: ${bad.join('; ')}`
           status.summary = null
           status.summary_date = null
         } else {

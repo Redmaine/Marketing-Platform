@@ -184,13 +184,39 @@ serve(async (req) => {
       ? false
       : new Date() >= new Date(`${targetDate}T09:10:00.000Z`)
 
-  const noEvidence = chaseSample.length === 0 && chaseCronHasHadChance
+  // Root-cause fix (10 Sep 2026) — this check previously only looked at
+  // invoice_chaser_log (real SENDS), so it could never tell "the sweep ran
+  // and genuinely found zero invoices due today" apart from "the cron never
+  // fired at all" — both produce zero rows here. Confirmed live on 9 Sep
+  // 2026: process-invoice-chases ran twice that morning (09:00:51 and
+  // 09:01:37 UTC), checked 93 real candidate invoices each time, and
+  // correctly found none due for any 7/14/30-day stage — a completely
+  // legitimate outcome given the real due-date spread, not a failure — yet
+  // this check flagged it as missing evidence regardless.
+  //
+  // invoice_chaser_runs is process-invoice-chases' own heartbeat: one row
+  // per sweep, written whether or not anything was sent (see that
+  // function's own comment on it). Checking it here is what actually
+  // distinguishes the two cases this section exists to tell apart.
+  const { data: chaseRunRows } = await admin
+    .from('invoice_chaser_runs')
+    .select('run_at, invoices_checked, chases_sent, chases_skipped, chases_failed, error')
+    .gte('run_at', windowStart)
+    .lt('run_at', windowEnd)
+    .order('run_at', { ascending: false })
+  const chaseRuns = chaseRunRows ?? []
+  const chaseRanCleanly = chaseRuns.some((r: Record<string, unknown>) => !r.error)
+
+  const noEvidence = chaseSample.length === 0 && chaseCronHasHadChance && !chaseRanCleanly
   if (noEvidence) anyFlag = true
   report.invoice_chase_evidence = {
     date_checked: targetDate,
     scope: 'invoice_chaser_log only — original invoice/quote sends via send-invoice/quote-send do not capture resend_id at all (known, separate gap)',
     sample: chaseSample,
     chase_cron_has_had_chance_to_run: chaseCronHasHadChance,
+    // The heartbeat evidence that resolves the zero-rows ambiguity above.
+    runs_recorded: chaseRuns.length,
+    ran_cleanly_with_zero_due: chaseSample.length === 0 && chaseRanCleanly,
     flagged_no_evidence_found: noEvidence,
   }
 
