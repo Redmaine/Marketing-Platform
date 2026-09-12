@@ -242,7 +242,7 @@ export function conceptSystemFor(client: Record<string, any> | undefined, visual
 // Flux is a diffusion model with no negative channel, and only ever sees
 // Claude's OUTPUT — which, by construction, contains none of these nouns. The
 // negation happens in the one place negation actually works.
-const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a black-and-white documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare. This ban covers the mounting as well as the object: the pole, mast, staff, bracket, frame, stand or fitting a forbidden object would hang on is itself forbidden, because the generator fills an empty mounting with the very thing you left off it. A "bare flagpole" reliably comes back with a flag on it.\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- banners, flags, pennants, bunting, flagpoles, flagstaffs, masts, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a full-colour documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare. This ban covers the mounting as well as the object: the pole, mast, staff, bracket, frame, stand or fitting a forbidden object would hang on is itself forbidden, because the generator fills an empty mounting with the very thing you left off it. A "bare flagpole" reliably comes back with a flag on it.\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- tanks, armoured vehicles, artillery, missiles, launchers, warships, submarines, military aircraft, helicopters, drones, rifles, guns, ammunition, any weapon or piece of military hardware of any era — the generator cannot be trusted to render it as current, and a museum piece under a modern headline is a failure\n- banners, flags, pennants, bunting, flagpoles, flagstaffs, masts, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
 // CRHQ prompt scaffolding for Flux (2026-08-20).
 //
@@ -277,7 +277,7 @@ const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete
 //
 // Deliberately names nothing it does not want. Every clause states what the
 // image IS, never what it must not be.
-const CRHQ_MEDIUM_DIRECTIVE = 'A real black-and-white 35mm documentary reportage photograph, shot on Kodak Tri-X 400 film pushed one stop and scanned from the negative. Coarse silver-halide grain is plainly visible across the whole frame, including in flat areas of sky, wall and shadow. Available light only, handheld, slightly imperfect framing, deep true blacks and blown-out highlights. Every surface is physical and worn — scuffed, dusty, damp, fingerprinted, unevenly lit'
+const CRHQ_MEDIUM_DIRECTIVE = 'A real full-colour 35mm documentary reportage photograph, shot on Kodak Portra 400 film pushed one stop and scanned from the negative — natural, true-to-life colour, never monochrome, never desaturated. Coarse film grain is plainly visible across the whole frame, including in flat areas of sky, wall and shadow. Available light only, handheld, slightly imperfect framing, deep true blacks and blown-out highlights. Every surface is physical and worn — scuffed, dusty, damp, fingerprinted, unevenly lit'
 
 const CRHQ_STYLE_REINFORCEMENT = 'Above all this must read as a real photograph made on real film: heavy visible grain everywhere, genuine surface texture, uneven natural light, and the small optical imperfections of a handheld 35mm frame. Every surface in shot is blank, plain and unlettered'
 
@@ -359,7 +359,7 @@ function styleCorrectionFor(violation: string | null, allowsPeople: boolean): st
       // stated earlier in this same prompt) rather than asserting a medium.
       return 'Stay strictly within this brand\'s own stated visual style and technique — do not drift toward a different rendering medium, finish or treatment than the one specified.'
     }
-    return 'The previous frame was too clean and too perfect to read as a photograph. Make it unmistakably a scanned film negative: coarse silver-halide grain over the entire image including flat areas, visible dust and surface wear, uneven available light, slight handheld softness, and blown highlights that are not recovered.'
+    return 'The previous frame was too clean and too perfect to read as a photograph. Make it unmistakably a scanned colour film negative: coarse grain over the entire image including flat areas, visible dust and surface wear, uneven available light, slight handheld softness, and blown highlights that are not recovered — in natural colour.'
   }
   if (/control room|operations centre|operations center|monitor|screen|console|surveillance|command centre|command center/.test(v)) {
     return 'Set this somewhere else entirely — outdoors or in a public civic space. Choose a coastal or maritime location, a street, a field or open ground, a transport or infrastructure setting, or the exterior of a public building. No interior filled with equipment or displays.'
@@ -380,11 +380,13 @@ function styleCorrectionFor(violation: string | null, allowsPeople: boolean): st
     // markings it is correcting.
     return 'Move the camera in close and fill the frame with bare physical material — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth. Material, texture, shadow and light are the entire subject of this photograph.'
   }
-  if (/colour|color|saturat/.test(v)) {
-    return 'Pure black and white only, with a full tonal range from deep true blacks to blown highlights. No colour cast of any kind.'
+  if (/monochrome|black and white|black-and-white|desaturat|greyscale|grayscale/.test(v)) {
+    // 12 Sep 2026: CRHQ is colour. The old branch here asserted "pure black
+    // and white only" — the exact opposite of the rule now enforced.
+    return 'Render this in full natural colour — real, true-to-life colour throughout the frame, never monochrome, never desaturated, never a black-and-white treatment.'
   }
   if (!allowsPeople) {
-    return 'Make this unmistakably a real black-and-white documentary photograph on pushed Tri-X film: heavy visible grain, worn physical surfaces, uneven available light, handheld imperfection.'
+    return 'Make this unmistakably a real colour documentary photograph on pushed Portra film: natural colour, heavy visible grain, worn physical surfaces, uneven available light, handheld imperfection.'
   }
   // Brand-neutral fallback for anything that doesn't match a more specific
   // category above — reasserts the brand's OWN spec (already stated
@@ -782,18 +784,29 @@ function wrapHeadlineLines(headline: string): string[] {
 // proportional to the image's own dimensions so this looks right whether the
 // image is the native 1024x1024 (Facebook) or the resized 1080x1080
 // (Instagram). Mutates and returns the same Image instance.
-async function applyForcedBWAndHeadline(image: Image, headline: string): Promise<Image> {
-  image.saturation(0)
+// CRHQ headline colour (rule 2, 12 Sep 2026): yellow, never black, never the
+// white it was until now. #FFD400 — a saturated warm yellow that stays
+// legible on the near-black banner and is unmistakably not white in the
+// pixel check below. ImageScript colours are 0xRRGGBBAA.
+export const HEADLINE_TEXT_COLOUR = 0xffd400ff
+const HEADLINE_BANNER_FRACTION = 0.24
+
+async function applyHeadlineBanner(image: Image, headline: string): Promise<Image> {
+  // Rule 1 (12 Sep 2026): the image stays in colour. This function used to
+  // open with image.saturation(0) — a forced black-and-white treatment that
+  // ran AFTER the review had passed the raw frame, so no check could ever
+  // have caught it. Removed; the colour check now runs on the raw frame and
+  // nothing downstream desaturates it.
   if (!headline) return image
 
-  const bannerHeight = Math.round(image.height * 0.24)
+  const bannerHeight = Math.round(image.height * HEADLINE_BANNER_FRACTION)
   const bannerY = image.height - bannerHeight
   image.drawBox(0, bannerY, image.width, bannerHeight, () => 0x000000ee)
 
   const font = await headlineFontBytes()
   const fontScale = Math.round(image.width * 0.0667)
   const lineGap = Math.round(fontScale * 0.17)
-  const lines = wrapHeadlineLines(headline).map((line) => Image.renderText(font, fontScale, line, 0xffffffff))
+  const lines = wrapHeadlineLines(headline).map((line) => Image.renderText(font, fontScale, line, HEADLINE_TEXT_COLOUR))
   const totalTextHeight = lines.reduce((sum, l) => sum + l.height, 0) + lineGap * (lines.length - 1)
   let lineY = Math.round(bannerY + (bannerHeight - totalTextHeight) / 2)
   for (const line of lines) {
@@ -803,6 +816,34 @@ async function applyForcedBWAndHeadline(image: Image, headline: string): Promise
   }
   return image
 }
+
+// Rule 2 checked on the FINAL composite, deterministically. Samples the
+// banner band and counts pixels that are yellow (high R, high G, low B).
+// The decisive signal is yellow present where the text should be: white
+// text fails (B too high), black text fails (R and G too low), no text
+// fails. Returns the counts so the review log carries the actual numbers
+// rather than a verdict alone.
+export async function measureHeadlineOverlay(bytes: Uint8Array): Promise<{ yellow_fraction: number; sampled: number }> {
+  const image = await Image.decode(bytes)
+  const bannerHeight = Math.round(image.height * HEADLINE_BANNER_FRACTION)
+  const bannerY = image.height - bannerHeight
+  let yellow = 0, sampled = 0
+  const step = 2
+  for (let y = bannerY + 1; y <= image.height; y += step) {
+    for (let x = 1; x <= image.width; x += step) {
+      const px = image.getPixelAt(x, y) >>> 0
+      const r = (px >>> 24) & 0xff, g = (px >>> 16) & 0xff, b = (px >>> 8) & 0xff
+      if (r >= 200 && g >= 170 && b <= 90) yellow++
+      sampled++
+    }
+  }
+  return { yellow_fraction: sampled ? yellow / sampled : 0, sampled }
+}
+
+// Deliberately low: a two-line headline in Anton at this scale covers roughly
+// 8-15% of the banner band; 1% is far above any yellow the photograph could
+// contribute through a 0xee banner, and far below any real headline.
+export const HEADLINE_MIN_YELLOW_FRACTION = 0.01
 
 // Deterministic style-prefix check (not an AI/vision check) — does the prompt
 // actually being sent to Stability contain this client's own configured
@@ -964,6 +1005,33 @@ export const IMAGE_REVIEW_THRESHOLDS = {
     // trade-off, signed off 16 Aug 2026.
     minLegibility: 0.40,
   },
+  // ── CRHQ rules, 12 Sep 2026 (Adrian). Applied only when the caller passes
+  // the matching flag in `rules` — every other brand's verdicts are
+  // untouched by these three blocks.
+  colour: {
+    // MEASURED FROM PIXELS, not asked of the model: mean HSV saturation over
+    // a regular sample of the frame, and the fraction of sampled pixels
+    // with any real chroma. A forced-B&W frame measures 0.000 on both; a
+    // muted colour documentary frame sits well above 0.10. Calibrated on
+    // real Flux output for this build — see the commit.
+    minMeanSaturation: 0.08,
+    minChromaticFraction: 0.20,
+  },
+  hardware: {
+    // A PRESENCE ban, deliberately — not an age test. "Does this vehicle read
+    // as pre-2006" is a judgement a vision model gets wrong both ways often
+    // enough to matter, so the rule the pipeline can actually keep is that no
+    // military vehicle, aircraft, vessel or weapon appears at all. The model
+    // still reports apparent_era, for the log only.
+    minConfidence: 0.50,
+  },
+  subject: {
+    // The model is given the post text and asked how directly the frame
+    // depicts THAT post's specific subject (1.0) versus something merely
+    // defence-adjacent (0.3) or unrelated (0.0). 0.50 is the line between
+    // "recognisably about this story" and "could sit above any post".
+    minRelevance: 0.50,
+  },
 }
 
 const IMAGE_REVIEW_SYSTEM = `You are a measurement instrument for an image review pipeline. You do not make decisions and you never say whether an image passes or fails — you report only what is observably present, as precisely as you can.
@@ -983,18 +1051,42 @@ Return ONLY a JSON object, no preamble, no code fence:
   ],
   "text_findings": [
     { "content": "verbatim", "legibility": 0.0-1.0, "kind": "hull_number" | "unit_marking" | "registration" | "signage" | "label" | "watermark" | "other", "note": "where" }
-  ]
+  ],
+  "hardware": [
+    { "kind": "tank" | "armoured_vehicle" | "artillery" | "missile" | "warship" | "submarine" | "military_aircraft" | "helicopter" | "drone" | "firearm" | "other_weapon" | "other_military_equipment", "confidence": 0.0-1.0, "apparent_era": "pre_1950" | "1950_1990" | "1990_2006" | "post_2006" | "unclear", "note": "what and where" }
+  ],
+  "subject": {
+    "depicted": "one short phrase: the concrete thing this image actually shows",
+    "relevance": 0.0-1.0,
+    "note": "one short phrase on the link, or its absence, to the post text"
+  }
 }
 
 area_fraction is the face bounding box area as a fraction of the FULL image area — a face filling a quarter of the frame is ~0.06. Be numerically careful; it drives a threshold.
 resolvable_landmarks includes ONLY features whose shape you can individually make out. A dark or blurred mass you infer is a face but cannot resolve = empty array.
 Report EVERY face including small, distant, dark or partly hidden ones, and EVERY instance of letters, digits or identifying markings including partial, stylised or garbled ones — garbled lettering still counts as text. Empty arrays are correct when there is genuinely nothing.
 
-text_findings means GLYPHS ONLY: letters, digits, words, or identifying markings made of them. Do NOT report non-glyph graphics as text — map grid lines, contour lines, coastlines, hatching, scale bars, compass rose points, tally marks, dials without numerals, textures and patterns are all NOT text, however map-like or chart-like they appear. Report a clock or compass dial only if actual numerals are rendered on it.`
+text_findings means GLYPHS ONLY: letters, digits, words, or identifying markings made of them. Do NOT report non-glyph graphics as text — map grid lines, contour lines, coastlines, hatching, scale bars, compass rose points, tally marks, dials without numerals, textures and patterns are all NOT text, however map-like or chart-like they appear. Report a clock or compass dial only if actual numerals are rendered on it.
+
+hardware means any military vehicle, aircraft, vessel, weapon or piece of military equipment, of ANY era, anywhere in the frame — foreground, background, distant, partial, silhouetted, or as a model, museum piece or memorial. Report civilian vehicles as "other_military_equipment" only if they carry weapons or military fittings. apparent_era is your best read of when that hardware was in service; "unclear" is a valid answer. Empty array when there is genuinely none.
+
+subject: you will be given the text of the post this image is meant to illustrate. relevance is how directly the frame depicts THAT post's specific subject — the particular event, place, decision or consequence it is about. 1.0 = unmistakably that story; 0.7 = the right kind of place or thing for it; 0.3 = generic security/defence/threat imagery that could sit above any such post; 0.0 = unrelated. If no post text is supplied, set relevance to 1.0 and depicted to what you see.`
 
 interface ImageMeasurement {
   faces?: Array<Record<string, unknown>>
   text_findings?: Array<Record<string, unknown>>
+  hardware?: Array<Record<string, unknown>>
+  subject?: { depicted?: unknown; relevance?: unknown; note?: unknown }
+  // Deterministic, from the bytes — see measureColour.
+  colour?: { mean_saturation: number; chromatic_fraction: number; sampled: number }
+}
+
+// Which of the CRHQ rules a judgement should apply. All default off, so
+// every existing caller keeps its exact prior verdicts.
+export interface ReviewRules {
+  requireColour?: boolean
+  banHardware?: boolean
+  requireRelevance?: boolean
 }
 
 // Pure threshold application. Same measurement always yields the same verdict.
@@ -1010,8 +1102,45 @@ export function judgeImageMeasurement(
   measurement: ImageMeasurement,
   thresholds = IMAGE_REVIEW_THRESHOLDS,
   allowsPeople = false,
+  rules: ReviewRules = {},
 ): { verdict: 'pass' | 'reject'; reasons: string[] } {
   const reasons: string[] = []
+
+  // ── CRHQ rule 1: colour only. Deterministic — a missing measurement is a
+  // reviewer fault and is reported as such, never silently passed.
+  if (rules.requireColour) {
+    const c = measurement.colour
+    if (!c) {
+      reasons.push('COLOUR: no colour measurement was taken — cannot confirm the image is in colour')
+    } else if (c.mean_saturation < thresholds.colour.minMeanSaturation || c.chromatic_fraction < thresholds.colour.minChromaticFraction) {
+      reasons.push(
+        `COLOUR: reads as monochrome/desaturated — mean saturation ${c.mean_saturation.toFixed(3)} ` +
+        `(<${thresholds.colour.minMeanSaturation}) or chromatic fraction ${c.chromatic_fraction.toFixed(3)} (<${thresholds.colour.minChromaticFraction})`,
+      )
+    }
+  }
+
+  // ── CRHQ rule 4: no military hardware, any era. Presence, not age.
+  if (rules.banHardware) {
+    for (const h of measurement.hardware ?? []) {
+      const conf = Number(h.confidence ?? 0)
+      if (conf < thresholds.hardware.minConfidence) continue
+      reasons.push(`HARDWARE: ${String(h.kind ?? 'unknown')} (era ${String(h.apparent_era ?? 'unclear')}) — conf ${conf.toFixed(2)}: ${String(h.note ?? '').slice(0, 80)}`)
+    }
+  }
+
+  // ── CRHQ rule 3: the frame must be about THIS post.
+  if (rules.requireRelevance) {
+    const sub = measurement.subject
+    if (!sub || sub.relevance === undefined || sub.relevance === null) {
+      reasons.push('SUBJECT: no relevance measurement was returned — cannot confirm the image is about this post')
+    } else {
+      const rel = Number(sub.relevance)
+      if (!(rel >= thresholds.subject.minRelevance)) {
+        reasons.push(`SUBJECT: relevance ${rel.toFixed(2)} (<${thresholds.subject.minRelevance}) — depicts "${String(sub.depicted ?? '').slice(0, 60)}": ${String(sub.note ?? '').slice(0, 80)}`)
+      }
+    }
+  }
 
   if (!allowsPeople) {
     for (const f of measurement.faces ?? []) {
@@ -1053,9 +1182,11 @@ export function judgeImageMeasurement(
 export async function reviewGeneratedImage(
   bytes: Uint8Array,
   allowsPeople = false,
+  rules: ReviewRules = {},
+  postBody: string | null = null,
 ): Promise<{ verdict: 'pass' | 'reject'; reasons: string[]; measurement: ImageMeasurement }> {
-  const measurement = await measureImage(bytes)
-  return { ...judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, allowsPeople), measurement }
+  const measurement = await measureImage(bytes, postBody)
+  return { ...judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, allowsPeople, rules), measurement }
 }
 
 // Exported for the same reason — the harness generates with identical
@@ -1103,7 +1234,34 @@ function extractFirstJsonObject(raw: string): string | null {
   return null
 }
 
-async function measureImage(bytes: Uint8Array): Promise<ImageMeasurement> {
+// Colour, measured rather than asked. Decodes the frame and samples a regular
+// grid of pixels; for each, HSV saturation = (max-min)/max over RGB. A true
+// monochrome frame — including the saturation(0) treatment this pipeline
+// itself applied until 12 Sep 2026 — gives 0.000 on both figures, so this
+// is the one check here with no model in the loop and no judgement in it.
+export async function measureColour(bytes: Uint8Array): Promise<NonNullable<ImageMeasurement['colour']>> {
+  const image = await Image.decode(bytes)
+  const step = Math.max(1, Math.floor(Math.sqrt((image.width * image.height) / 4000)))
+  let sum = 0, chromatic = 0, sampled = 0
+  for (let y = 1; y <= image.height; y += step) {
+    for (let x = 1; x <= image.width; x += step) {
+      const px = image.getPixelAt(x, y) >>> 0
+      const r = (px >>> 24) & 0xff, g = (px >>> 16) & 0xff, b = (px >>> 8) & 0xff
+      const max = Math.max(r, g, b), min = Math.min(r, g, b)
+      const sat = max === 0 ? 0 : (max - min) / max
+      sum += sat
+      if (sat >= 0.10 && max >= 24) chromatic++
+      sampled++
+    }
+  }
+  return {
+    mean_saturation: sampled ? sum / sampled : 0,
+    chromatic_fraction: sampled ? chromatic / sampled : 0,
+    sampled,
+  }
+}
+
+async function measureImage(bytes: Uint8Array, postBody: string | null = null): Promise<ImageMeasurement> {
   // Chunked base64 — a spread/apply over a ~1.5MB image blows the call stack.
   let binary = ''
   const CHUNK = 0x8000
@@ -1112,10 +1270,18 @@ async function measureImage(bytes: Uint8Array): Promise<ImageMeasurement> {
   }
   const b64 = btoa(binary)
 
-  const raw = await callAnthropicVision(IMAGE_REVIEW_SYSTEM, b64, 'Measure this image.', 1500)
+  // The post text rides along so `subject.relevance` is measured against
+  // THIS post, not against "defence" in general (CRHQ rule 3).
+  const ask = postBody
+    ? `Measure this image. The post it is meant to illustrate reads:\n\n---\n${String(postBody).slice(0, 1500)}\n---`
+    : 'Measure this image.'
+  const raw = await callAnthropicVision(IMAGE_REVIEW_SYSTEM, b64, ask, 1800)
   const json = extractFirstJsonObject(raw)
   if (!json) throw new Error(`image review returned no JSON: ${raw.slice(0, 200)}`)
-  return JSON.parse(json) as ImageMeasurement
+  const measurement = JSON.parse(json) as ImageMeasurement
+  // Merged AFTER the model's answer so the model can never overwrite it.
+  measurement.colour = await measureColour(bytes)
+  return measurement
 }
 
 // Durable record of every review attempt — see migration 101. Best-effort:
@@ -1171,6 +1337,11 @@ const REVIEW_ESCALATION = {
   // positively, naming nothing it does not want.
   text: 'CRITICAL: move the camera much closer and photograph bare physical material alone — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth, water. Fill the whole frame with that material, its texture, and the light falling across it. Material, texture, shadow and weather are the entire subject of this photograph.',
   face: 'CRITICAL: the previous attempt rendered an identifiable face. Remove people from the frame entirely — this is an environmental or still-life photograph with no human figures at all.',
+  // CRHQ rules, 12 Sep 2026.
+  colour: 'CRITICAL: the previous attempt came back monochrome. This is a FULL-COLOUR photograph — real, natural, true-to-life colour across the whole frame. Not black and white, not sepia, not desaturated.',
+  hardware: 'CRITICAL: the previous attempt showed military hardware. There must be NO tanks, armoured vehicles, artillery, missiles, warships, aircraft, helicopters, drones, weapons or military equipment of any kind or any era anywhere in the frame — not distant, not partial, not as a memorial or model. Photograph the place, the ground, the weather and the material instead.',
+  subject: (postBody: string) =>
+    `CRITICAL: the previous attempt was generic and not recognisably about this story. The photograph must be visibly about the specific thing this post describes — the particular place, event or consequence — so that a reader sees the connection at once. The post reads: "${String(postBody ?? '').replace(/\s+/g, ' ').slice(0, 400)}"`,
 }
 
 const IMAGE_REVIEW_MAX_ATTEMPTS = 3
@@ -1585,6 +1756,14 @@ export async function generatePostImage(
       const escalations: string[] = []
       let accepted: Uint8Array | null = null
       let lastBytes: Uint8Array | null = null
+      // CRHQ's four review rules (12 Sep 2026): colour only, no military
+      // hardware, and the frame must be about this post. The fourth — the
+      // yellow headline — is checked after compositing, further down. Gated
+      // on the same CRHQ test everything else in this file uses, so no
+      // other brand's verdicts change.
+      const crhqRules: ReviewRules = wantsHeadlineOverlay(client)
+        ? { requireColour: true, banHardware: true, requireRelevance: true }
+        : {}
 
       for (let attempt = 1; attempt <= IMAGE_REVIEW_MAX_ATTEMPTS; attempt++) {
         const fluxPrompt = escalations.length ? `${attemptPrompt}\n\n${escalations.join('\n')}` : attemptPrompt
@@ -1593,7 +1772,9 @@ export async function generatePostImage(
 
         let measurement: ImageMeasurement
         try {
-          measurement = await measureImage(candidate)
+          // The post text goes with the image so relevance is measured
+          // against THIS post (CRHQ rule 3).
+          measurement = await measureImage(candidate, crhqRules.requireRelevance ? postBody : null)
         } catch (e) {
           // A reviewer failure must not silently publish an unreviewed image,
           // but it must also not cost the post its image entirely. Logged as
@@ -1604,7 +1785,7 @@ export async function generatePostImage(
           continue
         }
 
-        const { verdict, reasons } = judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, brandAllowsPeople)
+        const { verdict, reasons } = judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, brandAllowsPeople, crhqRules)
         await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement, concept)
 
         if (verdict === 'pass') {
@@ -1617,6 +1798,9 @@ export async function generatePostImage(
         escalations.length = 0
         if (reasons.some((r) => r.startsWith('TEXT'))) escalations.push(REVIEW_ESCALATION.text)
         if (reasons.some((r) => r.startsWith('FACE'))) escalations.push(REVIEW_ESCALATION.face)
+        if (reasons.some((r) => r.startsWith('COLOUR'))) escalations.push(REVIEW_ESCALATION.colour)
+        if (reasons.some((r) => r.startsWith('HARDWARE'))) escalations.push(REVIEW_ESCALATION.hardware)
+        if (reasons.some((r) => r.startsWith('SUBJECT'))) escalations.push(REVIEW_ESCALATION.subject(postBody))
       }
 
       if (!accepted) {
@@ -1774,21 +1958,31 @@ export async function generatePostImage(
 
     let bytes = await resizeForPlatform(rawBytes, platform)
 
-    // CRHQ-only (see wantsHeadlineOverlay): force a deliberate B&W treatment
-    // and composite a bold headline banner on top, regardless of platform —
-    // both facebook and instagram get the same treated image, since CRHQ is
-    // the one brand whose Facebook posts actually attach the image (see the
-    // allow-list comment above). A failure here falls back to the plain
-    // Stability output rather than losing the image entirely — this is a
-    // finishing step, not a hard requirement for the post to go out.
+    // CRHQ-only (see wantsHeadlineOverlay): composite the yellow headline
+    // banner, regardless of platform — both facebook and instagram get the
+    // same treated image. A compositing EXCEPTION (font fetch, decode) falls
+    // back to the plain reviewed frame rather than losing the image. But a
+    // composite that comes back WITHOUT yellow text where the headline
+    // should be is rule 2 failing: logged as a rejection and the image is
+    // NOT attached. The review has to see the final composite — until now it
+    // never did.
     if (wantsHeadlineOverlay(client)) {
       try {
         const headline = await summariseToHeadline(postBody)
         const image = await Image.decode(bytes)
-        await applyForcedBWAndHeadline(image, headline)
-        bytes = await image.encode()
+        await applyHeadlineBanner(image, headline)
+        const composited = await image.encode()
+        const overlay = await measureHeadlineOverlay(composited)
+        if (headline && overlay.yellow_fraction < HEADLINE_MIN_YELLOW_FRACTION) {
+          const reason = `OVERLAY: headline text is not yellow — yellow fraction of banner ${overlay.yellow_fraction.toFixed(4)} (<${HEADLINE_MIN_YELLOW_FRACTION})`
+          await logImageReview(admin, client, contentQueueId, platform, IMAGE_REVIEW_MAX_ATTEMPTS + 1, 'reject', [reason], { overlay } as unknown as ImageMeasurement, concept)
+          console.error(`[image] ${client.name}: ${reason} — no image attached for ${contentQueueId}`)
+          return
+        }
+        await logImageReview(admin, client, contentQueueId, platform, IMAGE_REVIEW_MAX_ATTEMPTS + 1, 'pass', [], { overlay } as unknown as ImageMeasurement, concept)
+        bytes = composited
       } catch (e) {
-        console.error(`[image] ${client.name}: forced B&W/headline compositing failed, using plain image — ${String((e as Error)?.message ?? e)}`)
+        console.error(`[image] ${client.name}: headline compositing failed, using plain image — ${String((e as Error)?.message ?? e)}`)
       }
     }
 

@@ -25,6 +25,8 @@ import {
   buildImagePrompt,
   checkStyleCompliance,
   generateWithFlux,
+  measureColour,
+  measureHeadlineOverlay,
   reviewGeneratedImage,
   summariseToVisualConcept,
 } from '../_shared/image.ts'
@@ -65,6 +67,24 @@ Deno.serve(async (req: Request) => {
       b.styleCheck = true
     }
 
+    // 'measure': fetch an existing image by URL and run ONLY the review on
+    // it — used to prove the colour and overlay checks against a known
+    // black-and-white frame and a known white-headline composite without
+    // spending a generation.
+    if (mode === 'measure') {
+      const res = await fetch(String(b.url ?? ''))
+      if (!res.ok) return json({ error: `fetch ${res.status}` }, 400)
+      const bytes = new Uint8Array(await res.arrayBuffer())
+      const colour = await measureColour(bytes)
+      const overlay = await measureHeadlineOverlay(bytes)
+      let review: unknown = null
+      if (b.full) {
+        review = await reviewGeneratedImage(bytes, false,
+          { requireColour: true, banHardware: true, requireRelevance: !!b.postBody },
+          b.postBody ? String(b.postBody) : null)
+      }
+      return json({ mode, label: b.label ?? null, colour, overlay, review })
+    }
     if (mode === 'flux_negative_probe') {
       // Empirical check: does flux-1.1-pro on Replicate accept a negative
       // prompt at all? A 422 here settles the negative-prompt hypothesis.
@@ -96,7 +116,13 @@ Deno.serve(async (req: Request) => {
     const token = Deno.env.get('REPLICATE_API_TOKEN')!
     const bytes = await generateWithFlux(prompt, token)
 
-    const review = await reviewGeneratedImage(bytes)
+    // CRHQ's four rules (12 Sep 2026) — the same flags production passes for
+    // CRHQ, with the post body so relevance is measured against it.
+    const review = await reviewGeneratedImage(
+      bytes, false,
+      { requireColour: true, banHardware: true, requireRelevance: true },
+      b.postBody ? String(b.postBody) : null,
+    )
 
     let style: unknown = null
     if (b.styleCheck) {
@@ -121,6 +147,9 @@ Deno.serve(async (req: Request) => {
       reasons: review.reasons,
       text_findings: review.measurement?.text_findings ?? [],
       faces: review.measurement?.faces ?? [],
+      hardware: review.measurement?.hardware ?? [],
+      subject: review.measurement?.subject ?? null,
+      colour: review.measurement?.colour ?? null,
       style,
     })
   } catch (e) {
