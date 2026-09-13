@@ -28,6 +28,12 @@ export function Dashboard() {
   const [genClient, setGenClient] = useState(null)
   const [showToday, setShowToday] = useState(false)
   const [copyState, setCopyState] = useState('idle') // idle | copied | failed
+  // Anomaly alerts from daily-status.json (13 Sep 2026, _shared/anomalies.ts).
+  // Rendered ABOVE the stat pills so a silent metrics pull or a brand that
+  // can never generate an image is the first thing on the page, not a row in
+  // a table. null = not loaded yet; [] = loaded, nothing to flag.
+  const [alerts, setAlerts] = useState(null)
+  const [alertHeadline, setAlertHeadline] = useState('')
 
   async function copyStatus() {
     try {
@@ -43,8 +49,23 @@ export function Dashboard() {
     }
   }
 
+  async function loadAlerts() {
+    try {
+      const res = await fetch('/api/daily-status')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const status = await res.json()
+      setAlerts(Array.isArray(status.alerts) ? status.alerts : [])
+      setAlertHeadline(status.alert_headline || '')
+    } catch (e) {
+      // A failed fetch must not look like "all clear".
+      setAlerts([{ severity: 'warning', code: 'status_unavailable', title: 'Could not load the daily status', detail: String(e?.message || e) }])
+      setAlertHeadline('')
+    }
+  }
+
   async function load() {
     setLoading(true)
+    loadAlerts()
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
     const todayEnd = new Date(); todayEnd.setHours(23, 59, 59, 999)
     const [c, approval, today, failed, blogs] = await Promise.all([
@@ -130,6 +151,27 @@ export function Dashboard() {
           {copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Failed' : 'Copy Status'}
         </button>
       </div>
+
+      {alerts && alerts.length > 0 && (
+        <div role="alert" style={{ marginBottom: 20, borderRadius: 10, overflow: 'hidden', border: '2px solid ' + (alerts.some((a) => a.severity === 'critical') ? '#b91c1c' : '#b45309') }}>
+          <div style={{ background: alerts.some((a) => a.severity === 'critical') ? '#b91c1c' : '#b45309', color: '#fff', padding: '10px 16px', fontWeight: 800, fontSize: 14, letterSpacing: 0.3 }}>
+            {alertHeadline || `${alerts.length} thing${alerts.length === 1 ? '' : 's'} need attention`}
+          </div>
+          <div style={{ background: '#fff' }}>
+            {alerts.map((a, i) => (
+              <div key={a.code + i} style={{ padding: '10px 16px', borderTop: i ? '1px solid #eee' : 'none', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, padding: '2px 8px', borderRadius: 999, color: '#fff', background: a.severity === 'critical' ? '#b91c1c' : '#b45309' }}>
+                  {a.severity === 'critical' ? 'CRITICAL' : 'WARNING'}
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{a.title}</div>
+                  <div style={{ fontSize: 12, color: 'var(--mist)', marginTop: 2 }}>{a.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-4" style={{ marginBottom: 20 }}>
         <StatPill label="Posts today" value={postsToday} accent={postsToday > 0} onClick={() => setShowToday(true)} />

@@ -38,6 +38,7 @@ import { findRecurringRejectionPatterns, PATTERN_LOOKBACK_DAYS } from '../_share
 // every one of them is formatted UK-local with an explicit BST/GMT label.
 // The QUERY boundaries above stay UTC — see the note on utcStamp below.
 import { formatUkDateTime } from '../_shared/ukTime.ts'
+import { detectAnomalies, alertHeadline, type Alert } from '../_shared/anomalies.ts'
 
 const BUCKET = 'ops-exports'
 const FILE = 'daily-status.json'
@@ -116,6 +117,8 @@ async function generateSummary(context: Record<string, unknown>): Promise<string
 // end up describing different things.
 function buildSummaryContext(status: Record<string, any>) {
   return {
+    // First, always — the paragraph must open with these if there are any.
+    alerts: (status.alerts ?? []).map((a: Record<string, any>) => `${String(a.severity).toUpperCase()}: ${a.title}`),
     scheduled_today_count: status.scheduled_today.length,
     pending_approval_count: status.pending_approval.length,
     rejected_last_24h_count: status.rejected_last_24h.length,
@@ -474,7 +477,22 @@ serve(async (req) => {
     // plain name, and the machine-readable UTC instant is kept alongside it
     // under an explicit *_utc key rather than dropped — timestamps this file
     // reports are still, underneath, UTC in the database.
+    // ANOMALIES FIRST (13 Sep 2026, _shared/anomalies.ts). The first keys of
+    // this object are the first lines of the "Copy Status" paste and of the
+    // dashboard banner. A metrics pull gone silent, a brand that can never
+    // generate an image, an Anthropic cap — these were all derivable from the
+    // tables further down this object, and nobody derived them. Best-effort:
+    // a detector failure is itself reported as an alert, never swallowed.
+    let alerts: Alert[] = []
+    try {
+      alerts = await detectAnomalies(admin, now)
+    } catch (e) {
+      alerts = [{ severity: 'warning', code: 'detector_failed', title: 'Anomaly detector crashed', detail: String((e as Error)?.message ?? e).slice(0, 300) }]
+    }
+
     const status: Record<string, any> = {
+      alert_headline: alertHeadline(alerts),
+      alerts,
       generated_at: formatUkDateTime(now),
       generated_at_utc: now.toISOString(),
       scheduled_today: scheduledToday.map((r) => ({
