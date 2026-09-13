@@ -242,7 +242,7 @@ export function conceptSystemFor(client: Record<string, any> | undefined, visual
 // Flux is a diffusion model with no negative channel, and only ever sees
 // Claude's OUTPUT — which, by construction, contains none of these nouns. The
 // negation happens in the one place negation actually works.
-const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a full-colour documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare. This ban covers the mounting as well as the object: the pole, mast, staff, bracket, frame, stand or fitting a forbidden object would hang on is itself forbidden, because the generator fills an empty mounting with the very thing you left off it. A "bare flagpole" reliably comes back with a flag on it.\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- tanks, armoured vehicles, artillery, missiles, launchers, warships, submarines, military aircraft, helicopters, drones, rifles, guns, ammunition, any weapon or piece of military hardware of any era — the generator cannot be trusted to render it as current, and a museum piece under a modern headline is a failure\n- banners, flags, pennants, bunting, flagpoles, flagstaffs, masts, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
+const CRHQ_CONCEPT_SYSTEM = 'You turn a social media post into a short, concrete visual scene description for an AI image generator that will render it as a full-colour documentary reportage photograph.\n\nSTEP 1 — SUBJECT. Work out the ONE specific thing this post is about: the particular event, place, decision or consequence, not the broad subject area. If the post is about what somebody said, warned, analysed or reported, do NOT depict the act of speaking, briefing, meeting or analysing — depict the real-world thing they were talking about. Your scene must be recognisably about that specific thing, so a reader of the post sees the connection immediately: name the concrete particulars, the actual kind of place, the time of day, the weather, the physical aftermath or evidence. A scene that could sit above any other post about security, defence or threat is a failure, however well composed.\n\nSTEP 1b — WHEN THE SUBJECT IS NOT A PHYSICAL EVENT. Many posts are about a process, an institution, an investigation, a decision, a dispute or a question of accountability. There is no scene of "accountability" to photograph, and an empty street or wet pavement "where something happened" reads as nothing at all — it will be rejected as generic. For these, anchor the frame on ONE concrete physical emblem of the institution or process concerned, chosen from things that carry no lettering, and set it in the real place if the post names one. Choose from:\n- police, policing, an incident and its investigation: a CCTV camera housing on a pole against the sky; the blue lamp outside a police station, unlettered; the steel door and barred window of a custody suite; a bare interview-room table with one chair and the small red light of a wall-mounted recorder; a body-worn camera lens clipped to plain dark cloth\n- courts, tribunals, inquiries, verdicts: the worn stone steps and columns of a court building; an empty witness box or the brass rail of a dock; an empty judge\'s bench in a wood-panelled room\n- footage, evidence, records, "what was actually recorded": a camera lens close up with its red light on; a wall-mounted camera housing; a memory card or tape reel on bare steel\n- government, ministries, policy, Parliament: the exterior stone and railings of a Whitehall or Westminster building; a long corridor of closed doors; an empty committee-room table\n- readiness, resilience, shortfalls, neglect: an empty parade square; a padlocked gate; an empty stores shelf; a boarded window\nThe emblem is the subject and fills the frame; the place, weather and light are built around it. Never a bare street, wall or pavement standing in for an idea.\n\nSTEP 2 — MATERIALS. Build the frame out of place, ground, weather, light, architecture and raw material: concrete, brick, tarmac, steel, glass, stone, earth, water, timber, plain cloth.\n\nSTEP 3 — FORBIDDEN OBJECTS. Every object below exists to be read, and the image generator WILL render writing on it. None may appear in your scene — not in the background, not in passing, and not even when you describe it as blank, unmarked, empty or bare. This ban covers the mounting as well as the object: the pole, mast, staff, bracket, frame, stand or fitting a forbidden object would hang on is itself forbidden, because the generator fills an empty mounting with the very thing you left off it. A "bare flagpole" reliably comes back with a flag on it.\n- shops, shopfronts, storefronts, shutters, retail frontages, high streets, pubs, cafes, any commercial premises\n- screens, monitors, displays, projections, dashboards, instruments\n- maps, charts, diagrams, plans, documents, papers, files, folders, notebooks, books\n- cars, vans, lorries, trains, aircraft, ships, boats, any vehicle\n- tanks, armoured vehicles, artillery, missiles, launchers, warships, submarines, military aircraft, helicopters, drones, rifles, guns, ammunition, any weapon or piece of military hardware of any era — the generator cannot be trusted to render it as current, and a museum piece under a modern headline is a failure\n- banners, flags, pennants, bunting, flagpoles, flagstaffs, masts, posters, road signs, plaques, noticeboards, hoardings\n- uniforms, badges, insignia, packaging, boxes, crates\n- offices, briefing rooms, control rooms, operations centres, meeting rooms, newsrooms\n\nSTEP 4 — FRAMING. State the framing explicitly, and make it a framing that keeps the STEP 3 objects out of shot: close in on the subject rather than a wide establishing view, low or high angle, at ground level, into weather or darkness, or one architectural or material detail standing for the whole. Never a wide view down a street or across a townscape — that framing fills the distance with the very objects STEP 3 forbids.\n\nSTEP 5 — PEOPLE. Describe a scene with NO people in it. Empty is the default and almost always the right answer. Only if a human presence is genuinely essential to the story may you include ONE distant figure seen from behind, small in the frame — never a face, never an expression, never a group or a crowd. Never describe any text, quotes, numbers or words that should appear in the image.\n\nSTEP 6 — CHECK. Before you reply, re-read your sentence against the STEP 3 list word by word. If any forbidden object appears, rewrite the scene without it.\n\nReply with only the scene description, one or two sentences, no preamble, no quotation marks.'
 
 // CRHQ prompt scaffolding for Flux (2026-08-20).
 //
@@ -301,7 +301,7 @@ const CRHQ_STYLE_REINFORCEMENT = 'Above all this must read as a real photograph 
 // be the last thing Flux reads. This states what the surfaces ARE. It names
 // no glyph noun at all, and it reinforces the framing the concept was built
 // with (see CRHQ_CONCEPT_SYSTEM) rather than fighting it.
-const CRHQ_SURFACE_CLOSER = 'Every surface in frame is bare, continuous material — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth, glass, water — filling the frame as texture, tone and shadow, photographed close enough that material and light are the whole subject'
+const CRHQ_SURFACE_CLOSER = 'Every surface in frame is bare, unlettered material — raw concrete, weathered brick, wet tarmac, bare steel, plain cloth, stone, earth, glass, water — rendered as texture, tone and shadow. The thing named in the scene description above remains the subject of the photograph, shown close and unmistakably, built from that material'
 
 // Turns a style-checker violation into a POSITIVE corrective instruction.
 //
@@ -423,7 +423,7 @@ function styleCorrectionFor(violation: string | null, allowsPeople: boolean): st
 // setting made of them). Rejecting the concept and asking again is cheap — one
 // short text call — and happens long before any image is paid for.
 const CONCEPT_BANNED_SUBJECTS =
-  /\b(shops?|shopfronts?|storefronts?|store fronts?|shutters?|retail|high street|pubs?|caf[eé]s?|restaurants?|screens?|monitors?|displays?|projections?|dashboards?|maps?|charts?|diagrams?|blueprints?|documents?|papers?|paperwork|files?|folders?|notebooks?|books?|newspapers?|cars?|vans?|lorr(?:y|ies)|trucks?|buses|trains?|aircraft|aeroplanes?|helicopters?|ships?|boats?|vessels?|vehicles?|ambulances?|banners?|flags?|posters?|signs?|signage|signposts?|plaques?|noticeboards?|hoardings?|billboards?|uniforms?|badges?|insignia|packaging|boxes|crates?|offices?|briefing rooms?|control rooms?|operations cent(?:re|er)s?|newsrooms?|number plates?|licen[cs]e plates?|labels?|lettering|inscriptions?|graffiti)\b/i
+  /\b(shops?|shopfronts?|storefronts?|store fronts?|shutters?|retail|high street|pubs?|caf[eé]s?|restaurants?|screens?|monitors?|displays?|projections?|dashboards?|maps?|charts?|diagrams?|blueprints?|documents?|papers?|paperwork|forms?|reports?|sticky notes?|post-?its?|files?|folders?|notebooks?|books?|newspapers?|cars?|vans?|lorr(?:y|ies)|trucks?|buses|trains?|aircraft|aeroplanes?|helicopters?|ships?|boats?|vessels?|vehicles?|ambulances?|banners?|flags?|posters?|signs?|signage|signposts?|plaques?|noticeboards?|hoardings?|billboards?|uniforms?|badges?|insignia|packaging|boxes|crates?|offices?|briefing rooms?|control rooms?|operations cent(?:re|er)s?|newsrooms?|number plates?|licen[cs]e plates?|labels?|lettering|inscriptions?|graffiti)\b/i
 
 // The rewritten system prompt insists the scene be specific to THIS story and
 // refuses genericness. On a post that is purely "someone said something" —
@@ -485,13 +485,16 @@ export async function summariseToVisualConcept(
   sourceTitle?: string | null,
   validate = false,
   requireNoPeople = false,
+  // Appended AFTER the (sliced) post, so it is never lost to the 1000-char
+  // cut — reconceiveAfterSubjectReject's feedback goes through here.
+  extraInstruction = '',
 ): Promise<string> {
   const body = String(postBody || '').replace(/\s+/g, ' ').trim()
   if (!body) return ''
   const source = String(sourceTitle ?? '').replace(/\s+/g, ' ').trim()
-  const base = source
+  const base = (source
     ? `Post:\n${body.slice(0, 1000)}\n\nThe post was written about this specific story: "${source.slice(0, 300)}". The scene must be about that story in particular.`
-    : `Post:\n${body.slice(0, 1000)}`
+    : `Post:\n${body.slice(0, 1000)}`) + (extraInstruction ? `\n\n${extraInstruction}` : '')
 
   // Falling back to raw post copy is right for an unconstrained brand, but for
   // a no-people brand it is the exact disaster this function now exists to
@@ -566,15 +569,49 @@ export async function buildImagePrompt(
   const conceptSystem = conceptSystemFor(client, visualStyle)
   const noPeople = !isCrhq && styleForbidsPeople(visualStyle)
   const concept = await summariseToVisualConcept(postBody, conceptSystem, sourceTitle, isCrhq, noPeople)
+  return { prompt: assembleImagePrompt(concept, visualStyle, client), concept }
+}
+
+// The prompt for a given concept — split out (13 Sep 2026) so the review
+// loop can re-derive the concept after a SUBJECT rejection and rebuild the
+// prompt identically, rather than retrying the same dead scene.
+//
+// CRHQ brackets the brand style with a medium directive first and a
+// positive restatement last — see CRHQ_MEDIUM_DIRECTIVE. `style` stays
+// verbatim and contiguous so passesStylePrefixCheck still holds. Every
+// other client is completely unaffected.
+export function assembleImagePrompt(concept: string, visualStyle: string | null, client?: Record<string, any>): string {
+  const isCrhq = wantsHeadlineOverlay(client ?? {})
   const style = String(visualStyle || '').trim()
-  // CRHQ brackets the brand style with a medium directive first and a
-  // positive restatement last — see CRHQ_MEDIUM_DIRECTIVE. `style` stays
-  // verbatim and contiguous so passesStylePrefixCheck still holds. Every
-  // other client is completely unaffected.
   const parts = isCrhq
     ? [CRHQ_MEDIUM_DIRECTIVE, concept, style, CRHQ_STYLE_REINFORCEMENT, CRHQ_SURFACE_CLOSER]
     : [concept, style, NO_TEXT_INSTRUCTION]
-  return { prompt: parts.filter(Boolean).join('. '), concept }
+  return parts.filter(Boolean).join('. ')
+}
+
+// A fresh concept after the reviewer found the last one generic. The
+// rejection's own measurement — what the frame actually showed — goes back
+// to the concept model as the correction, so the retry is steered by what
+// went wrong rather than by the post's editorial text alone. 13 Sep 2026:
+// two Portsmouth policing posts burned all three attempts on the same wet
+// street because the loop only ever appended the post to the same concept.
+export async function reconceiveAfterSubjectReject(
+  postBody: string,
+  client: Record<string, any>,
+  visualStyle: string | null,
+  previousConcept: string,
+  depicted: string,
+  sourceTitle?: string | null,
+): Promise<string> {
+  const isCrhq = wantsHeadlineOverlay(client ?? {})
+  const conceptSystem = conceptSystemFor(client, visualStyle)
+  const noPeople = !isCrhq && styleForbidsPeople(visualStyle)
+  const feedback =
+    `Your previous scene was rendered and reviewed. It read as "${String(depicted).slice(0, 160)}" — generic, not recognisably about this story. ` +
+    `Do not describe a street, pavement, wall or empty room standing in for the idea. Re-read STEP 1b and anchor the frame on ONE concrete, ` +
+    `unlettered physical emblem of the institution or process this post is actually about, set in the real place if one is named. ` +
+    `Reply with ONLY the new scene description. Previous scene, not to be repeated: "${String(previousConcept).slice(0, 200)}"`
+  return await summariseToVisualConcept(postBody, conceptSystem, sourceTitle, isCrhq, noPeople, feedback)
 }
 
 // Instagram requires exact 1080x1080 square images. Stability only generates
@@ -1765,8 +1802,13 @@ export async function generatePostImage(
         ? { requireColour: true, banHardware: true, requireRelevance: true }
         : {}
 
+      // The prompt and concept for THIS attempt. A SUBJECT rejection replaces
+      // both (see the bottom of the loop); every other rejection keeps them
+      // and appends an escalation, as before.
+      let currentPrompt = attemptPrompt
+      let currentConcept = concept
       for (let attempt = 1; attempt <= IMAGE_REVIEW_MAX_ATTEMPTS; attempt++) {
-        const fluxPrompt = escalations.length ? `${attemptPrompt}\n\n${escalations.join('\n')}` : attemptPrompt
+        const fluxPrompt = escalations.length ? `${currentPrompt}\n\n${escalations.join('\n')}` : currentPrompt
         const candidate = await callFlux(fluxPrompt, apiKey)
         lastBytes = candidate
 
@@ -1781,15 +1823,16 @@ export async function generatePostImage(
           // 'error' so these are visible and countable rather than invisible.
           const msg = String((e as Error)?.message ?? e)
           console.error(`[image] ${client.name}: review measurement failed on attempt ${attempt} — ${msg}`)
-          await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [msg], null, concept)
+          await logImageReview(admin, client, contentQueueId, platform, attempt, 'error', [msg], null, currentConcept)
           continue
         }
 
         const { verdict, reasons } = judgeImageMeasurement(measurement, IMAGE_REVIEW_THRESHOLDS, brandAllowsPeople, crhqRules)
-        await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement, concept)
+        await logImageReview(admin, client, contentQueueId, platform, attempt, verdict, reasons, measurement, currentConcept)
 
         if (verdict === 'pass') {
           accepted = candidate
+          concept = currentConcept
           if (attempt > 1) console.log(`[image] ${client.name}: image accepted on attempt ${attempt} for ${contentQueueId}`)
           break
         }
@@ -1800,7 +1843,27 @@ export async function generatePostImage(
         if (reasons.some((r) => r.startsWith('FACE'))) escalations.push(REVIEW_ESCALATION.face)
         if (reasons.some((r) => r.startsWith('COLOUR'))) escalations.push(REVIEW_ESCALATION.colour)
         if (reasons.some((r) => r.startsWith('HARDWARE'))) escalations.push(REVIEW_ESCALATION.hardware)
-        if (reasons.some((r) => r.startsWith('SUBJECT'))) escalations.push(REVIEW_ESCALATION.subject(postBody))
+        // A SUBJECT rejection means the SCENE was wrong, not the rendering.
+        // Retrying the same scene with the post pasted underneath — what this
+        // loop did until 13 Sep 2026 — burned every attempt on the same wet
+        // Portsmouth street. Re-derive the concept from what the reviewer
+        // actually saw, and rebuild the prompt around the new scene.
+        if (reasons.some((r) => r.startsWith('SUBJECT')) && attempt < IMAGE_REVIEW_MAX_ATTEMPTS) {
+          const depicted = String(measurement.subject?.depicted ?? 'a generic scene')
+          try {
+            const fresh = await reconceiveAfterSubjectReject(postBody, client, client.visual_style, currentConcept, depicted, sourceTitle)
+            if (fresh && fresh !== currentConcept) {
+              console.log(`[image] ${client.name}: re-conceived after SUBJECT reject for ${contentQueueId} — "${fresh.slice(0, 120)}"`)
+              currentConcept = fresh
+              currentPrompt = assembleImagePrompt(fresh, client.visual_style, client)
+            } else {
+              escalations.push(REVIEW_ESCALATION.subject(postBody))
+            }
+          } catch (e) {
+            console.error(`[image] ${client.name}: re-conception failed — ${String((e as Error)?.message ?? e)}`)
+            escalations.push(REVIEW_ESCALATION.subject(postBody))
+          }
+        }
       }
 
       if (!accepted) {

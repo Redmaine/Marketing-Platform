@@ -10,6 +10,7 @@
 // conf 0.95, era mis-read as 1950-1990 for an M4 Sherman — which is the
 // case for rule 4 being a presence ban rather than an age test.
 import {
+  assembleImagePrompt,
   HEADLINE_MIN_YELLOW_FRACTION,
   HEADLINE_TEXT_COLOUR,
   IMAGE_REVIEW_THRESHOLDS,
@@ -113,6 +114,20 @@ console.log('\n── The existing face/text checks are unchanged ──')
     judgeImageMeasurement(face, IMAGE_REVIEW_THRESHOLDS, false, CRHQ).verdict === 'reject' && judgeImageMeasurement(face, IMAGE_REVIEW_THRESHOLDS, false, {}).verdict === 'reject')
   const text = { ...clean, text_findings: [{ content: 'HMS 123', legibility: 0.7, kind: 'hull_number' }] }
   check('a legible hull number still rejects', judgeImageMeasurement(text, IMAGE_REVIEW_THRESHOLDS, false, {}).verdict === 'reject')
+}
+
+console.log('\n── Abstract topics: the prompt keeps the concept as the subject (13 Sep 2026) ──')
+{
+  const crhq = { slug: 'crhq', name: 'Combat Ready HQ' }
+  const concept = 'A bare interview-room table with one chair and the small red light of a wall-mounted recorder'
+  const prompt = assembleImagePrompt(concept, 'STYLE TEXT', crhq)
+  check('the concept is in the prompt verbatim', prompt.includes(concept))
+  check('the style text is contiguous (passesStylePrefixCheck still holds)', prompt.includes('STYLE TEXT'))
+  check('the closer no longer declares material "the whole subject" — that tail was pulling every abstract-topic frame to wet tarmac',
+    !/material and light are the whole subject/.test(prompt))
+  check('the closer instead keeps the described scene as the subject', /remains the subject of the photograph/.test(prompt))
+  const other = assembleImagePrompt(concept, 'OTHER STYLE', { slug: 'quill' })
+  check('a non-CRHQ brand gets its own three-part prompt, unchanged', other.startsWith(concept) && other.includes('OTHER STYLE') && !other.includes('Portra'))
 }
 
 console.log(`\n═══ ${pass} passed, ${fail} failed ═══`)
