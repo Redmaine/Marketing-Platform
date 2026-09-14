@@ -1480,6 +1480,22 @@ export async function checkStyleCompliance(bytes: Uint8Array, visualStyle: strin
 // needs_attention branch), so a human sees it in the approval queue with a
 // reason naming the rule that failed. Deliberately does NOT touch image_url —
 // a non-compliant image must never be attached.
+// Generalised 14 Sep 2026 — this used to be called only from the
+// visual-style compliance exhaustion branch, hardcoding "Image failed
+// visual-style compliance: ..." into review_reason. The SUBJECT/relevance
+// backstop loop (generateRaw, above) exhausts through a completely
+// different path — it just `return`s null on its own IMAGE_REVIEW_MAX_
+// ATTEMPTS exhaustion — and never called this, so a post whose image
+// failed on RELEVANCE (not style) kept whatever review_status content
+// review had already given it (often 'passed') with image_url left null:
+// a stuck, imageless post that looked identical to a normal draft
+// everywhere a human or a later cron run would look. Confirmed live —
+// CRHQ posts b09c3603 and 202af081 (14 Sep 2026) both exhausted on
+// SUBJECT rejections on 12 Sep and sat that way, undetected, until a
+// manual regenerate-post-image call two days later. Now called from both
+// exhaustion sites with a category-specific reason, under one shared
+// prefix so the stale-flag-clearing block below can still find and clear
+// either kind once a later attempt actually succeeds.
 async function flagImageNeedsAttention(
   admin: Admin,
   contentQueueId: string,
@@ -1487,7 +1503,7 @@ async function flagImageNeedsAttention(
 ): Promise<void> {
   const { error } = await admin.from('mkt_content_queue').update({
     review_status: 'needs_attention',
-    review_reason: `Image failed visual-style compliance: ${reason}`.slice(0, 1000),
+    review_reason: `Image generation failed: ${reason}`.slice(0, 1000),
   }).eq('id', contentQueueId)
   if (error) console.error(`[image] flagging needs_attention failed for ${contentQueueId}: ${error.message}`)
 }
@@ -1807,6 +1823,7 @@ export async function generatePostImage(
       // and appends an escalation, as before.
       let currentPrompt = attemptPrompt
       let currentConcept = concept
+      let lastReasons: string[] = []
       for (let attempt = 1; attempt <= IMAGE_REVIEW_MAX_ATTEMPTS; attempt++) {
         const fluxPrompt = escalations.length ? `${currentPrompt}\n\n${escalations.join('\n')}` : currentPrompt
         const candidate = await callFlux(fluxPrompt, apiKey)
@@ -1838,6 +1855,7 @@ export async function generatePostImage(
         }
 
         console.error(`[image] ${client.name}: attempt ${attempt} rejected for ${contentQueueId} — ${reasons.join('; ')}`)
+        lastReasons = reasons
         escalations.length = 0
         if (reasons.some((r) => r.startsWith('TEXT'))) escalations.push(REVIEW_ESCALATION.text)
         if (reasons.some((r) => r.startsWith('FACE'))) escalations.push(REVIEW_ESCALATION.face)
@@ -1873,7 +1891,11 @@ export async function generatePostImage(
         // file, and strictly better than shipping a face or a hull number.
         await logImageReview(admin, client, contentQueueId, platform, IMAGE_REVIEW_MAX_ATTEMPTS, 'exhausted',
           [`no attempt passed review after ${IMAGE_REVIEW_MAX_ATTEMPTS} tries — no image attached`], null, concept)
-        console.error(`[image] ${client.name}: all ${IMAGE_REVIEW_MAX_ATTEMPTS} attempts failed review for ${contentQueueId} — posting without an image`)
+        await flagImageNeedsAttention(
+          admin, contentQueueId,
+          `no compliant image after ${IMAGE_REVIEW_MAX_ATTEMPTS} attempts — last rejection: ${(lastReasons[0] ?? 'unknown').slice(0, 300)}`,
+        )
+        console.error(`[image] ${client.name}: all ${IMAGE_REVIEW_MAX_ATTEMPTS} attempts failed review for ${contentQueueId} — flagged needs_attention, posting without an image`)
         return null
       }
         void lastBytes
@@ -2014,7 +2036,7 @@ export async function generatePostImage(
       // is flagged — with a reason naming the rule that failed.
       await logImageReview(admin, client, contentQueueId, platform, STYLE_REVIEW_MAX_ATTEMPTS, 'exhausted',
         [`visual_style not met after ${STYLE_REVIEW_MAX_ATTEMPTS} attempts — no image attached`], null, concept)
-      await flagImageNeedsAttention(admin, contentQueueId, lastViolation ?? 'compliance check could not complete')
+      await flagImageNeedsAttention(admin, contentQueueId, `visual-style compliance — ${lastViolation ?? 'compliance check could not complete'}`)
       console.error(`[image] ${client.name}: all ${STYLE_REVIEW_MAX_ATTEMPTS} attempts broke visual_style for ${contentQueueId} — flagged needs_attention, no image attached`)
       return
     }
@@ -2070,14 +2092,17 @@ export async function generatePostImage(
     const { error: updErr } = await admin.from('mkt_content_queue').update({ image_url: imageUrl }).eq('id', contentQueueId)
     if (updErr) throw new Error(`writing image_url back to mkt_content_queue failed: ${updErr.message}`)
 
-    // Clear a STALE image-failure flag left by an earlier run (23 Aug 2026).
-    // A post that exhausted its attempts is flagged needs_attention by
-    // flagImageNeedsAttention; if a later run then succeeds, image_url was
-    // updated but the flag and its reason were left behind, so the queue kept
-    // showing "Image failed visual-style compliance: …" on a post that now has
-    // a perfectly compliant image. Confirmed live on Quill post 94688f07,
-    // which was regenerated successfully on 22 Aug (review event verdict
-    // 'pass') yet still read as needs_attention while scheduled to publish.
+    // Clear a STALE image-failure flag left by an earlier run (23 Aug 2026,
+    // widened 14 Sep 2026 to cover both flagImageNeedsAttention call sites —
+    // style-compliance exhaustion and SUBJECT/relevance exhaustion, both now
+    // sharing the "Image generation failed: " prefix). A post that exhausted
+    // its attempts is flagged needs_attention by flagImageNeedsAttention; if
+    // a later run then succeeds, image_url was updated but the flag and its
+    // reason were left behind, so the queue kept showing a stale failure
+    // reason on a post that now has a perfectly compliant image. Confirmed
+    // live on Quill post 94688f07, which was regenerated successfully on 22
+    // Aug (review event verdict 'pass') yet still read as needs_attention
+    // while scheduled to publish.
     //
     // Deliberately matched on the exact prefix flagImageNeedsAttention writes,
     // and scoped with .eq() rather than read-then-write: a post flagged by the
@@ -2090,7 +2115,7 @@ export async function generatePostImage(
       .update({ review_status: 'passed', review_reason: null })
       .eq('id', contentQueueId)
       .eq('review_status', 'needs_attention')
-      .like('review_reason', 'Image failed visual-style compliance:%')
+      .like('review_reason', 'Image generation failed:%')
       .select('id')
     if (clearErr) {
       console.error(`[image] ${client.name}: could not clear stale image-failure flag for ${contentQueueId} — ${clearErr.message}`)

@@ -23,6 +23,12 @@
 //   platform's posting schedule (mkt_content_schedule, see
 //   55_crhq_content_config.sql — facebook Tue/Thu/Sat 18:00, instagram
 //   Mon/Tue/Thu/Fri 07:30).
+// Also, every run (regardless of scrape outcome) — retry image generation
+//   once for any already-queued, still-upcoming post whose image generation
+//   exhausted on an earlier night (retryStuckImages, below). Closes the gap
+//   where a stuck post just sat blank until someone noticed by hand (14 Sep
+//   2026 — see retryStuckImages' header for the full incident and the
+//   retry-cap reasoning).
 //
 // Deploy:  supabase functions deploy crhq-nightly-content
 // Schedule: see 56_crhq_nightly_pipeline.sql (also unschedules the old
@@ -318,6 +324,94 @@ async function generateThemedWeeklyPost(admin: Admin, client: Record<string, any
   return { generated: true }
 }
 
+// Retry step for old, stuck posts (14 Sep 2026) — closes the gap where a
+// post that exhausted its image attempts on an earlier night was never
+// revisited: this file previously only ever attempted an image once, at
+// insert time, for a post it had just generated. Anything that exhausted
+// then sat with image_url null forever — nothing here or anywhere else in
+// the pipeline ever looked back at already-queued rows — until a human
+// noticed and ran regenerate-post-image by hand (as happened for b09c3603
+// and 202af081, both exhausted 12 Sep, still stuck 14 Sep with zero further
+// attempts in between).
+//
+// Deliberately narrow. A candidate must have:
+//   - no image yet,
+//   - a slot still in the future (scheduled_for >= now) — a post whose slot
+//     has already passed cannot be rescued by a fresh image, and
+//     schedule-to-metricool's exhausted-image guard already blocks it from
+//     publishing anyway, so retrying it would just spend a Flux call on a
+//     post that can never go out,
+//   - at least one real 'exhausted' image_review_events row (distinguishes
+//     "genuinely tried and failed" from "never attempted", "disabled for
+//     this platform", or a deliberate Facebook text-only alternation choice
+//     — none of those should ever be retried), and
+//   - fewer than IMAGE_RETRY_CAP exhausted cycles so far.
+// IMAGE_RETRY_CAP caps this at ONE automatic retry (two total exhaustions)
+// so a genuinely unsolvable topic — see b09c3603's own repeated 0.00-0.20
+// SUBJECT relevance scores across 6 attempts on 12 and 14 Sep — does not
+// retry every single night forever, burning a real provider call each time.
+// Once the cap is hit the post stays flagged needs_attention
+// (flagImageNeedsAttention, _shared/image.ts — every exhaustion path calls
+// it as of 14 Sep 2026) instead of being retried again: a human supplies a
+// real image or approves it text-only from there, same as any other
+// needs_attention post.
+const IMAGE_RETRY_CAP = 2
+
+async function retryStuckImages(admin: Admin, client: Record<string, any>): Promise<{ retried: number; notes: string[]; errors: string[] }> {
+  const notes: string[] = []
+  const errors: string[] = []
+  let retried = 0
+
+  const { data: stuck, error: stuckError } = await admin
+    .from('mkt_content_queue')
+    .select('id, platform, body, topic')
+    .eq('client_id', client.id)
+    .in('platform', PLATFORMS)
+    .eq('content_type', 'post')
+    .in('status', QUEUED_STATUSES)
+    .is('image_url', null)
+    .gte('scheduled_for', new Date().toISOString())
+  if (stuckError) {
+    errors.push(`image retry: lookup for stuck posts failed — ${stuckError.message}`)
+    return { retried, notes, errors }
+  }
+  if (!stuck?.length) return { retried, notes, errors }
+
+  for (const item of stuck) {
+    const { data: exhaustedEvents, error: eventsError } = await admin
+      .from('image_review_events')
+      .select('id')
+      .eq('content_queue_id', item.id)
+      .eq('verdict', 'exhausted')
+    if (eventsError) {
+      errors.push(`image retry: exhausted-count lookup failed for ${item.id} — ${eventsError.message}`)
+      continue
+    }
+    const exhaustedCount = exhaustedEvents?.length ?? 0
+    // Never actually attempted (e.g. image gen disabled for this platform,
+    // or a deliberate Facebook text-only alternation post) — not this gap.
+    if (exhaustedCount === 0) continue
+    if (exhaustedCount >= IMAGE_RETRY_CAP) {
+      notes.push(`${item.platform}: ${item.id} has exhausted image generation ${exhaustedCount}x — retry budget spent, left flagged needs_attention`)
+      continue
+    }
+    if (!item.body) continue
+
+    try {
+      await generatePostImage(admin, client, item.id, item.body, item.platform, item.topic ?? undefined)
+      const { data: after } = await admin.from('mkt_content_queue').select('image_url').eq('id', item.id).maybeSingle()
+      retried++
+      notes.push(after?.image_url
+        ? `${item.platform}: image retry succeeded for stuck post ${item.id}`
+        : `${item.platform}: image retry attempted for stuck post ${item.id} — still no image (see image_review_events)`)
+    } catch (e) {
+      errors.push(`image retry: ${item.platform} ${item.id} — ${String((e as Error)?.message ?? e)}`)
+    }
+  }
+
+  return { retried, notes, errors }
+}
+
 async function countQueued(admin: Admin, clientId: string, platform: string): Promise<number> {
   const { count } = await admin
     .from('mkt_content_queue')
@@ -412,6 +506,20 @@ serve(async (req) => {
       if (themed.error) errors.push(themed.error)
     } catch (e) {
       errors.push(`themed weekly post: ${String((e as Error)?.message ?? e)}`)
+    }
+
+    // Retry old stuck images — deliberately independent of Step 1's scrape
+    // outcome, same reasoning as the themed post above: a quiet news night
+    // must not also mean an already-queued, already-exhausted post from a
+    // previous night goes another day untouched. See retryStuckImages'
+    // header for the retry budget and eligibility rules.
+    try {
+      const retry = await retryStuckImages(admin, client)
+      notes.push(...retry.notes)
+      errors.push(...retry.errors)
+      if (retry.retried) console.log(`[crhq-nightly-content] image retry: attempted ${retry.retried} stuck post(s)`)
+    } catch (e) {
+      errors.push(`image retry: ${String((e as Error)?.message ?? e)}`)
     }
 
     const foundContent = videos.length > 0 || articles.length > 0
