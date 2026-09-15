@@ -258,8 +258,8 @@ const THEMED_WEEKLY: Record<number, { theme: 'shop_coffee' | 'intelligence_subsc
 
 interface ThemedResult {
   generated: boolean
-  note?: string
-  error?: string
+  notes?: string[]
+  errors?: string[]
 }
 
 // Deliberately independent of Step 1's scrape outcome (foundContent) — these
@@ -290,11 +290,17 @@ async function generateThemedWeeklyPost(admin: Admin, client: Record<string, any
     .eq('content_source', 'themed_weekly')
     .neq('status', 'rejected')
     .gte('scheduled_for', dayStart.toISOString()).lt('scheduled_for', dayEnd.toISOString())
-  if ((count ?? 0) > 0) return { generated: false, note: `themed weekly (${config.theme}) already queued for this day — skipped` }
+  if ((count ?? 0) > 0) return { generated: false, notes: [`themed weekly (${config.theme}) already queued for this day — skipped`] }
 
   const clientForGeneration = { ...client, _crhq_themed_topic: { theme: config.theme } }
   const review = await generateReviewedPost(admin, clientForGeneration, 'facebook', config.pillar)
   if (review.body) review.body = stripMarkdown(review.body)
+
+  // MUST be computed before the insert — see facebookWantsImage's own
+  // comment: the new row would otherwise become its own "most recent"
+  // Facebook post the instant it exists, with a null image_url, and the
+  // answer would be true every single time.
+  const decision = await facebookWantsImage(admin, client.id, slot)
 
   const autoApprove = review.ok && client.auto_approve === true
   const row = review.ok
@@ -311,17 +317,51 @@ async function generateThemedWeeklyPost(admin: Admin, client: Record<string, any
         generation_attempts: review.attempts, content_source: 'themed_weekly', topic: review.topic,
       }
 
-  const { error: insertError } = await admin.from('mkt_content_queue').insert(row)
+  const { data: inserted, error: insertError } = await admin.from('mkt_content_queue').insert(row).select('id').single()
   if (insertError) {
     // 23505 = one-auto-post-per-slot (migration 65) — another path claimed
     // this exact timestamp first. Expected under concurrency, not a failure.
     if ((insertError as { code?: string }).code === '23505') {
-      return { generated: false, note: `themed weekly (${config.theme}): slot ${slot.toISOString()} already taken — skipped` }
+      return { generated: false, notes: [`themed weekly (${config.theme}): slot ${slot.toISOString()} already taken — skipped`] }
     }
-    return { generated: false, error: `themed weekly (${config.theme}): insert failed — ${insertError.message}` }
+    return { generated: false, errors: [`themed weekly (${config.theme}): insert failed — ${insertError.message}`] }
   }
-  if (!review.ok) return { generated: true, note: `themed weekly (${config.theme}): needs attention — ${review.reason}` }
-  return { generated: true }
+
+  const notes: string[] = []
+  const errors: string[] = []
+  if (!review.ok) notes.push(`themed weekly (${config.theme}): needs attention — ${review.reason}`)
+
+  // Image generation (fix, 15 Sep 2026). This path never called
+  // generatePostImage at all — every themed post sat with image_url null
+  // and zero image_review_events forever: not rejected, not exhausted,
+  // never attempted. Confirmed on dfb55034-cc2e-442e-aa89-689d09bd192c (the
+  // Tuesday shop/coffee post, due 15 Sep 12:00 BST) — its content_source is
+  // 'themed_weekly', a fixed weekly slot generated regardless of that
+  // night's scrape outcome, not the scrape-reactive 'youtube_scrape' /
+  // pillar-fallback path this looked like at first glance. Mirrors the
+  // scrape-driven post's own image block (below, ~line 700): gated on
+  // review.body and the deny-list only, NOT on review.ok — a needs_attention
+  // post (like this one, rejected for a repeat topic) can still be published
+  // after a human edits the copy, so its image should be ready too. Checks
+  // the same image_gen_disabled_platforms deny-list generatePostImage itself
+  // honours, so a deliberate disable is reported as that, not misread as a
+  // pipeline failure by imageLanded() below (the exact bug fixed 7 Sep 2026
+  // for the scrape path — see that block's comment).
+  const imagesDisabledForFacebook = (Array.isArray(client.image_gen_disabled_platforms) ? client.image_gen_disabled_platforms : [])
+    .includes('facebook')
+  if (imagesDisabledForFacebook) {
+    notes.push(`themed weekly (${config.theme}): image generation disabled for this client — skipped (real photos supplied via Drive)`)
+  } else if (review.body && decision.wantsImage) {
+    await generatePostImage(admin, client, inserted.id, review.body, 'facebook', config.pillar)
+    if (!(await imageLanded(admin, inserted.id))) {
+      errors.push(`themed weekly (${config.theme}): image requested for ${inserted.id} but none was produced — image pipeline failed (see image_review_events for this post)`)
+      console.error(`[crhq-nightly-content] themed weekly (${config.theme}): image requested for ${inserted.id} but none was produced`)
+    }
+  } else if (review.body) {
+    notes.push(`themed weekly (${config.theme}): text-only by design — ${decision.because}`)
+  }
+
+  return { generated: true, notes, errors }
 }
 
 // Retry step for old, stuck posts (14 Sep 2026) — closes the gap where a
@@ -502,8 +542,8 @@ serve(async (req) => {
     try {
       const themed = await generateThemedWeeklyPost(admin, client)
       if (themed.generated) postsGenerated++
-      if (themed.note) notes.push(themed.note)
-      if (themed.error) errors.push(themed.error)
+      if (themed.notes?.length) notes.push(...themed.notes)
+      if (themed.errors?.length) errors.push(...themed.errors)
     } catch (e) {
       errors.push(`themed weekly post: ${String((e as Error)?.message ?? e)}`)
     }
