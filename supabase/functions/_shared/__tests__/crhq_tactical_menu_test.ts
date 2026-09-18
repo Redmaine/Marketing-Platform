@@ -34,7 +34,6 @@ console.log('── The menu exists and is built from permitted things only ─�
   check('STEP 1b has a tactics/capability bullet', !!bullet)
   const items = [
     'A terrain model on a sand table, damp earth and gravel shaped into a ridge and a valley with plain wooden pegs and white cord laid across it marking positions, photographed close and low.',
-    'A bare timber planning bench under a tarpaulin with binoculars, a torch, a coil of rope and a canteen laid out on it, rain dripping from the canvas edge.',
     'A sandbagged parapet and raw earth berm at first light, mist across the open ground beyond.',
     'A treeline at the edge of open ground at dawn, seen low from inside a wet ditch.',
     'Boot prints and tyre tracks across wet earth after rain, close at ground level.',
@@ -49,15 +48,17 @@ console.log('── The weapons ban is untouched ──')
   const step3 = CRHQ_CONCEPT_SYSTEM.slice(CRHQ_CONCEPT_SYSTEM.indexOf('STEP 3'))
   check('STEP 3 still bans every weapon and piece of hardware of any era', /tanks, armoured vehicles, artillery, missiles, launchers, warships, submarines, military aircraft, helicopters, drones, rifles, guns, ammunition, any weapon or piece of military hardware of any era/.test(step3))
   check('STEP 3 still bans maps, charts and vehicles', /maps, charts, diagrams/.test(step3) && /any vehicle/.test(step3))
-  // The radio handset and the camouflage net were on the first draft of the
-  // menu; a real run (18 Sep, harness ambush-e2e-1) had the review stage
-  // flag the handset as HARDWARE other_military_equipment conf 0.85. The
-  // review ban is not loosened for them — they come off the menu instead,
-  // and the concept guard now stops them before an attempt is spent.
-  for (const bad of ['a shoulder-fired anti-tank launcher on a wall', 'a map spread on a table with markers', 'a vehicle silhouette at distance on the ridge', 'a soldier in uniform at the parapet', 'a field radio handset with its coiled cable on a sandbag', 'a camouflage net stretched over open ground']) {
+  // The radio handset, the camouflage net and the planning bench with
+  // binoculars were on the first drafts of the menu; real runs on 18 Sep had
+  // the review stage flag the handset (HARDWARE other_military_equipment
+  // conf 0.85, harness ambush-e2e-1) and the binoculars (conf 0.95, the first
+  // live recycled post 440c1843). The review ban is not loosened for them —
+  // they come off the menu instead, and the concept guard now stops them
+  // before an attempt is spent.
+  for (const bad of ['a shoulder-fired anti-tank launcher on a wall', 'a map spread on a table with markers', 'a vehicle silhouette at distance on the ridge', 'a soldier in uniform at the parapet', 'a field radio handset with its coiled cable on a sandbag', 'a camouflage net stretched over open ground', 'a planning bench with binoculars and a torch laid out']) {
     check(`concept guard still rejects "${bad}"`, conceptProblem(bad) !== null)
   }
-  check('the tactical bullet itself tells the model no weapon, vehicle, radio, net or kit', /no weapon, no vehicle, no radio or comms set, no camouflage net and no other piece of military equipment may be described/.test(CRHQ_CONCEPT_SYSTEM))
+  check('the tactical bullet itself tells the model no weapon, vehicle, radio, optics, net or kit', /no weapon, no vehicle, no radio or comms set, no binoculars or optics, no camouflage net, no tools or field equipment laid out, and no other piece of military equipment may be described/.test(CRHQ_CONCEPT_SYSTEM))
 }
 
 console.log('── The fallback is chosen from the post, deterministically ──')
@@ -71,7 +72,7 @@ console.log('── The fallback is chosen from the post, deterministically ─�
 
 console.log('── The reviewer knows the emblems are the subject ──')
 {
-  check('reviewer prompt names the tactical emblems, and no radio or net', /terrain model or sand table/.test(IMAGE_REVIEW_SYSTEM) && !/field radio/.test(IMAGE_REVIEW_SYSTEM) && !/camouflage net/.test(IMAGE_REVIEW_SYSTEM))
+  check('reviewer prompt names the tactical emblems, and no radio, binoculars or net', /terrain model or sand table/.test(IMAGE_REVIEW_SYSTEM) && !/field radio/.test(IMAGE_REVIEW_SYSTEM) && !/binoculars/.test(IMAGE_REVIEW_SYSTEM) && !/camouflage net/.test(IMAGE_REVIEW_SYSTEM))
   check('reviewer prompt names the policing emblems the 1b menu already had', /bare interview-room table/.test(IMAGE_REVIEW_SYSTEM) && /body-worn camera/.test(IMAGE_REVIEW_SYSTEM))
   check('reviewer is told not to mark down for missing weapons/vehicles', /Do not mark these down for the absence of weapons, vehicles or troops/.test(IMAGE_REVIEW_SYSTEM))
   check('0.3 is reserved for a frame with no emblem at all', /Reserve 0.3 and below for a frame that is only weather, texture, a wall, a street or a room/.test(IMAGE_REVIEW_SYSTEM))
