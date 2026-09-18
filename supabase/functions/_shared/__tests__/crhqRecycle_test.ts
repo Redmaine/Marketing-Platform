@@ -25,7 +25,7 @@ const NOW = new Date('2026-09-18T07:40:00Z')
 const base: RecycleCandidate = {
   id: 'x', platform: 'instagram', status: 'draft', review_status: 'needs_attention', scheduled_for: '2026-09-18T06:30:00Z',
   created_at: '2026-09-16T22:00:44Z', body: 'Coordinated ambush operations now signal genuine capability progression.\nFull breakdown at combatreadyhq.co.uk',
-  topic: 'Coordinated ambush capability progression and threat assessment', rejection_reason: null, content_source: 'youtube_scrape',
+  topic: 'Coordinated ambush capability progression and threat assessment', content_source: 'youtube_scrape',
   is_manual: false, metricool_post_id: null, image_url: null, recycled_at: null, recycled_from: null,
 }
 
@@ -37,7 +37,9 @@ console.log('── Eligibility, on the real rows ──')
   check('b09c3603 (approved, never sent to Metricool, slot 14 Sep) is eligible', isEligible(b09c, NOW).ok)
   check('b09c3603 reads as stuck_approved', recycleReasonFor(b09c) === 'stuck_approved')
   check('ac3b822f reads as image_exhausted', recycleReasonFor(ac3b) === 'image_exhausted')
-  check('a rejected original reads as rejected and is eligible', recycleReasonFor({ ...base, status: 'rejected' }) === 'rejected' && isEligible({ ...base, status: 'rejected' }, NOW).ok)
+  // Adrian, 18 Sep: a rejection is a deliberate decision — never quietly retried.
+  check('a human-REJECTED post is NOT eligible', !isEligible({ ...base, status: 'rejected' }, NOW).ok && isEligible({ ...base, status: 'rejected' }, NOW).why === 'status rejected')
+  check('a draft that was never approved in time reads as missed', recycleReasonFor({ ...base, review_status: 'passed', image_url: 'x' }) === 'missed')
   check('slot still in the future → not eligible', !isEligible({ ...base, scheduled_for: '2026-09-19T06:30:00Z' }, NOW).ok)
   check('sent to Metricool → not eligible', !isEligible({ ...base, metricool_post_id: 'mc1' }, NOW).ok)
   check('status scheduled → not eligible', !isEligible({ ...base, status: 'scheduled' }, NOW).ok)

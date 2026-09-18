@@ -1,11 +1,11 @@
 // CRHQ slot recycling — 18 Sep 2026.
 //
 // A CRHQ post whose slot passes without publishing (its image exhausted, it
-// stuck at approved with no Metricool id, a human rejected it, or it was
-// simply never approved in time) used to sit dead: the topic and any usable
+// stuck at approved with no Metricool id, or it was simply never approved in
+// time) used to sit dead: the topic and any usable
 // copy were gone for good, and — for the approved-but-unschedulable case —
 // the 30-minute sweep kept re-attempting it forever (b09c3603, 14–18 Sep:
-// 400+ identical "needs a human" alerts). This module gives such a post ONE
+// 87 identical "needs a human" alerts). This module gives such a post ONE
 // second life: its topic and source are regenerated into the next open slot
 // on the same platform, through the same reviewed generation and the same
 // image pipeline a fresh post gets, and the original is closed off.
@@ -19,8 +19,10 @@
 // Rules, all deterministic and all pinned in __tests__/crhqRecycle_test.ts:
 //   - eligible: content_type 'post', not manual, not a themed weekly post,
 //     scheduled_for in the past, never sent to Metricool
-//     (metricool_post_id null), status draft/pending/approved/rejected,
-//     slot passed no more than RECYCLE_MAX_AGE_DAYS ago, not yet recycled.
+//     (metricool_post_id null), status draft/pending/approved — never a
+//     human-rejected post: a rejection is a deliberate decision and is not
+//     retried without someone choosing to — slot passed no more than
+//     RECYCLE_MAX_AGE_DAYS ago, not yet recycled.
 //   - once only: an original is recycled at most once (recycled_at set); a
 //     recycled post that itself dies is not recycled again (recycled_from
 //     set) — a topic gets two chances, never a loop.
@@ -36,15 +38,12 @@
 //     time this runs. At most RECYCLE_MAX_PER_PLATFORM_PER_RUN per platform
 //     per night.
 //   - what is regenerated: copy is ALWAYS regenerated (never the old body
-//     re-queued verbatim — for a rejected post that would re-present the
-//     rejected copy; for an exhausted one the copy was written for a slot
-//     that has passed). The generator is steered with the original topic,
-//     the original body as the story to retell, the original source
-//     (video/article from that night's scrape cache when it can be found),
-//     and, for a rejected original, its rejection reason.
-//   - the original: status → 'recycled' for draft/pending/approved (so the
-//     sweep and the queue stop seeing it); a rejected original keeps
-//     'rejected' (already terminal) and is only stamped. Nothing is deleted.
+//     re-queued verbatim — it was written for a slot that has passed). The
+//     generator is steered with the original topic, the original body as
+//     the story to retell, and the original source (video/article from that
+//     night's scrape cache when it can be found).
+//   - the original: status → 'recycled' (so the sweep and the queue stop
+//     seeing it). Nothing is deleted.
 import { generateReviewedPost } from './review.ts'
 import { generatePostImage } from './image.ts'
 import { stripMarkdown, recentPublishedSummaries } from './generate.ts'
@@ -63,10 +62,14 @@ export const RECYCLE_MAX_AGE_DAYS = 10
 export const RECYCLE_MAX_PER_PLATFORM_PER_RUN = 1
 export const TOPIC_OVERLAP_SKIP = 0.6
 export const RECYCLED_STATUS = 'recycled'
-export const RECYCLE_ELIGIBLE_STATUSES = ['draft', 'pending', 'approved', 'rejected']
+// Deliberately NOT 'rejected' (Adrian, 18 Sep 2026): a rejection is a
+// human's decision, and it is not quietly retried unless someone chooses
+// to. Recycling is for slots the pipeline itself lost — image exhausted,
+// stuck at approved, or never approved in time.
+export const RECYCLE_ELIGIBLE_STATUSES = ['draft', 'pending', 'approved']
 export const RECYCLED_CONTENT_SOURCE = 'recycled'
 
-export type RecycleReason = 'rejected' | 'image_exhausted' | 'stuck_approved' | 'missed'
+export type RecycleReason = 'image_exhausted' | 'stuck_approved' | 'missed'
 
 export interface RecycleCandidate {
   id: string
@@ -77,7 +80,6 @@ export interface RecycleCandidate {
   created_at: string
   body: string | null
   topic: string | null
-  rejection_reason: string | null
   content_source: string | null
   is_manual: boolean | null
   metricool_post_id: string | null
@@ -86,10 +88,8 @@ export interface RecycleCandidate {
   recycled_from: string | null
 }
 
-// Why the slot passed unpublished — for the run log and the new row's
-// review trail, never for control flow beyond the rejection-feedback steer.
+// Why the slot passed unpublished — for the run log only, never control flow.
 export function recycleReasonFor(row: Pick<RecycleCandidate, 'status' | 'review_status' | 'image_url'>): RecycleReason {
-  if (row.status === 'rejected') return 'rejected'
   if (row.status === 'approved') return 'stuck_approved'
   if (row.review_status === 'needs_attention' && !row.image_url) return 'image_exhausted'
   return 'missed'
@@ -188,7 +188,7 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
 
   const { data: rows, error } = await admin
     .from('mkt_content_queue')
-    .select('id, platform, status, review_status, scheduled_for, created_at, body, topic, rejection_reason, content_source, is_manual, metricool_post_id, image_url, recycled_at, recycled_from')
+    .select('id, platform, status, review_status, scheduled_for, created_at, body, topic, content_source, is_manual, metricool_post_id, image_url, recycled_at, recycled_from')
     .eq('client_id', client.id)
     .eq('content_type', 'post')
     .in('platform', PLATFORMS)
@@ -238,7 +238,7 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
     if (covered.covered) {
       // Closed off, not left to be re-examined every night.
       if (!dryRun) {
-        const { error: closeErr } = await admin.from('mkt_content_queue').update({ recycled_at: now.toISOString(), ...(row.status === 'rejected' ? {} : { status: RECYCLED_STATUS }) }).eq('id', row.id)
+        const { error: closeErr } = await admin.from('mkt_content_queue').update({ recycled_at: now.toISOString(), status: RECYCLED_STATUS }).eq('id', row.id)
         if (closeErr) { out.errors.push(`recycle: could not close ${row.id} (${covered.by}) — ${closeErr.message}`); continue }
       }
       out.notes.push(`recycle: ${platform} ${row.id} not needed — ${covered.by}; ${dryRun ? 'would be closed' : 'closed'}`)
@@ -277,7 +277,7 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
       _topics_to_avoid: avoid,
       _crhq_scrape: { videos: source.videos, articles: source.articles },
       _crhq_primary_source: source.primary ?? undefined,
-      _crhq_recycle_of: { topic: row.topic, body: row.body, reason, rejection_reason: row.status === 'rejected' ? row.rejection_reason : null },
+      _crhq_recycle_of: { topic: row.topic, body: row.body, reason },
       _optimisation_notes: optimisationNotes,
       _rejection_feedback: rejectionFeedback,
     }
@@ -287,8 +287,8 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
     // Close the original BEFORE regenerating, so the reviewer's repeat-topic
     // list (recentBrandPosts, which excludes 'recycled') no longer contains
     // the very post being retold. Reverted below if nothing gets inserted.
-    const closePatch = { recycled_at: now.toISOString(), ...(row.status === 'rejected' ? {} : { status: RECYCLED_STATUS }) }
-    const revertPatch = { recycled_at: null, ...(row.status === 'rejected' ? {} : { status: row.status }) }
+    const closePatch = { recycled_at: now.toISOString(), status: RECYCLED_STATUS }
+    const revertPatch = { recycled_at: null, status: row.status }
     const { error: preCloseErr } = await admin.from('mkt_content_queue').update(closePatch).eq('id', row.id)
     if (preCloseErr) { out.errors.push(`recycle: could not close ${row.id} before regenerating — ${preCloseErr.message}`); continue }
     try {

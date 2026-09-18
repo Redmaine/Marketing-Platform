@@ -370,15 +370,12 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
   }
 
   // Slot recycling (crhqRecycle.ts, 18 Sep 2026): this post is the second
-  // life of one whose slot passed unpublished. The story is the same; the
-  // copy must be fresh — never the old body re-queued — and, when a human
-  // rejected the original, written so as not to repeat what they objected to.
-  const recycleOf = client._crhq_recycle_of as { topic?: string | null; body?: string | null; reason?: string; rejection_reason?: string | null } | undefined
+  // life of one whose slot passed unpublished (never a human-rejected one).
+  // The story is the same; the copy must be fresh — never the old body
+  // re-queued.
+  const recycleOf = client._crhq_recycle_of as { topic?: string | null; body?: string | null; reason?: string } | undefined
   if (recycleOf && (recycleOf.topic || recycleOf.body)) {
-    lines.push(`\nThis post retells a story an earlier post covered but which never went out${recycleOf.reason === 'rejected' ? ' because it was rejected' : ''}. Topic: "${String(recycleOf.topic ?? '').slice(0, 200)}". The earlier copy, for the story only — do NOT reuse its wording, structure or opening: "${String(recycleOf.body ?? '').replace(/\s+/g, ' ').slice(0, 600)}". Write it fresh, as a new post about that same story.`)
-    if (recycleOf.rejection_reason && recycleOf.rejection_reason !== 'Rejected by Adrian') {
-      lines.push(`The earlier post was rejected for this reason — do not repeat the mistake: "${String(recycleOf.rejection_reason).slice(0, 300)}".`)
-    }
+    lines.push(`\nThis post retells a story an earlier post covered but which never went out. Topic: "${String(recycleOf.topic ?? '').slice(0, 200)}". The earlier copy, for the story only — do NOT reuse its wording, structure or opening: "${String(recycleOf.body ?? '').replace(/\s+/g, ' ').slice(0, 600)}". Write it fresh, as a new post about that same story.`)
   }
 
   // CRHQ weekly themed post (Tuesday shop/coffee, Thursday intelligence

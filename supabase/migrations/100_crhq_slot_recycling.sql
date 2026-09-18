@@ -14,6 +14,9 @@ alter table public.mkt_content_queue
   add column if not exists recycled_into uuid references public.mkt_content_queue(id) on delete set null,
   add column if not exists recycled_from uuid references public.mkt_content_queue(id) on delete set null;
 
+-- Rejected posts were dropped from eligibility the same day (a rejection is
+-- a deliberate human decision, never quietly retried); the predicate below
+-- is a superset of what the module queries, which is harmless for an index.
 create index if not exists mkt_content_queue_recycle_candidates_idx
   on public.mkt_content_queue (client_id, platform, scheduled_for)
   where content_type = 'post' and metricool_post_id is null and recycled_at is null
