@@ -29,7 +29,7 @@ function fakeAdmin(tables: Record<string, Record<string, unknown>[]>) {
       const api = {
         select: () => api,
         eq: (col: string, val: unknown) => { (state.eq as Record<string, unknown>)[col] = val; rows = rows.filter((r) => r[col] === val); return api },
-        neq: (col: string, val: unknown) => { (state.neq as Record<string, unknown>)[col] = val; rows = rows.filter((r) => r[col] !== val); return api },
+        neq: (col: string, val: unknown) => { const n = state.neq as Record<string, unknown[]>; (n[col] ??= []).push(val); rows = rows.filter((r) => r[col] !== val); return api },
         not: (col: string, _op: string, _v: unknown) => { (state.notNull as string[]).push(col); rows = rows.filter((r) => r[col] != null); return api },
         gte: (col: string, val: string) => { rows = rows.filter((r) => String(r[col]) >= val); return api },
         lte: (col: string, val: string) => { rows = rows.filter((r) => String(r[col]) <= val); return api },
@@ -52,6 +52,7 @@ console.log('── The bug: nothing is ever at status=\'approved\' ──')
       { body: 'Queued post about robotic picking.', created_at: iso(1), status: 'draft', client_id: 'c1' },
       { body: 'Scheduled post about vetting failures.', created_at: iso(2), status: 'scheduled', client_id: 'c1' },
       { body: 'A rejected post nobody will ever see.', created_at: iso(1), status: 'rejected', client_id: 'c1' },
+      { body: 'A recycled post whose slot passed unpublished.', created_at: iso(1), status: 'recycled', client_id: 'c1' },
     ],
     published_posts: [
       { post_copy: 'An older post that actually went out.', date_sent: iso(5), client_id: 'c1' },
@@ -61,12 +62,15 @@ console.log('── The bug: nothing is ever at status=\'approved\' ──')
   const bodies = rows.map((r) => r.body)
   ok(bodies.length === 3, 'returns queued AND published content (3), not just published (1)', JSON.stringify(bodies.length))
   ok(bodies.some((b) => b.includes('robotic picking')), 'a status=draft post IS included — the old query missed every one')
+  ok(!bodies.some((b) => b.includes('recycled post')), 'a RECYCLED post is excluded — it was closed off and will never run')
   ok(bodies.some((b) => b.includes('actually went out')), 'published history still included')
   ok(!bodies.some((b) => b.includes('nobody will ever see')), 'a REJECTED post is excluded — it was thrown away')
   // The filter itself, not just its output: an allow-list of statuses is the
   // exact mistake that produced the silent no-op.
-  ok((admin.calls.mkt_content_queue.neq as Record<string, unknown>).status === 'rejected',
-    "the queue filter is neq('status','rejected'), never an allow-list of statuses")
+  // 18 Sep 2026: 'recycled' (a CRHQ post closed off by slot recycling — will
+  // never run either) is excluded the same way. Still an exclude-list.
+  ok(JSON.stringify((admin.calls.mkt_content_queue.neq as Record<string, unknown[]>).status) === JSON.stringify(['rejected', 'recycled']),
+    "the queue filter is neq('status','rejected').neq('status','recycled'), never an allow-list of statuses")
   ok(!('status' in (admin.calls.mkt_content_queue.eq as Record<string, unknown>)),
     "no eq('status', ...) is applied — that is what broke before")
 }

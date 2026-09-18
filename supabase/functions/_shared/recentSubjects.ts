@@ -60,7 +60,11 @@ export interface RecentPost {
 //
 // STATUS FILTER, stated explicitly because point 2 above was caused by
 // guessing at one: 'rejected' is excluded (it was thrown away and will never
-// run). EVERYTHING else counts — draft, approved, scheduled, published —
+// run), and so is 'recycled' (18 Sep 2026 — a CRHQ post whose slot passed
+// unpublished and was closed off by crhqRecycle.ts; it will never run
+// either, and its retelling must not be judged a repeat of it — the first
+// live recycle was flagged "repeat topic" against exactly its own dead
+// original). Only CRHQ recycling writes that status. EVERYTHING else counts — draft, approved, scheduled, published —
 // because a draft awaiting approval is content this brand is about to say,
 // and writing the same thing again tonight is precisely the failure being
 // prevented. Deliberately NOT an allow-list of known-good statuses: that is
@@ -77,7 +81,7 @@ export async function recentBrandPosts(
     admin.from('mkt_content_queue')
       .select('body, created_at, status')
       .eq('client_id', clientId)
-      .neq('status', 'rejected')
+      .neq('status', 'rejected').neq('status', 'recycled')
       .not('body', 'is', null)
       .gte('created_at', since)
       .order('created_at', { ascending: false })
@@ -149,7 +153,7 @@ export async function recentTopics(
   const { data } = await admin.from('mkt_content_queue')
     .select('topic, created_at')
     .eq('client_id', clientId)
-    .neq('status', 'rejected')
+    .neq('status', 'rejected').neq('status', 'recycled')
     .not('topic', 'is', null)
     .gte('created_at', since)
     .order('created_at', { ascending: false })
