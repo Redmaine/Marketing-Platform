@@ -125,14 +125,23 @@ export function sourceUrlsIn(body: string | null | undefined): string[] {
   return [...String(body ?? '').matchAll(URL_RE)].map((m) => m[0].replace(/[.,;:)]+$/, '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, ''))
 }
 
-// A later post on the same platform already tells this story.
+// A later post already tells this story. Three signals, any one enough:
+// the same specific source link; the source video/article's TITLE quoted in
+// the later body (CRHQ copy routinely names the video — the 11 Sep Facebook
+// post carried "Daily Mail this is DANGEROUS", the exact video the 12 Sep
+// Instagram post was built from, while their topic labels shared 2 words
+// in 6; the reviewer caught it, this check now does too); or topic-word
+// overlap.
 export function alreadyCovered(
   original: Pick<RecycleCandidate, 'topic' | 'body'>,
   later: Array<Pick<RecycleCandidate, 'topic' | 'body'>>,
+  sourceTitle?: string | null,
 ): { covered: boolean; by?: string } {
   const urls = new Set(sourceUrlsIn(original.body).filter((u) => u !== 'combatreadyhq.co.uk'))
+  const title = String(sourceTitle ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
   for (const p of later) {
     for (const u of sourceUrlsIn(p.body)) if (urls.has(u)) return { covered: true, by: `same source ${u}` }
+    if (title.length >= 12 && String(p.body ?? '').replace(/\s+/g, ' ').toLowerCase().includes(title)) return { covered: true, by: `same source video/article "${title.slice(0, 50)}" named in ${(p as { platform?: string }).platform ?? 'a later'} post` }
     const overlap = topicOverlap(original.topic, p.topic)
     if (overlap >= TOPIC_OVERLAP_SKIP) return { covered: true, by: `topic overlap ${overlap.toFixed(2)} with ${(p as { platform?: string }).platform ? `${(p as { platform?: string }).platform} ` : ''}"${String(p.topic ?? '').slice(0, 60)}"` }
   }
@@ -208,7 +217,7 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
   const perPlatform = new Map<string, number>()
   for (const row of candidates) {
     const platform = row.platform
-    if ((perPlatform.get(platform) ?? 0) >= RECYCLE_MAX_PER_PLATFORM_PER_RUN) continue
+    if ((perPlatform.get(platform) ?? 0) >= RECYCLE_MAX_PER_PLATFORM_PER_RUN) { out.notes.push(`recycle: ${platform} ${row.id} waits — ${RECYCLE_MAX_PER_PLATFORM_PER_RUN} per platform per night already used`); continue }
 
     const elig = isEligible(row, now)
     if (!elig.ok) { out.notes.push(`recycle: ${platform} ${row.id} skipped — ${elig.why}`); continue }
@@ -234,7 +243,8 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
       // their slot. A dead draft (slot passed, never sent) covers nothing —
       // it is itself a candidate here, not evidence the story was told.
       .or(`metricool_post_id.not.is.null,scheduled_for.gte.${now.toISOString()}`)
-    const covered = alreadyCovered(row, (laterRows ?? []) as RecycleCandidate[])
+    const source = await sourceForOriginal(admin, row)
+    const covered = alreadyCovered(row, (laterRows ?? []) as RecycleCandidate[], source.primary?.title)
     if (covered.covered) {
       // Closed off, not left to be re-examined every night.
       if (!dryRun) {
@@ -252,7 +262,6 @@ export async function recycleMissedSlots(admin: Admin, client: Record<string, an
     const slot = slotResult.slot
 
     const reason = recycleReasonFor(row)
-    const source = await sourceForOriginal(admin, row)
     if (dryRun) {
       perPlatform.set(platform, (perPlatform.get(platform) ?? 0) + 1)
       out.recycled.push({ original: row.id, into: '(dry run)', platform, reason, slot: slot.toISOString() })

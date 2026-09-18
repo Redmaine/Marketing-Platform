@@ -121,3 +121,36 @@ export async function fetchFollowers(blogId: string): Promise<Record<string, num
   >
   return json
 }
+
+// GET /v2/scheduler/posts/{id} — what Metricool's scheduler says about a post
+// WE created. This is the only ground truth for "did it actually go out":
+// mkt_content_queue.status='scheduled' only means the post was handed to
+// Metricool, and published_posts is written at that same moment (see
+// schedule-to-metricool), so neither can tell a published post from one
+// Metricool later failed on. providers[].status is 'PUBLISHED' (with a
+// publicUrl) when it went out; 'ERROR' with a detailedStatus when it did
+// not (real example, CRHQ Instagram 11 Sep 2026: "you need to add a picture
+// to make a Instagram post"). A 404 means Metricool no longer has the post.
+export interface SchedulerPostStatus {
+  http: number
+  publicationDate: string | null
+  providers: Array<{ network: string; status: string; detailedStatus: string | null; publicUrl: string | null }>
+  raw: string
+}
+export async function fetchSchedulerPost(postId: string, blogId: string): Promise<SchedulerPostStatus> {
+  const url = `${BASE}/v2/scheduler/posts/${encodeURIComponent(postId)}?userId=${USER_ID}&blogId=${encodeURIComponent(blogId)}`
+  const res = await fetch(url, { headers: { 'X-Mc-Auth': authHeader(), Accept: 'application/json' } })
+  const raw = await res.text()
+  let data: Record<string, any> | null = null
+  try { data = (JSON.parse(raw) as { data?: Record<string, any> })?.data ?? null } catch { /* not json */ }
+  return {
+    http: res.status,
+    publicationDate: data?.publicationDate?.dateTime ?? null,
+    providers: ((data?.providers ?? []) as Array<Record<string, any>>).map((p) => ({
+      network: String(p.network ?? ''), status: String(p.status ?? ''),
+      detailedStatus: p.detailedStatus != null ? String(p.detailedStatus) : null,
+      publicUrl: p.publicUrl != null ? String(p.publicUrl) : null,
+    })),
+    raw: raw.slice(0, 2000),
+  }
+}

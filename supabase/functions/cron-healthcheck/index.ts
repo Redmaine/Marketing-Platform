@@ -64,6 +64,8 @@ interface ExpectedJob {
 const EXPECTED_JOBS: ExpectedJob[] = [
   { jobName: 'crhq-nightly-content', cadence: 'daily', hourUtc: 22, staleAfterHours: 26 },
   { jobName: 'midnight-content-generation', cadence: 'daily', hourUtc: 0, staleAfterHours: 26 },
+  // 18 Sep 2026: the missed-slot mover (migration 105) — logs every run, moves or not.
+  { jobName: 'move-missed-posts', cadence: 'daily', hourUtc: 23, staleAfterHours: 26 },
   { jobName: 'check-client-news', cadence: 'daily', hourUtc: 9, staleAfterHours: 26 },
   { jobName: 'metricool-weekly-pull', cadence: 'weekly', hourUtc: 6, dayOfWeek: 1, staleAfterHours: 8 * 24 },
   { jobName: 'weekly-competitor-search', cadence: 'weekly', hourUtc: 6, dayOfWeek: 1, staleAfterHours: 8 * 24 },

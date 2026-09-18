@@ -71,6 +71,13 @@ console.log('── Already covered since ──')
   check('the same YouTube link in a later post counts as covered', alreadyCovered(withUrl, [laterSame]).covered)
   check('the bare site link does not (every post carries it)', !alreadyCovered(base, [{ topic: 'Something else entirely', body: 'Full breakdown at combatreadyhq.co.uk' }]).covered)
   check('sourceUrlsIn finds the bare domain form', sourceUrlsIn('Full breakdown at combatreadyhq.co.uk').length === 1)
+  // The real 11/12 Sep pair: topic labels share 2 words in 6, but the
+  // Facebook body names the video the Instagram post was built from.
+  const ig12 = { topic: 'Newspaper editorial on port security without fact-checking', body: 'Major newspaper editororialises port security without checking the record first.' }
+  const fb11 = { topic: 'Media outlet responsibility in security reporting and editorial framing', body: 'The video "Daily Mail this is DANGEROUS" breaks down what happens when editorialising overrides reporting.' }
+  check(`topic overlap alone would miss the 11/12 Sep pair (${topicOverlap(ig12.topic, fb11.topic).toFixed(2)})`, topicOverlap(ig12.topic, fb11.topic) < 0.6)
+  check('the source video title named in the later body covers it', alreadyCovered(ig12, [fb11], 'Daily Mail this is DANGEROUS').covered)
+  check('a short/empty source title never matches', !alreadyCovered(ig12, [fb11], 'the').covered && !alreadyCovered(ig12, [fb11], null).covered)
   // The real 16 Sep pair: 6235812f's topic vs the Facebook sibling's — they
   // differ by "coordination"/"coordinated" and "operations"/"analysis".
   const o6235 = 'Ambush coordination capability progression and threat assessment'
