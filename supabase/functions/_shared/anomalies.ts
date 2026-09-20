@@ -220,6 +220,29 @@ export function exhaustedImageAlerts(events: Array<{ client_name: string | null;
   return out
 }
 
+// ── Rule 6: the off-platform backup has not succeeded in the last 26 hours ──
+//
+// yca-platform's nightly-backup GitHub Actions workflow (03:15 UTC) dumps
+// the whole shared Supabase project to OneDrive and restore-tests it. It
+// emails on failure and has its own watchdog, but both live in GitHub; this
+// is the channel Adrian already reads every day, and it must also carry the
+// answer to "did last night's backup happen". Read-only against the GitHub
+// API. A lookup that cannot be made is itself an alert, never silence.
+export const BACKUP_MAX_AGE_HOURS = 26
+export function offPlatformBackupAlerts(input: { now: Date; latestSuccessAt: string | null; lookupError: string | null }): Alert[] {
+  if (input.lookupError) {
+    return [{ severity: 'warning', code: 'backup_unverifiable', title: 'Off-platform backup could not be checked', detail: `GitHub lookup failed: ${input.lookupError.slice(0, 200)}. Check github.com/Redmaine/yca-platform/actions/workflows/nightly-backup.yml by hand.` }]
+  }
+  if (!input.latestSuccessAt) {
+    return [{ severity: 'critical', code: 'backup_missing', title: 'Off-platform backup has NEVER succeeded', detail: 'No successful nightly-backup run exists in yca-platform. The only copies of the database are Supabase\'s own 7-day snapshots.' }]
+  }
+  const ageH = (input.now.getTime() - new Date(input.latestSuccessAt).getTime()) / 36e5
+  if (ageH > BACKUP_MAX_AGE_HOURS) {
+    return [{ severity: 'critical', code: 'backup_stale', title: `Off-platform backup missing — last success ${Math.floor(ageH)}h ago`, detail: `Last successful nightly-backup run: ${input.latestSuccessAt}. Expected nightly at 03:15 UTC. Open github.com/Redmaine/yca-platform/actions/workflows/nightly-backup.yml for the failed or missing run.` }]
+  }
+  return []
+}
+
 export const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, warning: 1 }
 
 export function sortAlerts(alerts: Alert[]): Alert[] {
@@ -278,5 +301,26 @@ export async function detectAnomalies(admin: Admin, now = new Date()): Promise<A
   if (eventsRes.error) readFailure('image_review_events', eventsRes.error)
   else alerts.push(...exhaustedImageAlerts((eventsRes.data ?? []) as any))
 
+  alerts.push(...offPlatformBackupAlerts({ now, ...(await latestBackupSuccess()) }))
+
   return sortAlerts(alerts)
+}
+
+// Latest successful run of yca-platform's nightly-backup workflow, from the
+// GitHub API (read-only). GITHUB_TOKEN is the project secret publish-blog-post
+// already uses; a missing token or a non-2xx answer is returned as an error
+// string so the rule above reports it rather than assuming anything.
+async function latestBackupSuccess(): Promise<{ latestSuccessAt: string | null; lookupError: string | null }> {
+  const token = Deno.env.get('GITHUB_TOKEN')
+  if (!token) return { latestSuccessAt: null, lookupError: 'GITHUB_TOKEN is not configured' }
+  try {
+    const r = await fetch('https://api.github.com/repos/Redmaine/yca-platform/actions/workflows/nightly-backup.yml/runs?status=success&per_page=1', {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'yca-daily-ops' },
+    })
+    if (!r.ok) return { latestSuccessAt: null, lookupError: `HTTP ${r.status}` }
+    const j = await r.json() as { workflow_runs?: Array<{ updated_at: string }> }
+    return { latestSuccessAt: j.workflow_runs?.[0]?.updated_at ?? null, lookupError: null }
+  } catch (e) {
+    return { latestSuccessAt: null, lookupError: String((e as Error)?.message ?? e) }
+  }
 }

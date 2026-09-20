@@ -10,6 +10,7 @@
 import {
   alertHeadline, errorLogAlerts, exhaustedImageAlerts, imagePlatformMismatchAlerts,
   metricsPullAlerts, sortAlerts, zeroImageAlerts, ZERO_IMAGE_STREAK,
+  offPlatformBackupAlerts, BACKUP_MAX_AGE_HOURS,
 } from '../anomalies.ts'
 
 let pass = 0, fail = 0
@@ -123,6 +124,18 @@ console.log('\n── Ordering and headline ──')
   check('critical sorts above warning', s[0].severity === 'critical')
   check('headline counts both', alertHeadline(s) === '1 CRITICAL, 1 warning — read these before anything else.', alertHeadline(s))
   check('empty headline is explicit, not blank', alertHeadline([]) === 'No anomalies detected.')
+}
+
+console.log('── Off-platform backup (20 Sep 2026): stale, never, unverifiable ──')
+{
+  const now = new Date('2026-09-21T10:30:00Z')
+  check('a success 7h ago (last night 03:20) → no alert', offPlatformBackupAlerts({ now, latestSuccessAt: '2026-09-21T03:20:00Z', lookupError: null }).length === 0)
+  const stale = offPlatformBackupAlerts({ now, latestSuccessAt: '2026-09-19T03:20:00Z', lookupError: null })
+  check(`a success ${BACKUP_MAX_AGE_HOURS}h+ ago → CRITICAL backup_stale`, stale.length === 1 && stale[0].severity === 'critical' && stale[0].code === 'backup_stale', JSON.stringify(stale))
+  const never = offPlatformBackupAlerts({ now, latestSuccessAt: null, lookupError: null })
+  check('no success ever → CRITICAL backup_missing', never[0]?.code === 'backup_missing' && never[0].severity === 'critical')
+  const unv = offPlatformBackupAlerts({ now, latestSuccessAt: null, lookupError: 'HTTP 404' })
+  check('a failed lookup is itself an alert, never silence', unv[0]?.code === 'backup_unverifiable' && /HTTP 404/.test(unv[0].detail))
 }
 
 console.log(`\n═══ ${pass} passed, ${fail} failed ═══`)
