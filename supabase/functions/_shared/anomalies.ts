@@ -243,6 +243,34 @@ export function offPlatformBackupAlerts(input: { now: Date; latestSuccessAt: str
   return []
 }
 
+// ── Rule 7: a queued post with no text in it (25 Sep 2026) ────────────────
+// Two blank rows sat in CRHQ's queue for two days — 25 Sep 17:00 and 24 Sep
+// 11:00 — holding their slots with nothing in them. The generator has been
+// fixed not to create them (crhq-nightly-content), but "the job that made
+// them is fixed" is not the same as "nobody can ever see one again": a blank
+// body can still arrive from a manual create, a failed edit, or any future
+// path. This rule watches the queue itself, so the state is caught whatever
+// produced it. Anything still upcoming matters most — that is a slot that
+// will publish, or silently fail to, with no content.
+export function blankQueuedPostAlerts(rows: Array<{
+  client_name: string | null; platform: string | null; scheduled_for: string | null;
+  body: string | null; status: string | null; review_status: string | null;
+}>): Alert[] {
+  const blanks = (rows ?? []).filter((r) => !String(r.body ?? '').trim())
+  if (!blanks.length) return []
+  const byBrand = new Map<string, number>()
+  for (const b of blanks) byBrand.set(b.client_name ?? 'unknown', (byBrand.get(b.client_name ?? 'unknown') ?? 0) + 1)
+  const where = [...byBrand.entries()].map(([n, c]) => `${n} (${c})`).join(', ')
+  const first = blanks[0]
+  return [{
+    severity: 'critical',
+    code: 'blank_queued_post',
+    title: `${blanks.length} queued post${blanks.length === 1 ? '' : 's'} with no content`,
+    brand: byBrand.size === 1 ? (first.client_name ?? null) : null,
+    detail: `${where}. A queued post with an empty body will publish as nothing, or hold a slot that then passes unused. Earliest: ${first.platform ?? 'unknown'} scheduled ${first.scheduled_for ?? 'unknown'}${first.review_status ? ` (review_status ${first.review_status})` : ''}. Open the content queue and either write the copy or delete the row.`,
+  }]
+}
+
 export const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, warning: 1 }
 
 export function sortAlerts(alerts: Alert[]): Alert[] {
@@ -265,13 +293,19 @@ export async function detectAnomalies(admin: Admin, now = new Date()): Promise<A
   const since24h = new Date(now.getTime() - 24 * 36e5).toISOString()
   const since14d = new Date(now.getTime() - 14 * 86400e3).toISOString()
 
-  const [clientsRes, latestPullRes, errorsRes, eventsRes, postsRes] = await Promise.all([
+  const [clientsRes, latestPullRes, errorsRes, eventsRes, postsRes, blankRes] = await Promise.all([
     admin.from('mkt_clients').select('id, name, connected_platforms, image_gen_platforms, image_gen_disabled_platforms, metricool_brand_id, visual_style').eq('active', true),
     admin.from('metricool_account_performance').select('brand, pulled_at').order('pulled_at', { ascending: false }).limit(200),
     admin.from('edge_function_errors').select('function_name, error_message, created_at').gte('created_at', since24h).order('created_at', { ascending: false }).limit(500),
     admin.from('image_review_events').select('client_name, verdict').gte('created_at', since24h).limit(2000),
     admin.from('mkt_content_queue').select('client_id, platform, image_url, created_at')
       .gte('created_at', since14d).neq('status', 'rejected').or('content_type.eq.post,content_type.is.null').limit(2000),
+    // Rule 7 — still-upcoming queued posts, to catch any with an empty body.
+    // Rejected rows are excluded: a rejected blank is already dealt with.
+    admin.from('mkt_content_queue')
+      .select('platform, scheduled_for, body, status, review_status, client:mkt_clients(name)')
+      .gte('scheduled_for', now.toISOString()).neq('status', 'rejected')
+      .order('scheduled_for', { ascending: true }).limit(500),
   ])
 
   const readFailure = (what: string, err: { message?: string } | null) =>
@@ -300,6 +334,13 @@ export async function detectAnomalies(admin: Admin, now = new Date()): Promise<A
 
   if (eventsRes.error) readFailure('image_review_events', eventsRes.error)
   else alerts.push(...exhaustedImageAlerts((eventsRes.data ?? []) as any))
+
+  if (blankRes.error) readFailure('mkt_content_queue (blank bodies)', blankRes.error)
+  else alerts.push(...blankQueuedPostAlerts((blankRes.data ?? []).map((r: Record<string, any>) => ({
+    client_name: (Array.isArray(r.client) ? r.client[0]?.name : r.client?.name) ?? null,
+    platform: r.platform ?? null, scheduled_for: r.scheduled_for ?? null,
+    body: r.body ?? null, status: r.status ?? null, review_status: r.review_status ?? null,
+  }))))
 
   alerts.push(...offPlatformBackupAlerts({ now, ...(await latestBackupSuccess()) }))
 

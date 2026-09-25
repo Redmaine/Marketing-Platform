@@ -127,9 +127,20 @@ export const FACTUAL_ACCURACY_CONSTRAINT = `Every claim in this post must be fac
 // master_prompt, the anti-fabrication rule and FORMAT_RULES. Split into a
 // voice/global block that goes in the SYSTEM prompt, and per-platform blocks
 // that go in the USER message where the platform is known.
-const CRHQ_GLOBAL = `COMBAT READY HQ — HOUSE RULES. These override any general guidance that conflicts with them.
+// 25 Sep 2026 — "These override any general guidance" is deliberately GONE.
+// That line is what made this block beat the brand's own master_prompt, which
+// is the thing Adrian actually edits. Three instructions here contradicted it
+// outright and won purely on position: "Craig Sawyer's voice" (the brief says
+// Craig, a British Army veteran — no surname is confirmed anywhere, and
+// Craig Sawyer is a different, American, public figure), "The shop is closed"
+// (the brief, confirmed by Craig on 5 Sep, says the shop is open and live),
+// and Instagram's fixed three-line template (the brief bans defaulting to one
+// shape). The house rules now state only what the brief does not cover, and
+// say so explicitly where they could be read as conflicting.
+const CRHQ_GLOBAL = `COMBAT READY HQ — HOUSE RULES. These sit alongside the brand brief above. Where anything here appears to conflict with that brief, THE BRIEF WINS.
 
-VOICE: Craig Sawyer's voice — former military, straight talking, evidence-based, no political bias. Authoritative, direct, informed. Never sensationalist. Write for intelligent adults who want analysis, not headlines. Never talk down to the reader and never chase a reaction.
+VOICE — WHO IS SPEAKING: you are writing AS Craig, in his own first-person voice. Not a commentator describing what Craig said, not a channel account summarising one of its own videos. His opinion, his read on the story, straight to the reader the way he would say it to camera. "I think", "what I'd say is", "here's what this actually means" are all natural; "Combat Ready HQ has examined", "the video explores", "the analysis shows" are not — those are somebody writing about him.
+Former military, straight talking, evidence-based, no political bias. Authoritative, direct, informed. Never sensationalist. Write for intelligent adults who want analysis, not headlines. Never talk down to the reader and never chase a reaction.
 
 HARD RULES:
 - No emojis, ever.
@@ -142,11 +153,12 @@ HARD RULES:
 - No political partisanship. Analyse policy and capability, never endorse or attack a party.`
 
 const CRHQ_FACEBOOK = `PLATFORM — FACEBOOK (long form):
-- Longer prose: opinion, analysis, defence policy, military capability, geopolitical context.
+- Longer prose: YOUR opinion and analysis on the story — defence policy, military capability, geopolitical context. First person, as Craig.
+- Open on the story itself, never on the channel. Do not start with the channel name, and do not make "Combat Ready HQ has looked at X" the spine of the post.
 - Minimum two paragraphs. Separate them with a blank line.
 - Text only. Do not describe, reference or imply an accompanying image.
-- End with a call to action driving to the Combat Ready HQ YouTube channel or combatreadyhq.co.uk.
-- The shop is closed. NEVER mention the discount code YOUTUBE10, or any discount code — there is nothing to redeem it against.`
+- Close by pointing readers to the full thing. Vary how you do it — the closing line must not be interchangeable with your last few posts. BANNED, in every rewording: "goes past/beyond the headlines", "doesn't accept the official line at face value", "goes past/beneath the surface", "what the mainstream won't tell you". Those are the brand's stock sign-off and they are the repetition, whatever words they are dressed in. Say something specific to THIS story instead.
+- NEVER mention a discount code.`
 
 // Only ever reached when isCrhq(client) is true, and CRHQ content is generated
 // exclusively by crhq-nightly-content (midnight-cron skips the brand entirely —
@@ -156,18 +168,15 @@ const CRHQ_FACEBOOK = `PLATFORM — FACEBOOK (long form):
 // Tightened from the previous version: that one also asked for three lines but
 // allowed "Link in bio" as the closer and set only a 40-word total, which left
 // individual lines free to run long and the CTA free to omit the domain.
-const CRHQ_INSTAGRAM = `INSTAGRAM COPY RULE — NON-NEGOTIABLE:
-Every CRHQ Instagram post must be exactly three lines. No more, no fewer.
-Line one: the headline fact or event. One sentence, maximum 12 words.
-Line two: the implication or context. One sentence, maximum 12 words.
-Line three: always ends with combatreadyhq.co.uk
+const CRHQ_INSTAGRAM = `PLATFORM — INSTAGRAM (short form):
+Short and punchy — two to four short lines, each on its own line. Keep the whole thing inside the word limit given below.
+Write it as Craig's own take on the story, not as a summary of a video.
+Point readers to combatreadyhq.co.uk somewhere in the post.
 
-Example:
-Ukraine drone strike hits Russian oil depot overnight.
-This changes the supply picture heading into winter.
-Full analysis at combatreadyhq.co.uk
-
-If the copy cannot fit in three lines it must be rewritten until it does. This rule overrides all other formatting guidance.
+VARY IT. Do not write every post to the same template. The shape below is ONE option, not the format:
+  fact line / implication line / where to go
+Other shapes are equally good and should be used at least as often: open on the consequence and work back; open with what you'd say to someone who asked; open on the detail everyone else skipped; two lines with no separate CTA line, the destination folded into the second. The opening words and the closing line must both differ from this brand's recent posts — a reader scrolling the feed must not see the same skeleton twice.
+Never open every post with the subject as a bare noun phrase, and never close every post with "Watch the full breakdown at…".
 
 Do not describe the image. An image is generated separately.`
 
@@ -205,6 +214,33 @@ function lengthInstruction(platform: string): string {
   const { min, max } = wordCountRange(platform)
   const suffix = String(platform).toLowerCase() === 'instagram' ? ' maximum' : ''
   return `${min}-${max} words${suffix}. Return only the post copy — no preamble, no label.`
+}
+
+// ── Client-configured banned words (25 Sep 2026) ───────────────────────────
+// mkt_clients.banned_words has existed since 14 Aug (migration
+// 20260814064858) and, until now, was read by NOTHING: not the prompt, not
+// the reviewer, not the output scrub. CRHQ's is ["YOUTUBE10"], and the same
+// string was simultaneously being injected INTO the prompt by the brand's own
+// key_services field — the platform was telling the model about the discount
+// code and then not checking whether it used it. Both halves are fixed: the
+// legacy profile fields are scrubbed on the way in (below), and reviewPost
+// now fails a post that contains one (see review.ts).
+export function clientBannedWords(client: Record<string, any>): string[] {
+  const raw = client?.banned_words
+  if (!Array.isArray(raw)) return []
+  return raw.map((w) => String(w ?? '').trim()).filter(Boolean)
+}
+
+// Strip a banned word out of text that is being fed TO the model. Used on the
+// legacy profile fields only — never on the brand's master_prompt, which is
+// the thing a human actually curates.
+function scrubForPrompt(text: string, banned: string[]): string {
+  if (!text || !banned.length) return text
+  let out = text
+  for (const w of banned) {
+    out = out.replace(new RegExp(`[^.!?]*\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[^.!?]*[.!?]?`, 'gi'), '')
+  }
+  return out.replace(/\s{2,}/g, ' ').trim()
 }
 
 // Builds the full system prompt for a client. Order matters: the
@@ -294,10 +330,22 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
   const lines: string[] = [
     `Write a ${platform} post for the "${pillar}" content pillar.`,
   ]
-  if (client.industry) lines.push(`Industry: ${client.industry}`)
-  if (client.key_services) lines.push(`Services: ${client.key_services}`)
-  if (client.target_customer) lines.push(`Target reader: ${client.target_customer}`)
-  if (client.tone_of_voice) lines.push(`Tone of voice: ${client.tone_of_voice}`)
+  // The legacy per-client profile fields. These predate master_prompt and are
+  // NOT curated the way it is — CRHQ's key_services still advertised a
+  // discount code that is on the same brand's banned_words list, a subscriber
+  // count that contradicts the brief, and a shop product list the themed-post
+  // prompt explicitly tells the model it cannot claim. Scrubbed of banned
+  // words here so the prompt can never introduce the very string the brand
+  // has banned; the brief itself remains the source of truth for all of it.
+  const banned = clientBannedWords(client)
+  const profile = (v: unknown) => scrubForPrompt(String(v ?? ''), banned)
+  if (client.industry) lines.push(`Industry: ${profile(client.industry)}`)
+  if (client.key_services) lines.push(`Services: ${profile(client.key_services)}`)
+  if (client.target_customer) lines.push(`Target reader: ${profile(client.target_customer)}`)
+  if (client.tone_of_voice) lines.push(`Tone of voice: ${profile(client.tone_of_voice)}`)
+  if (banned.length) {
+    lines.push(`NEVER use these words or codes, in any form: ${banned.join(', ')}.`)
+  }
 
   // Fix 4 — topic diversity. The caller already picks a pillar that differs
   // from the brand's last few posts (see pickDiversePillar); this reinforces
@@ -353,7 +401,14 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
       ...crhqVideos.map((v) => `- [Video] "${v.title}" — ${v.url}`),
       ...crhqArticles.map((a) => `- [Article] "${a.title}" — ${a.url}`),
     ]
-    lines.push(`\nHere is Combat Ready HQ's latest content from the last 48 hours:\n${items.join('\n')}\nReference this actual content factually — the channel name (Combat Ready HQ), the topic/title, and the URL only. Do not mention view counts, subscriber counts, engagement, reach, or any other performance figure for this or any other content — real or invented.`)
+    // 25 Sep 2026 — this used to end "Reference this actual content factually
+    // — the channel name (Combat Ready HQ), the topic/title, and the URL
+    // only", which is an instruction to write ABOUT the channel's video. That
+    // is where "Combat Ready HQ has examined X, watch at URL" came from: the
+    // brief bans that exact shape, and this line asked for it. The scrape is
+    // now framed as what it is — the stories Craig has just covered, i.e. the
+    // subject matter for his own take — with the URL kept for the CTA.
+    lines.push(`\nThese are the stories Craig has just covered, in the last 48 hours:\n${items.join('\n')}\nThese are your SUBJECT MATTER, not your subject. Write Craig's own view of the story itself — what is happening, what he makes of it, why it matters. Do not write about the channel, the video, or the act of having covered it: no "Combat Ready HQ has examined/covered/documented/published", no "the video explains", no "in this analysis". Use the URL only in the closing pointer to where the full thing lives. Do not mention view counts, subscriber counts, engagement, reach, or any other performance figure for this or any other content — real or invented.`)
   }
 
   // Explicit primary-source steer, set per platform by crhq-nightly-content
@@ -366,7 +421,7 @@ export function buildUserMessage(client: Record<string, any>, platform: string, 
   // single item happens to read as most interesting.
   const primarySource = client._crhq_primary_source as { type: 'video' | 'article'; title: string; url: string } | undefined
   if (primarySource) {
-    lines.push(`\nThis specific post must be built primarily around this ${primarySource.type}: "${primarySource.title}" — ${primarySource.url}. Reference it factually, as above.`)
+    lines.push(`\nBuild this post around the STORY behind this ${primarySource.type}: "${primarySource.title}" — ${primarySource.url}. The title is a video headline, not a sentence to quote or paraphrase — write about the underlying events in Craig's own words. The URL is for the closing pointer only.`)
   }
 
   // Slot recycling (crhqRecycle.ts, 18 Sep 2026): this post is the second
@@ -406,6 +461,33 @@ Banned: any sentence that tells the reader to buy, shop, order, or purchase anyt
 Drive readers to combatreadyhq.co.uk for more, not to buy anything.`)
   } else if (themedTopic?.theme === 'intelligence_subscription') {
     lines.push(`\nThis is the weekly intelligence-subscription-themed post. Write about Combat Ready HQ's intelligence briefings — the kind of analysis and insight subscribers get, why it matters, what it's for. Do not invent a specific price, feature list, or signup mechanic you have not been given. Drive readers to combatreadyhq.co.uk to find out more.`)
+  }
+
+  // The exact closings and openings this brand has just used (25 Sep 2026).
+  // The repeat-prevention block above shows the model whole recent bodies,
+  // which it can read as "different posts" while still reusing the same last
+  // sentence — the first verification run after the prompt fix produced three
+  // Instagram posts that varied properly and all ended "Full breakdown at
+  // combatreadyhq.co.uk." Naming the two parts a reader actually notices
+  // repeating is a much sharper steer than asking for variety in general.
+  if (isCrhq(client)) {
+    const prev: string[] = Array.isArray(client._repeat_prevention_posts) ? client._repeat_prevention_posts : []
+    const lastSentence = (t: string) => {
+      const line = String(t).split('\n').map((l) => l.trim()).filter(Boolean).slice(-1)[0] ?? ''
+      const parts = line.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean)
+      return parts.length ? parts[parts.length - 1] : line
+    }
+    const firstSix = (t: string) => String(t).trim().split(/\s+/).slice(0, 6).join(' ')
+    const closings = [...new Set(prev.map(lastSentence).filter(Boolean))].slice(0, 6)
+    const openings = [...new Set(prev.map(firstSix).filter(Boolean))].slice(0, 6)
+    if (closings.length || openings.length) {
+      lines.push(`\nDO NOT REUSE THESE. This brand's recent posts already opened and closed these ways, and a post that repeats either will be rejected:`)
+      if (openings.length) lines.push(`Openings already used: ${openings.map((o) => `"${o}…"`).join('; ')}`)
+      if (closings.length) lines.push(`Closings already used: ${closings.map((c) => `"${c}"`).join('; ')}`)
+      const openWords = [...new Set(prev.map((t) => String(t).trim().split(/\s+/)[0]).filter(Boolean))].slice(0, 6)
+      if (openWords.length) lines.push(`First words already used: ${openWords.join(', ')}. Do not open with any of those.`)
+      lines.push(`Write an opening and a closing that are not variations of any of those. Changing one word is not a different closing. Vary the FORM of the opening sentence too, not just its words — if the last post opened with a subordinate clause ("When X happens…"), this one must not.`)
+    }
   }
 
   // CRHQ's per-platform rules. Placed after the recent-posts and scrape blocks

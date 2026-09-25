@@ -505,6 +505,28 @@ export async function fillClientGap(admin: Admin, client: Record<string, any>, b
         // the reviewer and must still reach Adrian regardless of this flag —
         // auto-approving broken content would defeat the point of the review
         // step entirely.
+        // NEVER QUEUE AN EMPTY POST (25 Sep 2026). Same fix as
+        // crhq-nightly-content, same root cause, and this is where the OTHER
+        // blank rows came from: Quill (21 Oct slot) and Riverside (16 Oct),
+        // both created 24 Sep 00:00, both with review_reason "Anthropic API
+        // error 400 ... You have reached your specified API usage limits".
+        // Both generation attempts failed, review.body was '', and the
+        // needs_attention branch below wrote `body: review.body || ''` — a
+        // queued post with no text, holding a real slot.
+        //
+        // A post that generated and then failed REVIEW still gets queued:
+        // that is the review pipeline working and a human can fix the copy.
+        // A post with no text at all is a failure of this job — no row, and a
+        // real error so anomalies.ts Rule 4 (which already watches
+        // edge_function_errors for exactly this Anthropic cap message) can
+        // actually see it. It never fired for these because the outcome only
+        // ever reached `notes`.
+        if (!review.body || !review.body.trim()) {
+          errors.push(`${client.name} (${platform}): generation produced no text after ${review.attempts} attempt(s) — nothing queued for slot ${slot.toISOString()}. Last reason: ${review.reason ?? 'unknown'}`)
+          console.error(`[fill] ${client.name} ${platform}: empty body, not queuing. ${review.reason ?? ''}`)
+          continue
+        }
+
         const autoApprove = review.ok && client.auto_approve === true
         // rejection_feedback_used: the resolved rejection-feedback string
         // actually folded into THIS post's prompt (see _rejection_feedback

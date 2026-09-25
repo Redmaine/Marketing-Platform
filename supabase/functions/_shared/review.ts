@@ -347,6 +347,158 @@ export interface ReviewResult {
   topic: string | null
 }
 
+// ── CRHQ: third-person channel voice, and the one banned post shape ────────
+// 25 Sep 2026. The brief has always said two things this catches, and until
+// now nothing enforced either of them — the reviewer's only voice check was
+// the LLM's `wrong_brand_voice`, which passed every one of these because the
+// GENERATION prompt was explicitly asking for the shape (see prompts.ts).
+// Deterministic on purpose: this is the exact failure Adrian quoted, so it
+// gets a rule that cannot have an off day, not a judgement call.
+//
+//   1. "Combat Ready HQ has examined X" — the brief bans defaulting to that
+//      shape, and it is also third person: the post is meant to be Craig's
+//      own opinion, not a description of a video.
+//   2. Any other construction that writes ABOUT the channel or the video
+//      rather than about the story.
+const CRHQ_THIRD_PERSON = [
+  /\bCombat Ready HQ (?:has|have|just)\b/i,
+  /\bCombat Ready HQ(?:'s)? (?:latest |recent |new )?(?:video|analysis|coverage|breakdown|piece|report)\b/i,
+  /\bthe (?:video|analysis|breakdown|piece) (?:explores|examines|covers|shows|explains|looks at|breaks down)\b/i,
+  /\bin (?:this|the) (?:video|analysis|breakdown)\b/i,
+]
+export function crhqThirdPersonViolation(client: Record<string, any>, body: string): string | null {
+  if (!isCrhqClient(client)) return null
+  for (const re of CRHQ_THIRD_PERSON) {
+    const m = body.match(re)
+    if (m) {
+      return `writes about the channel instead of as Craig — "${m[0]}". The brief calls for Craig's own opinion delivered straight to camera, and explicitly bans defaulting to the "Combat Ready HQ has examined X, watch at URL" shape. Write the story in his own first-person voice.`
+    }
+  }
+  return null
+}
+
+// ── CRHQ: structural repetition against this brand's own recent posts ──────
+// The brief says "Vary structure and opening between posts". Topic variation
+// was already judged (Layer 2's repeat_topic); STRUCTURE never was, which is
+// how a week of posts that were each about a different story could still all
+// be the identical skeleton. Compares the opening and the closing line — the
+// two parts a reader actually notices repeating — against recent bodies.
+const normalise = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim()
+const firstWords = (t: string, n: number) => normalise(t).split(' ').slice(0, n).join(' ')
+// The closing line — or, when the post is one unbroken paragraph, the closing
+// SENTENCE. 25 Sep 2026: the first verification run after the prompt fix came
+// back with three Instagram posts that varied properly in their openings and
+// their argument but all ended "Full breakdown at combatreadyhq.co.uk." — and
+// this check missed every one of them, because Instagram copy has no newlines
+// so "the last line" was the whole post, and the whole posts differed. Same
+// class of repetition Adrian quoted ("analysis that goes past the headlines"
+// three ways); it just moves to wherever the check is not looking. Now it
+// looks at the last sentence either way.
+const lastLine = (t: string) => {
+  const lines = String(t).split('\n').map((l) => l.trim()).filter(Boolean)
+  const line = lines.length ? lines[lines.length - 1] : ''
+  const sentences = line.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean)
+  return sentences.length ? sentences[sentences.length - 1] : line
+}
+// Same closing SHAPE: the trailing CTA with the destination and any leading
+// verb stripped, so "Watch the full breakdown at X" and "Watch the breakdown
+// at Y" collapse to the same thing — which is exactly the repetition Adrian
+// quoted three rewordings of.
+const ctaSkeleton = (t: string) => normalise(lastLine(t))
+  .replace(/https?\S*/g, '')
+  .replace(/\b(combatreadyhq co uk|youtube com\S*)\b/g, '')
+  .replace(/\b(full|the|a|an|at|on|or|in|bio|link)\b/g, ' ')
+  .replace(/\s+/g, ' ').trim()
+
+export function crhqStructureRepeatViolation(
+  client: Record<string, any>,
+  body: string,
+  recentBodies: string[],
+): string | null {
+  if (!isCrhqClient(client)) return null
+  if (!recentBodies.length) return null
+  const open = firstWords(body, 5)
+  const cta = ctaSkeleton(body)
+
+  // The opening-word tic (25 Sep 2026, second verification run). After the
+  // five- and four-word checks were satisfied, three of three Facebook posts
+  // still opened "When a major policy…", "When elected leaders…", "When a
+  // government…". Each is a genuinely different sentence, so the word checks
+  // correctly passed them — but a reader scrolling the page sees the same
+  // tic three times, which is the thing the brief is actually asking to
+  // avoid. Two posts sharing an opening word is coincidence; three in a row
+  // is a habit. Deliberately only fires on the third.
+  const firstWord = (t: string) => normalise(t).split(' ')[0] ?? ''
+  const mine = firstWord(body)
+  if (mine) {
+    const sameWordRecent = recentBodies.slice(0, 2).filter((prev) => firstWord(prev) === mine).length
+    if (sameWordRecent >= 2) {
+      return `this is the third post in a row to open with the word "${mine}". Vary the sentence form, not just the words after it.`
+    }
+  }
+
+  for (const prev of recentBodies.slice(0, 10)) {
+    if (!prev) continue
+    if (open && open === firstWords(prev, 5)) {
+      return `opens with the same five words as a recent post ("${open}"). The brief requires the opening to vary between posts.`
+    }
+    // Four-word stem, for the cross-platform echo the 25 Sep verification run
+    // produced: the same source video gave Facebook and Instagram the same
+    // "When a serving mayor starts…" framing minutes apart.
+    if (open && firstWords(body, 4) === firstWords(prev, 4)) {
+      return `opens with the same four words as a recent post ("${firstWords(body, 4)}"). Vary the opening — the same story on two platforms must not start the same way.`
+    }
+    if (cta && cta.length > 3 && cta === ctaSkeleton(prev)) {
+      return `closes with the same call to action as a recent post ("${lastLine(body)}"). The brief requires structure to vary between posts — vary the closing line, not just the link.`
+    }
+  }
+  return null
+}
+
+// ── The stock CRHQ sign-off, in all its rewordings ────────────────────────
+// Adrian quoted three of these as "the same sentence, three rewordings":
+// "analysis that goes past the headlines", "doesn't accept the official line
+// at face value", "goes past the surface". They survived the structural
+// checks because each is a genuinely different sentence shape — the
+// repetition is in the CLAIM, not the grammar. The third verification run
+// produced "…doesn't accept the official line at face value, subscribe on
+// the channel" unprompted, which is how we know this needs naming rather
+// than hoping variety instructions cover it.
+const CRHQ_STOCK_SIGNOFF = [
+  /\b(past|beyond|behind) the headlines\b/i,
+  /\bofficial line at face value\b/i,
+  /\b(past|beyond|beneath) the surface\b/i,
+  /\bwhat (?:the )?mainstream (?:media )?(?:won'?t|does ?n'?t) (?:tell|show|cover)\b/i,
+]
+export function crhqStockSignoffViolation(client: Record<string, any>, body: string): string | null {
+  if (!isCrhqClient(client)) return null
+  for (const re of CRHQ_STOCK_SIGNOFF) {
+    const m = body.match(re)
+    if (m) return `uses the brand's stock sign-off claim — "${m[0]}". Adrian flagged this exact family of closing lines as the same sentence reworded. Say something specific to THIS story instead.`
+  }
+  return null
+}
+
+function isCrhqClient(client: Record<string, any>): boolean {
+  const n = String(client?.name ?? '').toLowerCase()
+  return n.includes('combat ready') || String(client?.slug ?? '') === 'crhq'
+}
+
+// ── Client-configured banned words, finally enforced (25 Sep 2026) ─────────
+// mkt_clients.banned_words was read by nothing anywhere in this codebase. The
+// prompt now tells the model (prompts.ts) and this makes it a hard fail.
+export function clientBannedWordViolation(client: Record<string, any>, body: string): string | null {
+  const banned = Array.isArray(client?.banned_words) ? client.banned_words : []
+  for (const w of banned) {
+    const word = String(w ?? '').trim()
+    if (!word) continue
+    if (new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(body)) {
+      return `uses "${word}", which is on this brand's banned words list.`
+    }
+  }
+  return null
+}
+
 // Full review of one social post for one client. `admin` is used to load the
 // brand's recent published topics for the repeat-topic check. `platform`
 // determines which word count target applies (see wordCountViolation).
@@ -373,6 +525,15 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
   const blogReference = blogReferenceViolation(client, body)
   if (blogReference) return { pass: false, reason: blogReference, topic: null }
 
+  const bannedWord = clientBannedWordViolation(client, body)
+  if (bannedWord) return { pass: false, reason: `content rule violation: ${bannedWord}`, topic: null }
+
+  const crhqVoice = crhqThirdPersonViolation(client, body)
+  if (crhqVoice) return { pass: false, reason: `wrong brand voice — ${crhqVoice}`, topic: null }
+
+  const stockSignoff = crhqStockSignoffViolation(client, body)
+  if (stockSignoff) return { pass: false, reason: `repeat structure — ${stockSignoff}`, topic: null }
+
   // Layer 2 — judgement. Pull recent published copy for the repeat-topic check.
   // Fix 1 — only genuinely-past posts count as "already published". date_sent
   // was backfilled with future scheduled dates for some brands, so without the
@@ -393,6 +554,13 @@ export async function reviewPost(admin: Admin, client: Record<string, any>, body
   // without an upper bound a post scheduled for next week would block new
   // content on the same topic today.
   const recent = await recentBrandPosts(admin, client.id, { days: 30, limit: 30 })
+
+  // Structural repetition — deterministic, and deliberately sitting here
+  // rather than up in Layer 1 because it is the first check that needs the
+  // brand's recent bodies. Topic variation was already judged below; this is
+  // the half that was never checked at all.
+  const structureRepeat = crhqStructureRepeatViolation(client, body, recent.map((r) => r.body))
+  if (structureRepeat) return { pass: false, reason: `repeat structure — ${structureRepeat}`, topic: null }
 
   const recentSummary = recent.length
     ? recent.map((r, i) => `${i + 1}. [${r.source === 'queue' ? 'queued' : 'published'}] ${r.body.slice(0, 200)}`).join('\n')

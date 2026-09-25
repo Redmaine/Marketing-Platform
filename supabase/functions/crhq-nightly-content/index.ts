@@ -140,6 +140,17 @@ async function generateThemedWeeklyPost(admin: Admin, client: Record<string, any
   const review = await generateReviewedPost(admin, clientForGeneration, 'facebook', config.pillar)
   if (review.body) review.body = stripMarkdown(review.body)
 
+  // Same rule as the nightly scrape post below — never queue an empty body.
+  // The 24 Sep 11:00 blank row came from THIS path (content_source
+  // 'themed_weekly') on the night the Anthropic usage cap was hit. See the
+  // long comment at the nightly post's matching guard for the full story.
+  if (!review.body || !review.body.trim()) {
+    return {
+      generated: false,
+      errors: [`themed weekly (${config.theme}): generation produced no text after ${review.attempts} attempt(s) — nothing queued for ${slot.toISOString()}. Last reason: ${review.reason ?? 'unknown'}`],
+    }
+  }
+
   // MUST be computed before the insert — see facebookWantsImage's own
   // comment: the new row would otherwise become its own "most recent"
   // Facebook post the instant it exists, with a null image_url, and the
@@ -468,6 +479,32 @@ serve(async (req) => {
         try {
           const review = await generateReviewedPost(admin, clientForGeneration, platform, pillar)
           if (review.body) review.body = stripMarkdown(review.body)
+
+          // NEVER QUEUE AN EMPTY POST (25 Sep 2026). Two blank rows reached
+          // the queue on 23 Sep — 25 Sep 17:00 and 24 Sep 11:00 — and sat
+          // there occupying their slots with nothing in them. Root cause, from
+          // their own review_reason: "Anthropic API error 400 ... You have
+          // reached your specified API usage limits". Both generation attempts
+          // failed, so review.body was '', and the needs_attention branch
+          // below wrote `body: review.body || ''` — a row with no text.
+          //
+          // Why nobody was told: that outcome went into `notes`, not
+          // `errors`, so mkt_cron_log.errors was null, no edge_function_errors
+          // row was written, and the run reported posts_generated: 2 — a clean
+          // bill of health on a night both posts were empty. anomalies.ts
+          // Rule 4 already watches edge_function_errors for exactly this
+          // Anthropic cap message; it never fired because nothing ever
+          // reached that table.
+          //
+          // A post that generated and then FAILED REVIEW still gets queued —
+          // that is the review pipeline working, and a human can fix the copy.
+          // A post with no text at all is a failure of this job: no row, and a
+          // real error so it is surfaced everywhere errors are.
+          if (!review.body || !review.body.trim()) {
+            errors.push(`${platform}: generation produced no text after ${review.attempts} attempt(s) — nothing queued for slot ${slot.toISOString()}. Last reason: ${review.reason ?? 'unknown'}`)
+            console.error(`[crhq-nightly-content] ${platform}: empty body, not queuing. ${review.reason ?? ''}`)
+            continue
+          }
 
           // Auto-approve — see _shared/fill.ts's identical guard for the
           // reasoning: only applies to a post that passed review, never to a
