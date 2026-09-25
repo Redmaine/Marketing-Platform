@@ -157,5 +157,29 @@ console.log('── The stock sign-off Adrian quoted, in every rewording ──'
   ok(!crhqStockSignoffViolation(OTHER, 'Analysis that goes past the headlines.'), 'CRHQ-only, as with the other rules')
 }
 
+console.log('── Cross-brand scoping, on the two REAL repaired posts (25 Sep) ──')
+{
+  // Verbatim openings from the Riverside (16 Oct) and Quill (21 Oct) posts
+  // regenerated after the blank-body failure. The CRHQ rules must no-op for
+  // them — they are brand-scoped by design — while the general rules
+  // (word count, repeat topic, banned words) still apply to every brand.
+  const RIVERSIDE = { id: 'r', name: 'Riverside Sheetmetal Fabrications', banned_words: ['precision', 'craftsmanship', 'bespoke', 'artisan'] }
+  const QUILL = { id: 'q', name: 'Quill', banned_words: [] }
+  const riversideBody = 'Most suppliers have account managers and ticket systems. You ring them and hope to get through to someone who knows your file. We are small enough that you do not do that. When you call, you reach Stephanie. Get in touch at riversideonline.co.uk'
+  const quillBody = 'A fabricator I work with picked up the phone last Tuesday without checking it first. The small win is that he stopped carrying social media as background anxiety. Quill, the AI social media agency for UK small businesses.'
+
+  for (const [c, body, label] of [[RIVERSIDE, riversideBody, 'Riverside'], [QUILL, quillBody, 'Quill']] as Array<[Record<string, unknown>, string, string]>) {
+    ok(!crhqThirdPersonViolation(c, body), `${label}: the CRHQ third-person rule does not fire`)
+    ok(!crhqStockSignoffViolation(c, body), `${label}: the CRHQ stock sign-off rule does not fire`)
+    ok(!crhqStructureRepeatViolation(c, body, [riversideBody, quillBody]), `${label}: the CRHQ structure rule does not fire`)
+    ok(!clientBannedWordViolation(c, body), `${label}: clean against its own banned words`)
+  }
+  // …and the general banned-words rule, wired up in the same commit, DOES
+  // apply to a non-CRHQ brand. Riverside's list had never been enforced.
+  ok(!!clientBannedWordViolation(RIVERSIDE, 'Precision engineering and craftsmanship you can rely on.'),
+    "Riverside's own banned words are enforced — the rule is not CRHQ-only")
+  ok(/precision/i.test(String(clientBannedWordViolation(RIVERSIDE, 'Precision engineering.'))), 'and it names the offending word')
+}
+
 console.log(`\n═══ ${pass} passed, ${fail} failed ═══`)
 if (fail) Deno.exit(1)
